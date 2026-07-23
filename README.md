@@ -16,7 +16,8 @@ sparsewave-opt input.mlir \
   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 wavefront-size=64})'
 ```
 
-The pipeline currently preserves its input. Lowering passes will be added to
+The target chip is required. The pipeline currently attaches the corresponding
+ROCDL target metadata to each `gpu.module`. Lowering passes will be added to
 this entry point incrementally.
 
 ## Checkout

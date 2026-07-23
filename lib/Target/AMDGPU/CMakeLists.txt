@@ -5,5 +5,6 @@ add_mlir_library(SparseWaveAMDGPUPipelines
   ${SPARSEWAVE_SOURCE_DIR}/include/sparsewave/Target/AMDGPU
 
   LINK_LIBS PUBLIC
+  MLIRGPUTransforms
   MLIRPass
 )
