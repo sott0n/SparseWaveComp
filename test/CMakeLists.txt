@@ -8,6 +8,7 @@ configure_lit_site_cfg(
 set(SPARSEWAVE_TEST_DEPENDS
   FileCheck
   count
+  mlir-translate
   not
   sparsewave-opt
 )

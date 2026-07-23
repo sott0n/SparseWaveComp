@@ -2,6 +2,7 @@
 
 #include "mlir/Conversion/AMDGPUToROCDL/AMDGPUToROCDL.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
+#include "mlir/Conversion/GPUCommon/GPUCommonPass.h"
 #include "mlir/Conversion/GPUToROCDL/GPUToROCDLPass.h"
 #include "mlir/Conversion/GPUToROCDL/Runtimes.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
@@ -163,6 +164,11 @@ void mlir::sparsewave::buildAMDGPUBackendPipeline(
   gpuModulePM.addPass(std::make_unique<VerifyAMDDeviceLoweringPass>());
 
   if (options.binaryFormat != AMDGPUCompilationTarget::None) {
+    GpuToLLVMConversionPassOptions hostOptions;
+    hostOptions.hostBarePtrCallConv = options.hostUseBarePtrCallConv;
+    hostOptions.kernelBarePtrCallConv = options.kernelUseBarePtrCallConv;
+    pm.addPass(createGpuToLLVMConversionPass(hostOptions));
+
     GpuModuleToBinaryPassOptions binaryOptions;
     switch (options.binaryFormat) {
     case AMDGPUCompilationTarget::None:

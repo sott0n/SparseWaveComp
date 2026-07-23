@@ -58,6 +58,12 @@ struct AMDGPUPipelineOptions
           "Use the bare pointer calling convention for device kernels."),
       llvm::cl::init(false)};
 
+  PassOptions::Option<bool> hostUseBarePtrCallConv{
+      *this, "host-bare-ptr-calling-convention",
+      llvm::cl::desc(
+          "Use the bare pointer calling convention for host functions."),
+      llvm::cl::init(false)};
+
   PassOptions::Option<AMDGPUCompilationTarget> binaryFormat{
       *this, "binary-format",
       llvm::cl::desc("AMDGPU device compilation output."),

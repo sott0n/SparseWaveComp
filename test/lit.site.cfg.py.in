@@ -1,6 +1,7 @@
 @LIT_SITE_CFG_IN_HEADER@
 
 config.llvm_tools_dir = lit_config.substitute("@LLVM_TOOLS_DIR@")
+config.llvm_lib_dir = lit_config.substitute("@LLVM_LIBRARY_DIR@")
 config.sparsewave_obj_root = "@SPARSEWAVE_BINARY_DIR@"
 config.sparsewave_tools_dir = "@LLVM_RUNTIME_OUTPUT_INTDIR@"
 

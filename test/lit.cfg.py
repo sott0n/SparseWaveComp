@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 import lit.formats
 
@@ -17,7 +18,9 @@ llvm_config.use_default_substitutions()
 llvm_config.with_environment("PATH", config.llvm_tools_dir, append_path=True)
 
 tool_dirs = [config.sparsewave_tools_dir, config.llvm_tools_dir]
-llvm_config.add_tool_substitutions(["sparsewave-opt"], tool_dirs)
+llvm_config.add_tool_substitutions(
+    ["mlir-translate", "sparsewave-opt"], tool_dirs
+)
 
 rocm_path = next(
     (
@@ -31,3 +34,42 @@ rocm_linker = os.path.join(rocm_path, "llvm", "bin", "ld.lld")
 if os.path.isfile(rocm_linker) and os.access(rocm_linker, os.X_OK):
     config.available_features.add("rocm-toolkit")
     config.substitutions.append(("%rocm_path", rocm_path))
+
+mlir_runner = os.path.join(config.llvm_tools_dir, "mlir-runner")
+rocm_runtime = os.path.join(config.llvm_lib_dir, "libmlir_rocm_runtime.so")
+runner_utils = os.path.join(config.llvm_lib_dir, "libmlir_runner_utils.so")
+arch_tools = [
+    os.path.join(rocm_path, "bin", name)
+    for name in ("amdgpu-arch", "rocm_agent_enumerator")
+]
+arch_tool = next(
+    (
+        path
+        for path in arch_tools
+        if os.path.isfile(path) and os.access(path, os.X_OK)
+    ),
+    None,
+)
+if (
+    all(
+        os.path.isfile(path)
+        for path in (mlir_runner, rocm_runtime, runner_utils)
+    )
+    and arch_tool
+    and os.path.exists("/dev/kfd")
+):
+    arch = subprocess.run(
+        [arch_tool],
+        capture_output=True,
+        check=False,
+        text=True,
+    ).stdout.splitlines()
+    if arch:
+        config.available_features.add("amdgpu-runtime")
+        config.substitutions.extend(
+            [
+                ("%amdgpu_chip", arch[0]),
+                ("%mlir_rocm_runtime", rocm_runtime),
+                ("%mlir_runner_utils", runner_utils),
+            ]
+        )

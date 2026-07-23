@@ -8,6 +8,7 @@ add_mlir_library(SparseWaveAMDGPUPipelines
   MLIRAMDGPUToROCDL
   MLIRAffineToStandard
   MLIRGPUDialect
+  MLIRGPUToGPURuntimeTransforms
   MLIRGPUToROCDLTransforms
   MLIRGPUTransforms
   MLIRMemRefTransforms

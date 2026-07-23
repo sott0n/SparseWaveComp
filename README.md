@@ -17,10 +17,10 @@ sparsewave-opt input.mlir \
 ```
 
 The pipeline also accepts `triple`, `features`, `abi-version`,
-`index-bitwidth`, and `kernel-bare-ptr-calling-convention`. These options are
-propagated consistently to ROCDL target metadata and device lowering. Device
-lowering fails if an unrealized conversion cast or a non-LLVM/ROCDL operation
-remains.
+`index-bitwidth`, `kernel-bare-ptr-calling-convention`, and
+`host-bare-ptr-calling-convention`. These options are propagated consistently
+to ROCDL target metadata and device and host lowering. Device lowering fails if
+an unrealized conversion cast or a non-LLVM/ROCDL operation remains.
 
 By default, the pipeline compiles each `gpu.module` to an HSA code object and
 stores it in a `gpu.binary`. The ROCm toolkit is found through `ROCM_PATH`,
@@ -34,8 +34,20 @@ sparsewave-opt input.mlir \
 
 The `binary-format` option accepts `none`, `llvm`, `isa`, `bin`, and `fatbin`;
 its default is `bin`. Use `none` to inspect the lowered LLVM/ROCDL device IR
-without serializing it. Host-side GPU launch lowering will be added
-incrementally.
+without serializing it.
+
+When a binary format is selected, the pipeline also lowers host-side GPU
+operations and operands to the LLVM dialect. The remaining `gpu.binary` and
+`gpu.launch_func` operations are translated to calls through MLIR's GPU runtime
+wrapper ABI, including module loading, kernel lookup, launch, and
+synchronization.
+
+The runtime integration test is enabled automatically when `mlir-runner`,
+`libmlir_rocm_runtime.so`, `libmlir_runner_utils.so`, an ROCm architecture
+enumerator, and `/dev/kfd` are available. Configure LLVM with
+`MLIR_ENABLE_ROCM_RUNNER=ON` to build the ROCm runtime wrapper. The test
+compiles an HSACO, loads it through HIP, launches a kernel, and checks the
+values written by the GPU.
 
 ## Checkout
 
