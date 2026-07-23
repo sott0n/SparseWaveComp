@@ -6,6 +6,19 @@ The project is currently bootstrapping its compiler infrastructure. The first
 milestone provides an `mlir-opt`-style driver and a lit-based regression test
 suite. AMD GPU lowering and the runtime will be added incrementally.
 
+## AMD GPU pipeline
+
+The `sparsewave-amdgpu-pipeline` is the entry point for the AMD GPU backend.
+Its initial skeleton accepts the target chip and wavefront size:
+
+```sh
+sparsewave-opt input.mlir \
+  --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 wavefront-size=64})'
+```
+
+The pipeline currently preserves its input. Lowering passes will be added to
+this entry point incrementally.
+
 ## Checkout
 
 LLVM and MLIR are pinned through the `externals/llvm-project` submodule. Clone
