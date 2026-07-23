@@ -15,6 +15,14 @@ enum class WavefrontSize {
   Wave64 = 64,
 };
 
+enum class AMDGPUCompilationTarget {
+  None,
+  LLVM,
+  ISA,
+  Binary,
+  Fatbin,
+};
+
 struct AMDGPUPipelineOptions
     : public PassPipelineOptions<AMDGPUPipelineOptions> {
   PassOptions::Option<std::string> triple{
@@ -49,6 +57,27 @@ struct AMDGPUPipelineOptions
       llvm::cl::desc(
           "Use the bare pointer calling convention for device kernels."),
       llvm::cl::init(false)};
+
+  PassOptions::Option<AMDGPUCompilationTarget> binaryFormat{
+      *this, "binary-format",
+      llvm::cl::desc("AMDGPU device compilation output."),
+      llvm::cl::values(
+          clEnumValN(AMDGPUCompilationTarget::None, "none",
+                     "Keep the lowered GPU module"),
+          clEnumValN(AMDGPUCompilationTarget::LLVM, "llvm",
+                     "Embed LLVM bitcode"),
+          clEnumValN(AMDGPUCompilationTarget::ISA, "isa",
+                     "Embed AMDGPU assembly"),
+          clEnumValN(AMDGPUCompilationTarget::Binary, "bin",
+                     "Embed an HSA code object"),
+          clEnumValN(AMDGPUCompilationTarget::Fatbin, "fatbin",
+                     "Embed an HSA code object with kernel metadata")),
+      llvm::cl::init(AMDGPUCompilationTarget::Binary)};
+
+  PassOptions::Option<std::string> rocmPath{
+      *this, "rocm-path",
+      llvm::cl::desc("Path to the ROCm toolkit used for binary linking."),
+      llvm::cl::init("")};
 
   PassOptions::Option<WavefrontSize> wavefrontSize{
       *this, "wavefront-size", llvm::cl::desc("AMDGPU wavefront size."),

@@ -18,9 +18,23 @@ sparsewave-opt input.mlir \
 
 The pipeline also accepts `triple`, `features`, `abi-version`,
 `index-bitwidth`, and `kernel-bare-ptr-calling-convention`. These options are
-propagated consistently to ROCDL target metadata and device lowering. The
-pipeline currently lowers device code to the LLVM and ROCDL dialects.
-Host-side GPU launch lowering and AMDGPU binary generation will be added
+propagated consistently to ROCDL target metadata and device lowering. Device
+lowering fails if an unrealized conversion cast or a non-LLVM/ROCDL operation
+remains.
+
+By default, the pipeline compiles each `gpu.module` to an HSA code object and
+stores it in a `gpu.binary`. The ROCm toolkit is found through `ROCM_PATH`,
+`ROCM_ROOT`, `ROCM_HOME`, or LLVM's configured default. It can also be set
+explicitly with `rocm-path`:
+
+```sh
+sparsewave-opt input.mlir \
+  --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 rocm-path=/opt/rocm})'
+```
+
+The `binary-format` option accepts `none`, `llvm`, `isa`, `bin`, and `fatbin`;
+its default is `bin`. Use `none` to inspect the lowered LLVM/ROCDL device IR
+without serializing it. Host-side GPU launch lowering will be added
 incrementally.
 
 ## Checkout

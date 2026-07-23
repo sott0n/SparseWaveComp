@@ -14,7 +14,11 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Target/LLVM/ROCDL/Utils.h"
 #include "mlir/Transforms/Passes.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 
 namespace {
 
@@ -27,7 +31,8 @@ struct ValidateAMDTargetPass
       const mlir::sparsewave::AMDGPUPipelineOptions &options)
       : triple(options.triple), chip(options.chip),
         abiVersion(options.abiVersion), optLevel(options.optLevel),
-        indexBitWidth(options.indexBitWidth) {}
+        indexBitWidth(options.indexBitWidth),
+        binaryFormat(options.binaryFormat), rocmPath(options.rocmPath) {}
 
   void runOnOperation() override {
     if (triple.empty()) {
@@ -55,6 +60,30 @@ struct ValidateAMDTargetPass
     if (indexBitWidth != 32 && indexBitWidth != 64) {
       getOperation().emitError("AMDGPU index bit width must be 32 or 64");
       signalPassFailure();
+      return;
+    }
+
+    using mlir::sparsewave::AMDGPUCompilationTarget;
+    if (binaryFormat != AMDGPUCompilationTarget::Binary &&
+        binaryFormat != AMDGPUCompilationTarget::Fatbin)
+      return;
+
+    llvm::StringRef toolkitPath =
+        rocmPath.empty() ? mlir::ROCDL::getROCMPath() : rocmPath;
+    if (!llvm::sys::fs::is_directory(toolkitPath)) {
+      getOperation().emitError() << "ROCm toolkit path '" << toolkitPath
+                                 << "' does not exist or is not a directory";
+      signalPassFailure();
+      return;
+    }
+
+    llvm::SmallString<128> linkerPath(toolkitPath);
+    llvm::sys::path::append(linkerPath, "llvm", "bin", "ld.lld");
+    if (!llvm::sys::fs::can_execute(linkerPath)) {
+      getOperation().emitError()
+          << "ROCm linker '" << linkerPath << "' does not exist or is not "
+          << "executable";
+      signalPassFailure();
     }
   }
 
@@ -64,6 +93,38 @@ private:
   std::string abiVersion;
   unsigned optLevel;
   unsigned indexBitWidth;
+  mlir::sparsewave::AMDGPUCompilationTarget binaryFormat;
+  std::string rocmPath;
+};
+
+struct VerifyAMDDeviceLoweringPass
+    : public mlir::PassWrapper<VerifyAMDDeviceLoweringPass,
+                               mlir::OperationPass<mlir::gpu::GPUModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(VerifyAMDDeviceLoweringPass)
+
+  void runOnOperation() override {
+    mlir::gpu::GPUModuleOp module = getOperation();
+    mlir::WalkResult result = module.walk([&](mlir::Operation *operation) {
+      if (operation == module.getOperation())
+        return mlir::WalkResult::advance();
+
+      if (mlir::isa<mlir::UnrealizedConversionCastOp>(operation)) {
+        operation->emitError(
+            "device lowering left an unrealized conversion cast");
+        return mlir::WalkResult::interrupt();
+      }
+
+      llvm::StringRef dialect = operation->getName().getDialectNamespace();
+      if (dialect != "llvm" && dialect != "rocdl") {
+        operation->emitError() << "device lowering left illegal operation '"
+                               << operation->getName() << "'";
+        return mlir::WalkResult::interrupt();
+      }
+      return mlir::WalkResult::advance();
+    });
+    if (result.wasInterrupted())
+      signalPassFailure();
+  }
 };
 
 } // namespace
@@ -99,6 +160,29 @@ void mlir::sparsewave::buildAMDGPUBackendPipeline(
   gpuModulePM.addPass(createCanonicalizerPass());
   gpuModulePM.addPass(createCSEPass());
   gpuModulePM.addPass(createReconcileUnrealizedCastsPass());
+  gpuModulePM.addPass(std::make_unique<VerifyAMDDeviceLoweringPass>());
+
+  if (options.binaryFormat != AMDGPUCompilationTarget::None) {
+    GpuModuleToBinaryPassOptions binaryOptions;
+    switch (options.binaryFormat) {
+    case AMDGPUCompilationTarget::None:
+      llvm_unreachable("handled before constructing the binary pass");
+    case AMDGPUCompilationTarget::LLVM:
+      binaryOptions.compilationTarget = "llvm";
+      break;
+    case AMDGPUCompilationTarget::ISA:
+      binaryOptions.compilationTarget = "isa";
+      break;
+    case AMDGPUCompilationTarget::Binary:
+      binaryOptions.compilationTarget = "bin";
+      break;
+    case AMDGPUCompilationTarget::Fatbin:
+      binaryOptions.compilationTarget = "fatbin";
+      break;
+    }
+    binaryOptions.toolkitPath = options.rocmPath;
+    pm.addPass(createGpuModuleToBinaryPass(binaryOptions));
+  }
 }
 
 void mlir::sparsewave::registerAMDGPUBackendPipeline() {

@@ -3,6 +3,7 @@ set(LIBS
   MLIRRegisterAllDialects
   MLIRRegisterAllExtensions
   MLIRRegisterAllPasses
+  MLIRToLLVMIRTranslationRegistration
   SparseWaveInit
 )
 

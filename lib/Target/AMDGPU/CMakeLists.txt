@@ -13,6 +13,7 @@ add_mlir_library(SparseWaveAMDGPUPipelines
   MLIRMemRefTransforms
   MLIRPass
   MLIRReconcileUnrealizedCasts
+  MLIRROCDLTarget
   MLIRSCFToControlFlow
   MLIRTransforms
   MLIRVectorToSCF

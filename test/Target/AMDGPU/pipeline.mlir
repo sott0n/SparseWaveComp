@@ -1,30 +1,30 @@
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 wavefront-size=64})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 wavefront-size=64 binary-format=none})' \
 // RUN:   | FileCheck %s --check-prefixes=CHECK,WAVE64
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx1100 wavefront-size=32})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx1100 wavefront-size=32 binary-format=none})' \
 // RUN:   | FileCheck %s --check-prefixes=CHECK,WAVE32
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{triple=amdgcn-amd-amdhsa chip=gfx942 features=+xnack abi-version=500 opt-level=3 index-bitwidth=32 kernel-bare-ptr-calling-convention=true})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{triple=amdgcn-amd-amdhsa chip=gfx942 features=+xnack abi-version=500 opt-level=3 index-bitwidth=32 kernel-bare-ptr-calling-convention=true binary-format=none})' \
 // RUN:   | FileCheck %s --check-prefix=OPTIONS
 // RUN: sparsewave-opt --help | FileCheck %s --check-prefix=HELP
 // RUN: not sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{wavefront-size=16})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{wavefront-size=16 binary-format=none})' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-WAVE
 // RUN: not sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline)' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{binary-format=none})' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=MISSING-CHIP
 // RUN: not sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=invalid})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=invalid binary-format=none})' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-CHIP
 // RUN: not sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 abi-version=700})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 abi-version=700 binary-format=none})' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-ABI
 // RUN: not sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 opt-level=4})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 opt-level=4 binary-format=none})' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-OPT
 // RUN: not sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 index-bitwidth=16})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 index-bitwidth=16 binary-format=none})' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-INDEX
 
 // HELP: --sparsewave-amdgpu-pipeline
