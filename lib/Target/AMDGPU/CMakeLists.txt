@@ -5,6 +5,14 @@ add_mlir_library(SparseWaveAMDGPUPipelines
   ${SPARSEWAVE_SOURCE_DIR}/include/sparsewave/Target/AMDGPU
 
   LINK_LIBS PUBLIC
+  MLIRAffineToStandard
+  MLIRGPUDialect
+  MLIRGPUToROCDLTransforms
   MLIRGPUTransforms
+  MLIRMemRefTransforms
   MLIRPass
+  MLIRReconcileUnrealizedCasts
+  MLIRSCFToControlFlow
+  MLIRTransforms
+  MLIRVectorToSCF
 )

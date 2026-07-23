@@ -1,10 +1,19 @@
 #include "sparsewave/Target/AMDGPU/Pipelines.h"
 
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
+#include "mlir/Conversion/GPUToROCDL/GPUToROCDLPass.h"
+#include "mlir/Conversion/GPUToROCDL/Runtimes.h"
+#include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
+#include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
+#include "mlir/Conversion/VectorToSCF/VectorToSCF.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
+#include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Transforms/Passes.h"
 
 namespace {
 
@@ -36,6 +45,20 @@ void mlir::sparsewave::buildAMDGPUBackendPipeline(
   targetOptions.chip = options.chip;
   targetOptions.wave64Flag = options.wavefrontSize == WavefrontSize::Wave64;
   pm.addPass(createGpuROCDLAttachTarget(targetOptions));
+
+  OpPassManager &gpuModulePM = pm.nest<gpu::GPUModuleOp>();
+  gpuModulePM.addPass(createLowerAffinePass());
+  gpuModulePM.addPass(createConvertVectorToSCFPass());
+  gpuModulePM.addPass(createSCFToControlFlowPass());
+  gpuModulePM.addPass(memref::createExpandStridedMetadataPass());
+
+  ConvertGpuOpsToROCDLOpsOptions rocdlOptions;
+  rocdlOptions.chipset = options.chip;
+  rocdlOptions.runtime = gpu::amd::Runtime::HIP;
+  gpuModulePM.addPass(createConvertGpuOpsToROCDLOps(rocdlOptions));
+  gpuModulePM.addPass(createCanonicalizerPass());
+  gpuModulePM.addPass(createCSEPass());
+  gpuModulePM.addPass(createReconcileUnrealizedCastsPass());
 }
 
 void mlir::sparsewave::registerAMDGPUBackendPipeline() {

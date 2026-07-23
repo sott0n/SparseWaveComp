@@ -17,8 +17,9 @@ sparsewave-opt input.mlir \
 ```
 
 The target chip is required. The pipeline currently attaches the corresponding
-ROCDL target metadata to each `gpu.module`. Lowering passes will be added to
-this entry point incrementally.
+ROCDL target metadata to each `gpu.module` and lowers its device code to the
+LLVM and ROCDL dialects. Host-side GPU launch lowering and AMDGPU binary
+generation will be added incrementally.
 
 ## Checkout
 

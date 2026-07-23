@@ -22,8 +22,19 @@
 // WAVE64-SAME: [#rocdl.target<chip = "gfx942">]
 // WAVE32-LABEL: gpu.module @kernels
 // WAVE32-SAME: [#rocdl.target<chip = "gfx1100", flags = {no_wave64}>]
+// CHECK: llvm.func @kernel(
+// CHECK-SAME: rocdl.kernel
+// CHECK: rocdl.workitem.id.x
+// CHECK-NOT: scf.
 gpu.module @kernels {
-  gpu.func @identity() kernel {
+  gpu.func @kernel(%output: memref<1024xi32>) kernel {
+    %thread_id = gpu.thread_id x
+    %thread_id_i32 = arith.index_cast %thread_id : index to i32
+    %limit = arith.constant 1024 : index
+    %in_bounds = arith.cmpi ult, %thread_id, %limit : index
+    scf.if %in_bounds {
+      memref.store %thread_id_i32, %output[%thread_id] : memref<1024xi32>
+    }
     gpu.return
   }
 }
