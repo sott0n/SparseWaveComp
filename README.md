@@ -2,9 +2,13 @@
 
 SparseWave is an MLIR-based sparse compiler targeting AMD GPUs.
 
-The project is currently bootstrapping its compiler infrastructure. The first
-milestone provides an `mlir-opt`-style driver and a lit-based regression test
-suite. AMD GPU lowering and the runtime will be added incrementally.
+## SparseWave dialect
+
+The `sparsewave` dialect represents sparse computations before GPU mapping.
+Its first operation is `sparsewave.spmv`, a CSR sparse matrix-vector
+multiplication with explicit row-offset, column-index, value, input-vector, and
+output-vector memrefs. The operation verifier checks the rank, element types,
+row count, and nonzero count whenever those properties are statically known.
 
 ## AMD GPU pipeline
 

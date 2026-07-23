@@ -1,0 +1,6 @@
+set(LLVM_TARGET_DEFINITIONS SparseWaveOps.td)
+mlir_tablegen(SparseWaveOps.h.inc -gen-op-decls)
+mlir_tablegen(SparseWaveOps.cpp.inc -gen-op-defs)
+mlir_tablegen(SparseWaveOpsDialect.h.inc -gen-dialect-decls)
+mlir_tablegen(SparseWaveOpsDialect.cpp.inc -gen-dialect-defs)
+add_public_tablegen_target(SparseWaveOpsIncGen)

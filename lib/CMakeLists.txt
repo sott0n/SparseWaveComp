@@ -1,3 +1,4 @@
+add_subdirectory(Dialect)
 add_subdirectory(Target)
 
 add_mlir_library(SparseWaveInit
@@ -6,5 +7,6 @@ add_mlir_library(SparseWaveInit
   LINK_LIBS PUBLIC
   MLIRIR
   MLIRPass
+  SparseWaveDialect
   SparseWaveAMDGPUPipelines
 )
