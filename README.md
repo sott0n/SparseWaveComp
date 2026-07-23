@@ -21,6 +21,25 @@ For an existing checkout:
 git submodule update --init --recursive
 ```
 
+## Development checks
+
+Install the pre-commit hooks once per checkout:
+
+```sh
+python3 -m pip install pre-commit
+pre-commit install
+```
+
+Run all formatting and lint checks manually with:
+
+```sh
+pre-commit run --all-files
+```
+
+The hooks apply LLVM-style `clang-format` to C and C++ sources, lint CMake
+files, and check common whitespace, YAML, merge-conflict, and large-file
+issues.
+
 ## Bundled LLVM build
 
 Build SparseWave together with its pinned LLVM and MLIR revision:

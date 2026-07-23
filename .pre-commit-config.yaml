@@ -1,0 +1,24 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v22.1.8
+    hooks:
+      - id: clang-format
+
+  - repo: local
+    hooks:
+      - id: cmake-lint
+        name: cmake-lint
+        entry: cmake-lint
+        language: python
+        additional_dependencies:
+          - cmakelang==0.6.13
+        files: (^|/)CMakeLists\.txt$|\.cmake$
