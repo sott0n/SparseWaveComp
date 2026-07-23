@@ -8,5 +8,6 @@ add_mlir_library(SparseWaveInit
   MLIRIR
   MLIRPass
   SparseWaveDialect
+  SparseWaveTransforms
   SparseWaveAMDGPUPipelines
 )

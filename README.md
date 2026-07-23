@@ -10,6 +10,20 @@ multiplication with explicit row-offset, column-index, value, input-vector, and
 output-vector memrefs. The operation verifier checks the rank, element types,
 row count, and nonzero count whenever those properties are statically known.
 
+## SparseWave GPU lowering
+
+The `convert-sparsewave-to-gpu` pass maps `sparsewave.spmv` to a
+one-dimensional `gpu.launch`. Each thread computes one CSR row with an
+`scf.for` reduction and writes one output element. The initial mapping uses 256
+threads per block and guards threads beyond the output row count.
+
+Use GPU kernel outlining before passing the result to the AMD GPU backend:
+
+```sh
+sparsewave-opt input.mlir \
+  --pass-pipeline='builtin.module(convert-sparsewave-to-gpu,gpu-kernel-outlining,sparsewave-amdgpu-pipeline{chip=gfx1101 wavefront-size=32})'
+```
+
 ## AMD GPU pipeline
 
 The `sparsewave-amdgpu-pipeline` is the entry point for the AMD GPU backend.
@@ -46,12 +60,12 @@ operations and operands to the LLVM dialect. The remaining `gpu.binary` and
 wrapper ABI, including module loading, kernel lookup, launch, and
 synchronization.
 
-The runtime integration test is enabled automatically when `mlir-runner`,
+The runtime integration tests are enabled automatically when `mlir-runner`,
 `libmlir_rocm_runtime.so`, `libmlir_runner_utils.so`, an ROCm architecture
 enumerator, and `/dev/kfd` are available. Configure LLVM with
 `MLIR_ENABLE_ROCM_RUNNER=ON` to build the ROCm runtime wrapper. The test
-compiles an HSACO, loads it through HIP, launches a kernel, and checks the
-values written by the GPU.
+suite compiles HSACOs, loads them through HIP, launches kernels, and checks
+both direct buffer writes and a CSR SpMV result produced by the GPU.
 
 ## Checkout
 
