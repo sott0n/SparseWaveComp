@@ -9,17 +9,19 @@ suite. AMD GPU lowering and the runtime will be added incrementally.
 ## AMD GPU pipeline
 
 The `sparsewave-amdgpu-pipeline` is the entry point for the AMD GPU backend.
-Its initial skeleton accepts the target chip and wavefront size:
+The target chip is required; the other target options have defaults:
 
 ```sh
 sparsewave-opt input.mlir \
-  --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 wavefront-size=64})'
+  --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 wavefront-size=64 opt-level=3})'
 ```
 
-The target chip is required. The pipeline currently attaches the corresponding
-ROCDL target metadata to each `gpu.module` and lowers its device code to the
-LLVM and ROCDL dialects. Host-side GPU launch lowering and AMDGPU binary
-generation will be added incrementally.
+The pipeline also accepts `triple`, `features`, `abi-version`,
+`index-bitwidth`, and `kernel-bare-ptr-calling-convention`. These options are
+propagated consistently to ROCDL target metadata and device lowering. The
+pipeline currently lowers device code to the LLVM and ROCDL dialects.
+Host-side GPU launch lowering and AMDGPU binary generation will be added
+incrementally.
 
 ## Checkout
 

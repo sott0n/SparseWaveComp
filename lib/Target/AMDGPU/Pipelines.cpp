@@ -23,27 +23,61 @@ struct ValidateAMDTargetPass
                                mlir::OperationPass<mlir::ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ValidateAMDTargetPass)
 
-  explicit ValidateAMDTargetPass(llvm::StringRef chip) : chip(chip) {}
+  explicit ValidateAMDTargetPass(
+      const mlir::sparsewave::AMDGPUPipelineOptions &options)
+      : triple(options.triple), chip(options.chip),
+        abiVersion(options.abiVersion), optLevel(options.optLevel),
+        indexBitWidth(options.indexBitWidth) {}
 
   void runOnOperation() override {
+    if (triple.empty()) {
+      getOperation().emitError("AMDGPU target triple must be specified");
+      signalPassFailure();
+      return;
+    }
     if (chip.empty()) {
       getOperation().emitError("AMDGPU target chip must be specified");
+      signalPassFailure();
+      return;
+    }
+    if (abiVersion != "400" && abiVersion != "500" && abiVersion != "600") {
+      getOperation().emitError(
+          "AMDHSA code object ABI version must be 400, 500, or 600");
+      signalPassFailure();
+      return;
+    }
+    if (optLevel > 3) {
+      getOperation().emitError("AMDGPU optimization level must be between 0 "
+                               "and 3");
+      signalPassFailure();
+      return;
+    }
+    if (indexBitWidth != 32 && indexBitWidth != 64) {
+      getOperation().emitError("AMDGPU index bit width must be 32 or 64");
       signalPassFailure();
     }
   }
 
 private:
+  std::string triple;
   std::string chip;
+  std::string abiVersion;
+  unsigned optLevel;
+  unsigned indexBitWidth;
 };
 
 } // namespace
 
 void mlir::sparsewave::buildAMDGPUBackendPipeline(
     OpPassManager &pm, const AMDGPUPipelineOptions &options) {
-  pm.addPass(std::make_unique<ValidateAMDTargetPass>(options.chip));
+  pm.addPass(std::make_unique<ValidateAMDTargetPass>(options));
 
   GpuROCDLAttachTargetOptions targetOptions;
+  targetOptions.triple = options.triple;
   targetOptions.chip = options.chip;
+  targetOptions.features = options.features;
+  targetOptions.abiVersion = options.abiVersion;
+  targetOptions.optLevel = options.optLevel;
   targetOptions.wave64Flag = options.wavefrontSize == WavefrontSize::Wave64;
   pm.addPass(createGpuROCDLAttachTarget(targetOptions));
 
@@ -58,6 +92,8 @@ void mlir::sparsewave::buildAMDGPUBackendPipeline(
 
   ConvertGpuOpsToROCDLOpsOptions rocdlOptions;
   rocdlOptions.chipset = options.chip;
+  rocdlOptions.indexBitwidth = options.indexBitWidth;
+  rocdlOptions.useBarePtrCallConv = options.kernelUseBarePtrCallConv;
   rocdlOptions.runtime = gpu::amd::Runtime::HIP;
   gpuModulePM.addPass(createConvertGpuOpsToROCDLOps(rocdlOptions));
   gpuModulePM.addPass(createCanonicalizerPass());
