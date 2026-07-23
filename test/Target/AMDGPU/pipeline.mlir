@@ -11,12 +11,16 @@
 // RUN: not sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline)' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=MISSING-CHIP
+// RUN: not sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=invalid})' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-CHIP
 
 // HELP: --sparsewave-amdgpu-pipeline
 // HELP-SAME: Lower SparseWave programs for an AMD GPU target.
 
 // INVALID-WAVE: for the --wavefront-size option: Cannot find option named '16'!
 // MISSING-CHIP: AMDGPU target chip must be specified
+// INVALID-CHIP: Invalid chipset name: invalid
 
 // WAVE64-LABEL: gpu.module @kernels
 // WAVE64-SAME: [#rocdl.target<chip = "gfx942">]
@@ -36,6 +40,15 @@ gpu.module @kernels {
       memref.store %thread_id_i32, %output[%thread_id] : memref<1024xi32>
     }
     gpu.return
+  }
+
+  // CHECK-LABEL: llvm.func @permute_lane(
+  // CHECK: rocdl.update.dpp
+  // CHECK-NOT: amdgpu.dpp
+  gpu.func @permute_lane(%old: i32, %source: i32) -> i32 {
+    %result = amdgpu.dpp %old %source row_shl ( 0x1 : i32 )
+        {row_mask = 0xa : i32, bound_ctrl = false} : i32
+    gpu.return %result : i32
   }
 }
 

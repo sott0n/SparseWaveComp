@@ -1,5 +1,6 @@
 #include "sparsewave/Target/AMDGPU/Pipelines.h"
 
+#include "mlir/Conversion/AMDGPUToROCDL/AMDGPUToROCDL.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/GPUToROCDL/GPUToROCDLPass.h"
 #include "mlir/Conversion/GPUToROCDL/Runtimes.h"
@@ -47,6 +48,9 @@ void mlir::sparsewave::buildAMDGPUBackendPipeline(
   pm.addPass(createGpuROCDLAttachTarget(targetOptions));
 
   OpPassManager &gpuModulePM = pm.nest<gpu::GPUModuleOp>();
+  ConvertAMDGPUToROCDLPassOptions amdgpuToROCDLOptions;
+  amdgpuToROCDLOptions.chipset = options.chip;
+  gpuModulePM.addPass(createConvertAMDGPUToROCDLPass(amdgpuToROCDLOptions));
   gpuModulePM.addPass(createLowerAffinePass());
   gpuModulePM.addPass(createConvertVectorToSCFPass());
   gpuModulePM.addPass(createSCFToControlFlowPass());
