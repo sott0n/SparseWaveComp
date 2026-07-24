@@ -13,4 +13,5 @@ void mlir::sparsewave::registerAllDialects(DialectRegistry &registry) {
 void mlir::sparsewave::registerAllPasses() {
   registerPasses();
   registerAMDGPUBackendPipeline();
+  registerSparseWaveToAMDGPUPipeline();
 }

@@ -1,5 +1,7 @@
 #include "sparsewave/Target/AMDGPU/Pipelines.h"
 
+#include "sparsewave/Dialect/SparseWave/Transforms/Passes.h"
+
 #include "mlir/Conversion/AMDGPUToROCDL/AMDGPUToROCDL.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/GPUCommon/GPUCommonPass.h"
@@ -191,9 +193,23 @@ void mlir::sparsewave::buildAMDGPUBackendPipeline(
   }
 }
 
+void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
+    OpPassManager &pm, const AMDGPUPipelineOptions &options) {
+  pm.addPass(createConvertSparseWaveToGPU());
+  pm.addPass(createGpuKernelOutliningPass());
+  buildAMDGPUBackendPipeline(pm, options);
+}
+
 void mlir::sparsewave::registerAMDGPUBackendPipeline() {
   PassPipelineRegistration<AMDGPUPipelineOptions>(
       "sparsewave-amdgpu-pipeline",
-      "Lower SparseWave programs for an AMD GPU target.",
+      "Lower outlined GPU kernels for an AMD GPU target.",
       buildAMDGPUBackendPipeline);
+}
+
+void mlir::sparsewave::registerSparseWaveToAMDGPUPipeline() {
+  PassPipelineRegistration<AMDGPUPipelineOptions>(
+      "sparsewave-to-amdgpu-pipeline",
+      "Compile SparseWave programs for an AMD GPU target.",
+      buildSparseWaveToAMDGPUPipeline);
 }

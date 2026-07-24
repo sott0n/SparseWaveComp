@@ -28,7 +28,9 @@
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-INDEX
 
 // HELP: --sparsewave-amdgpu-pipeline
-// HELP-SAME: Lower SparseWave programs for an AMD GPU target.
+// HELP-SAME: Lower outlined GPU kernels for an AMD GPU target.
+// HELP: --sparsewave-to-amdgpu-pipeline
+// HELP-SAME: Compile SparseWave programs for an AMD GPU target.
 
 // INVALID-WAVE: for the --wavefront-size option: Cannot find option named '16'!
 // MISSING-CHIP: AMDGPU target chip must be specified

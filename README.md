@@ -17,17 +17,22 @@ one-dimensional `gpu.launch`. Each thread computes one CSR row with an
 `scf.for` reduction and writes one output element. The initial mapping uses 256
 threads per block and guards threads beyond the output row count.
 
-Use GPU kernel outlining before passing the result to the AMD GPU backend:
+The `sparsewave-to-amdgpu-pipeline` composes SparseWave lowering, GPU kernel
+outlining, and the AMD GPU backend:
 
 ```sh
 sparsewave-opt input.mlir \
-  --pass-pipeline='builtin.module(convert-sparsewave-to-gpu,gpu-kernel-outlining,sparsewave-amdgpu-pipeline{chip=gfx1101 wavefront-size=32})'
+  --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx1101 wavefront-size=32})'
 ```
 
 ## AMD GPU pipeline
 
-The `sparsewave-amdgpu-pipeline` is the entry point for the AMD GPU backend.
-The target chip is required; the other target options have defaults:
+The lower-level `sparsewave-amdgpu-pipeline` accepts already outlined GPU
+kernels and runs only the AMD GPU backend. This keeps the backend reusable for
+GPU IR produced outside the SparseWave dialect.
+
+Both pipelines use the same target options. The target chip is required; the
+other target options have defaults:
 
 ```sh
 sparsewave-opt input.mlir \

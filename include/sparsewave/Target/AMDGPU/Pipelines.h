@@ -95,7 +95,10 @@ struct AMDGPUPipelineOptions
 
 void buildAMDGPUBackendPipeline(OpPassManager &pm,
                                 const AMDGPUPipelineOptions &options);
+void buildSparseWaveToAMDGPUPipeline(OpPassManager &pm,
+                                     const AMDGPUPipelineOptions &options);
 void registerAMDGPUBackendPipeline();
+void registerSparseWaveToAMDGPUPipeline();
 
 } // namespace sparsewave
 } // namespace mlir

@@ -18,4 +18,5 @@ add_mlir_library(SparseWaveAMDGPUPipelines
   MLIRSCFToControlFlow
   MLIRTransforms
   MLIRVectorToSCF
+  SparseWaveTransforms
 )
