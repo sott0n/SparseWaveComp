@@ -13,15 +13,22 @@ row count, and nonzero count whenever those properties are statically known.
 ## SparseWave GPU lowering
 
 The `convert-sparsewave-to-gpu` pass maps `sparsewave.spmv` to a
-one-dimensional `gpu.launch`. Each thread computes one CSR row with an
-`scf.for` reduction and writes one output element. The `mapping` option
-currently accepts `thread-per-row`. The `block-size` option controls the number
-of threads per block, defaults to 256, and must be between 1 and 1024. Threads
-beyond the output row count are guarded.
+one-dimensional `gpu.launch`. The `mapping` option accepts `thread-per-row` and
+`wave-per-row`. The latter assigns one Wave32 to each CSR row, distributes
+nonzeros across its lanes, and uses shuffle instructions to reduce the partial
+sums. The `block-size` option controls the number of threads per block, defaults
+to 256, and must be between 1 and 1024.
 
 ```sh
 sparsewave-opt input.mlir \
   --convert-sparsewave-to-gpu='mapping=thread-per-row block-size=128'
+```
+
+For wave-per-row, the block size must be a multiple of 32:
+
+```sh
+sparsewave-opt input.mlir \
+  --convert-sparsewave-to-gpu='mapping=wave-per-row block-size=128 wave-size=32'
 ```
 
 The `sparsewave-to-amdgpu-pipeline` composes SparseWave lowering, GPU kernel
@@ -29,7 +36,7 @@ outlining, and the AMD GPU backend:
 
 ```sh
 sparsewave-opt input.mlir \
-  --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx1101 wavefront-size=32 spmv-block-size=128})'
+  --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx1101 wavefront-size=32 spmv-mapping=wave-per-row spmv-block-size=128})'
 ```
 
 The integrated pipeline exposes the lowering options as `spmv-mapping` and

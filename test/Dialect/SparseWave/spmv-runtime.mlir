@@ -6,6 +6,13 @@
 // RUN:     --shared-libs=%mlir_runner_utils \
 // RUN:     --entry-point-result=void \
 // RUN:   | FileCheck %s
+// RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmv-mapping=wave-per-row spmv-block-size=128})' \
+// RUN:   | mlir-runner \
+// RUN:     --shared-libs=%mlir_rocm_runtime \
+// RUN:     --shared-libs=%mlir_runner_utils \
+// RUN:     --entry-point-result=void \
+// RUN:   | FileCheck %s
 
 func.func @spmv(
     %rowOffsets: memref<?xi32>,

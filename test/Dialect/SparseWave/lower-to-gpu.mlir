@@ -2,6 +2,9 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --convert-sparsewave-to-gpu='mapping=thread-per-row block-size=128' \
 // RUN:   | FileCheck %s --check-prefix=CUSTOM
+// RUN: sparsewave-opt %s \
+// RUN:   --convert-sparsewave-to-gpu='mapping=wave-per-row block-size=128 wave-size=32' \
+// RUN:   | FileCheck %s --check-prefix=WAVE
 
 // CHECK-LABEL: func.func @spmv(
 // CHECK: %[[ZERO:.*]] = arith.constant 0.000000e+00 : f32
@@ -37,6 +40,32 @@
 // CUSTOM: gpu.launch
 // CUSTOM-SAME: threads(%{{.*}}, %{{.*}}, %{{.*}}) in
 // CUSTOM-SAME: (%{{.*}} = %[[BLOCK_SIZE]],
+
+// WAVE-LABEL: func.func @spmv(
+// WAVE: %[[ZERO_INDEX:.*]] = arith.constant 0 : index
+// WAVE: %[[ONE_INDEX:.*]] = arith.constant 1 : index
+// WAVE: %[[BLOCK_SIZE:.*]] = arith.constant 128 : index
+// WAVE: %[[WAVE_SIZE:.*]] = arith.constant 32 : index
+// WAVE: %[[WAVES_PER_BLOCK:.*]] = arith.constant 4 : index
+// WAVE: %[[ROWS:.*]] = memref.dim %{{.*}}, %[[ZERO_INDEX]]
+// WAVE: %[[REQUIRED_BLOCKS:.*]] = arith.ceildivui %[[ROWS]], %[[WAVES_PER_BLOCK]]
+// WAVE: %[[GRID:.*]] = arith.maxui %[[REQUIRED_BLOCKS]], %[[ONE_INDEX]]
+// WAVE: gpu.launch blocks(%[[BLOCK_X:.*]], %{{.*}}, %{{.*}}) in (%{{.*}} = %[[GRID]], %{{.*}} = %[[ONE_INDEX]], %{{.*}} = %[[ONE_INDEX]]) threads(%[[THREAD_X:.*]], %{{.*}}, %{{.*}}) in (%{{.*}} = %[[BLOCK_SIZE]],
+// WAVE: %[[WAVE_ID:.*]] = arith.divui %[[THREAD_X]], %[[WAVE_SIZE]]
+// WAVE: %[[LANE_ID:.*]] = arith.remui %[[THREAD_X]], %[[WAVE_SIZE]]
+// WAVE: %[[ROW_BASE:.*]] = arith.muli %[[BLOCK_X]], %[[WAVES_PER_BLOCK]]
+// WAVE: %[[ROW:.*]] = arith.addi %[[ROW_BASE]], %[[WAVE_ID]]
+// WAVE: %[[ACTIVE:.*]] = arith.cmpi ult, %[[ROW]], %[[ROWS]]
+// WAVE: scf.if %[[ACTIVE]]
+// WAVE: %[[START:.*]] = arith.index_cast
+// WAVE: %[[END:.*]] = arith.index_cast
+// WAVE: %[[FIRST_POSITION:.*]] = arith.addi %[[START]], %[[LANE_ID]]
+// WAVE: %[[PARTIAL:.*]] = scf.for %[[POSITION:.*]] = %[[FIRST_POSITION]] to %[[END]] step %[[WAVE_SIZE]]
+// WAVE-COUNT-5: gpu.shuffle xor
+// WAVE: %[[LANE_ZERO:.*]] = arith.cmpi eq, %[[LANE_ID]], %[[ZERO_INDEX]]
+// WAVE: scf.if %[[LANE_ZERO]]
+// WAVE: memref.store %{{.*}}, %{{.*}}[%[[ROW]]]
+// WAVE-NOT: sparsewave.spmv
 
 func.func @spmv(
     %rowOffsets: memref<?xi32>,
