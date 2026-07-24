@@ -26,6 +26,9 @@
 // RUN: not sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 index-bitwidth=16 binary-format=none})' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-INDEX
+// RUN: not sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 binary-format=none spmv-block-size=128})' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=BACKEND-SPMV-OPTION
 
 // HELP: --sparsewave-amdgpu-pipeline
 // HELP-SAME: Lower outlined GPU kernels for an AMD GPU target.
@@ -38,6 +41,7 @@
 // INVALID-ABI: AMDHSA code object ABI version must be 400, 500, or 600
 // INVALID-OPT: AMDGPU optimization level must be between 0 and 3
 // INVALID-INDEX: AMDGPU index bit width must be 32 or 64
+// BACKEND-SPMV-OPTION: no such option spmv-block-size
 
 // WAVE64-LABEL: gpu.module @kernels
 // WAVE64-SAME: [#rocdl.target<chip = "gfx942">]

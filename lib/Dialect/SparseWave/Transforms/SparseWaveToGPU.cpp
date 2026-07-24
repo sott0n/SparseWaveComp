@@ -16,8 +16,6 @@ namespace mlir::sparsewave {
 
 namespace {
 
-constexpr int64_t kBlockSize = 256;
-
 Value castToIndex(OpBuilder &builder, Location loc, Value value) {
   if (value.getType().isIndex())
     return value;
@@ -30,24 +28,26 @@ Value castToIndex(OpBuilder &builder, Location loc, Value value) {
 
 class SpMVToGPUPattern : public OpRewritePattern<SpMVOp> {
 public:
-  using OpRewritePattern<SpMVOp>::OpRewritePattern;
+  SpMVToGPUPattern(MLIRContext *context, int64_t blockSize)
+      : OpRewritePattern<SpMVOp>(context), blockSize(blockSize) {}
 
   LogicalResult matchAndRewrite(SpMVOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    Value blockSize = arith::ConstantIndexOp::create(rewriter, loc, kBlockSize);
+    Value blockSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, blockSize);
     Value rowCount =
         memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
     Value requiredBlocks =
-        arith::CeilDivUIOp::create(rewriter, loc, rowCount, blockSize);
+        arith::CeilDivUIOp::create(rewriter, loc, rowCount, blockSizeValue);
     Value gridSize =
         arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
 
     gpu::LaunchOp launch =
         gpu::LaunchOp::create(rewriter, loc, gridSize, oneIndex, oneIndex,
-                              blockSize, oneIndex, oneIndex);
+                              blockSizeValue, oneIndex, oneIndex);
     rewriter.setInsertionPointToStart(&launch.getBody().front());
 
     Value rowBase = arith::MulIOp::create(rewriter, loc, launch.getBlockIds().x,
@@ -101,6 +101,9 @@ public:
     rewriter.eraseOp(op);
     return success();
   }
+
+private:
+  int64_t blockSize;
 };
 
 class ConvertSparseWaveToGPU
@@ -110,8 +113,22 @@ public:
       ConvertSparseWaveToGPU>::ConvertSparseWaveToGPUBase;
 
   void runOnOperation() override {
+    if (mapping != "thread-per-row") {
+      getOperation().emitError() << "unsupported SpMV mapping strategy '"
+                                 << mapping << "'; expected 'thread-per-row'";
+      signalPassFailure();
+      return;
+    }
+    if (blockSize < 1 || blockSize > 1024) {
+      getOperation().emitError()
+          << "SpMV block size must be between 1 and 1024, but got "
+          << blockSize;
+      signalPassFailure();
+      return;
+    }
+
     RewritePatternSet patterns(&getContext());
-    patterns.add<SpMVToGPUPattern>(&getContext());
+    patterns.add<SpMVToGPUPattern>(&getContext(), blockSize);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
   }

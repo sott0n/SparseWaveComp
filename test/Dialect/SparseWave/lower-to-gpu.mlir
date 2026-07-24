@@ -1,4 +1,7 @@
 // RUN: sparsewave-opt %s --convert-sparsewave-to-gpu | FileCheck %s
+// RUN: sparsewave-opt %s \
+// RUN:   --convert-sparsewave-to-gpu='mapping=thread-per-row block-size=128' \
+// RUN:   | FileCheck %s --check-prefix=CUSTOM
 
 // CHECK-LABEL: func.func @spmv(
 // CHECK: %[[ZERO:.*]] = arith.constant 0.000000e+00 : f32
@@ -29,6 +32,11 @@
 // CHECK: scf.yield %[[NEXT_SUM]]
 // CHECK: memref.store %[[SUM]], %{{.*}}[%[[ROW]]]
 // CHECK-NOT: sparsewave.spmv
+
+// CUSTOM: %[[BLOCK_SIZE:.*]] = arith.constant 128 : index
+// CUSTOM: gpu.launch
+// CUSTOM-SAME: threads(%{{.*}}, %{{.*}}, %{{.*}}) in
+// CUSTOM-SAME: (%{{.*}} = %[[BLOCK_SIZE]],
 
 func.func @spmv(
     %rowOffsets: memref<?xi32>,

@@ -31,7 +31,7 @@ struct ValidateAMDTargetPass
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ValidateAMDTargetPass)
 
   explicit ValidateAMDTargetPass(
-      const mlir::sparsewave::AMDGPUPipelineOptions &options)
+      const mlir::sparsewave::AMDGPUTargetOptions &options)
       : triple(options.triple), chip(options.chip),
         abiVersion(options.abiVersion), optLevel(options.optLevel),
         indexBitWidth(options.indexBitWidth),
@@ -133,7 +133,7 @@ struct VerifyAMDDeviceLoweringPass
 } // namespace
 
 void mlir::sparsewave::buildAMDGPUBackendPipeline(
-    OpPassManager &pm, const AMDGPUPipelineOptions &options) {
+    OpPassManager &pm, const AMDGPUTargetOptions &options) {
   pm.addPass(std::make_unique<ValidateAMDTargetPass>(options));
 
   GpuROCDLAttachTargetOptions targetOptions;
@@ -194,8 +194,11 @@ void mlir::sparsewave::buildAMDGPUBackendPipeline(
 }
 
 void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
-    OpPassManager &pm, const AMDGPUPipelineOptions &options) {
-  pm.addPass(createConvertSparseWaveToGPU());
+    OpPassManager &pm, const SparseWaveToAMDGPUPipelineOptions &options) {
+  ConvertSparseWaveToGPUOptions spmvOptions;
+  spmvOptions.mapping = options.spmvMapping;
+  spmvOptions.blockSize = options.spmvBlockSize;
+  pm.addPass(createConvertSparseWaveToGPU(spmvOptions));
   pm.addPass(createGpuKernelOutliningPass());
   buildAMDGPUBackendPipeline(pm, options);
 }
@@ -208,7 +211,7 @@ void mlir::sparsewave::registerAMDGPUBackendPipeline() {
 }
 
 void mlir::sparsewave::registerSparseWaveToAMDGPUPipeline() {
-  PassPipelineRegistration<AMDGPUPipelineOptions>(
+  PassPipelineRegistration<SparseWaveToAMDGPUPipelineOptions>(
       "sparsewave-to-amdgpu-pipeline",
       "Compile SparseWave programs for an AMD GPU target.",
       buildSparseWaveToAMDGPUPipeline);

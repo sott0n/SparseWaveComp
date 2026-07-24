@@ -10,6 +10,14 @@ def ConvertSparseWaveToGPU
     Lowers sparsewave.spmv to a one-dimensional GPU launch. Each GPU thread
     computes one CSR matrix row and writes one output element.
   }];
+  let options = [
+    Option<"mapping", "mapping", "std::string",
+           /*default=*/"\"thread-per-row\"",
+           "SpMV work mapping strategy">,
+    Option<"blockSize", "block-size", "int64_t",
+           /*default=*/"256",
+           "Number of GPU threads in each one-dimensional block">
+  ];
   let dependentDialects = [
     "arith::ArithDialect",
     "gpu::GPUDialect",
