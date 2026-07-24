@@ -124,6 +124,29 @@ The hooks apply LLVM-style `clang-format` to C and C++ sources, lint CMake
 files, and check common whitespace, YAML, merge-conflict, and large-file
 issues.
 
+## SpMV benchmark
+
+The SpMV benchmark compares the `thread-per-row` and `wave-per-row` mappings
+using uniform synthetic CSR matrices. It initializes the inputs on the host,
+copies them to device memory once, and uses `rocprofv3` kernel tracing so that
+compilation, JIT, binary loading, and memory transfers are excluded from the
+reported kernel times.
+
+```sh
+python3 benchmark/run_spmv_benchmark.py \
+  --chip=gfx1101 \
+  --nnz-per-row=1,2,4,8,16,32,64,128,256
+```
+
+The benchmark performs 10 warmup dispatches and measures 50 dispatches by
+default. It prints a comparison table and writes `results.csv` and
+`metadata.json` under `build/benchmark/results/<timestamp>`. Generated MLIR and
+raw profiler traces are temporary unless `--keep-artifacts` is specified.
+
+Use `--rows`, `--columns`, `--block-size`, `--warmup`, and `--iterations` to
+change the workload. The benchmark currently requires Wave32 because the
+`wave-per-row` lowering only supports Wave32.
+
 ## Bundled LLVM build
 
 Build SparseWave together with its pinned LLVM and MLIR revision:
