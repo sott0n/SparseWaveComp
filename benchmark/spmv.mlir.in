@@ -17,12 +17,10 @@ func.func @main() {
   %cRowsPlusOne = arith.constant @ROWS_PLUS_ONE@ : index
   %cColumns = arith.constant @COLUMNS@ : index
   %cNnz = arith.constant @NNZ@ : index
-  %cNnzPerRow = arith.constant @NNZ_PER_ROW@ : index
   %cDispatches = arith.constant @DISPATCHES@ : index
   %c0I64 = arith.constant 0 : i64
   %c1I64 = arith.constant 1 : i64
   %c1F32 = arith.constant 1.0 : f32
-  %cExpected = arith.constant @NNZ_PER_ROW@.0 : f32
 
   %hostRowOffsets = memref.alloc(%cRowsPlusOne) : memref<?xi32>
   %hostColumnIndices = memref.alloc(%cNnz) : memref<?xi32>
@@ -31,10 +29,16 @@ func.func @main() {
   %hostOutput = memref.alloc(%cRows) : memref<?xf32>
   %errorOutput = memref.alloc() : memref<1xi64>
 
-  scf.for %row = %c0 to %cRowsPlusOne step %c1 {
-    %offset = arith.muli %row, %cNnzPerRow : index
-    %offsetI32 = arith.index_cast %offset : index to i32
-    memref.store %offsetI32, %hostRowOffsets[%row] : memref<?xi32>
+  %c0I32 = arith.constant 0 : i32
+  memref.store %c0I32, %hostRowOffsets[%c0] : memref<?xi32>
+  scf.for %row = %c0 to %cRows step %c1
+      iter_args(%offset = %c0) -> index {
+    @ROW_LENGTH@
+    %nextOffset = arith.addi %offset, %rowLength : index
+    %nextOffsetI32 = arith.index_cast %nextOffset : index to i32
+    %nextRow = arith.addi %row, %c1 : index
+    memref.store %nextOffsetI32, %hostRowOffsets[%nextRow] : memref<?xi32>
+    scf.yield %nextOffset : index
   }
   scf.for %position = %c0 to %cNnz step %c1 {
     %column = arith.remui %position, %cColumns : index
@@ -83,8 +87,11 @@ func.func @main() {
 
   %errors = scf.for %row = %c0 to %cRows step %c1
       iter_args(%count = %c0I64) -> i64 {
+    @ROW_LENGTH@
+    %rowLengthI64 = arith.index_cast %rowLength : index to i64
+    %expected = arith.uitofp %rowLengthI64 : i64 to f32
     %actual = memref.load %hostOutput[%row] : memref<?xf32>
-    %mismatch = arith.cmpf une, %actual, %cExpected : f32
+    %mismatch = arith.cmpf une, %actual, %expected : f32
     %increment = arith.select %mismatch, %c1I64, %c0I64 : i64
     %next = arith.addi %count, %increment : i64
     scf.yield %next : i64

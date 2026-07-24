@@ -13,6 +13,12 @@ import tempfile
 
 
 MAPPINGS = ("thread-per-row", "wave-per-row")
+DISTRIBUTIONS = ("uniform", "alternating", "skewed")
+DISTRIBUTION_PERIODS = {
+    "uniform": 1,
+    "alternating": 2,
+    "skewed": 8,
+}
 TRACE_COLUMNS = {
     "kernel": ("Kernel_Name", "Kernel Name", "Name"),
     "start": ("Start_Timestamp", "Start Timestamp", "Start"),
@@ -27,6 +33,9 @@ RESULT_COLUMNS = (
     "cols",
     "nnz",
     "nnz_per_row",
+    "min_row_nnz",
+    "max_row_nnz",
+    "mean_row_nnz",
     "distribution",
     "warmup",
     "iterations",
@@ -55,24 +64,133 @@ def nonnegative_int(value):
     return parsed
 
 
-def parse_nnz_per_row(value):
+def parse_positive_int_list(value):
     try:
         values = [positive_int(item.strip()) for item in value.split(",")]
     except (argparse.ArgumentTypeError, ValueError) as error:
         raise argparse.ArgumentTypeError(str(error)) from error
     if not values:
         raise argparse.ArgumentTypeError("expected at least one NNZ/row value")
+    if len(values) != len(set(values)):
+        raise argparse.ArgumentTypeError(
+            f"duplicate values are not allowed: {values}"
+        )
     return values
 
 
-def render_mlir(template_path, rows, columns, nnz_per_row, dispatches):
+def parse_distributions(value):
+    values = [item.strip() for item in value.split(",") if item.strip()]
+    invalid = [item for item in values if item not in DISTRIBUTIONS]
+    if not values:
+        raise argparse.ArgumentTypeError("expected at least one distribution")
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            f"unknown distributions {invalid}; expected {DISTRIBUTIONS}"
+        )
+    if len(values) != len(set(values)):
+        raise argparse.ArgumentTypeError(
+            f"duplicate distributions are not allowed: {values}"
+        )
+    return values
+
+
+def row_length(nnz_per_row, distribution, row):
+    if distribution == "uniform":
+        return nnz_per_row
+    if distribution == "alternating":
+        return 1 if row % 2 == 0 else 2 * nnz_per_row - 1
+    if distribution == "skewed":
+        return 8 * nnz_per_row - 7 if row % 8 == 7 else 1
+    raise ValueError(f"unknown distribution: {distribution}")
+
+
+def workload_shape(rows, nnz_per_row, distribution):
+    lengths = [
+        row_length(nnz_per_row, distribution, row) for row in range(rows)
+    ]
+    return {
+        "nnz": sum(lengths),
+        "min_row_nnz": min(lengths),
+        "max_row_nnz": max(lengths),
+        "mean_row_nnz": statistics.mean(lengths),
+    }
+
+
+def validate_distribution_rows(rows, distributions):
+    invalid = [
+        (distribution, DISTRIBUTION_PERIODS[distribution])
+        for distribution in distributions
+        if rows % DISTRIBUTION_PERIODS[distribution] != 0
+    ]
+    if invalid:
+        requirements = ", ".join(
+            f"{distribution}: multiple of {period}"
+            for distribution, period in invalid
+        )
+        raise ValueError(
+            "row count must complete each distribution period to preserve "
+            f"the requested mean NNZ/row ({requirements})"
+        )
+
+
+def row_length_mlir(nnz_per_row, distribution):
+    if distribution == "uniform":
+        return f"%rowLength = arith.constant {nnz_per_row} : index"
+    if distribution == "alternating":
+        period = 2
+        long_slot = 1
+        long_length = 2 * nnz_per_row - 1
+    elif distribution == "skewed":
+        period = 8
+        long_slot = 7
+        long_length = 8 * nnz_per_row - 7
+    else:
+        raise ValueError(f"unknown distribution: {distribution}")
+    return "\n".join(
+        (
+            f"%distributionPeriod = arith.constant {period} : index",
+            f"%longSlot = arith.constant {long_slot} : index",
+            (
+                "%distributionSlot = "
+                "arith.remui %row, %distributionPeriod : index"
+            ),
+            (
+                "%isLongRow = "
+                "arith.cmpi eq, %distributionSlot, %longSlot : index"
+            ),
+            "%shortRowLength = arith.constant 1 : index",
+            f"%longRowLength = arith.constant {long_length} : index",
+            (
+                "%rowLength = arith.select %isLongRow, "
+                "%longRowLength, %shortRowLength : index"
+            ),
+        )
+    )
+
+
+def indent_mlir(value, spaces):
+    indentation = " " * spaces
+    return value.replace("\n", f"\n{indentation}")
+
+
+def render_mlir(
+    template_path,
+    rows,
+    columns,
+    nnz_per_row,
+    dispatches,
+    distribution="uniform",
+):
+    shape = workload_shape(rows, nnz_per_row, distribution)
     replacements = {
         "@ROWS@": str(rows),
         "@ROWS_PLUS_ONE@": str(rows + 1),
         "@COLUMNS@": str(columns),
-        "@NNZ@": str(rows * nnz_per_row),
-        "@NNZ_PER_ROW@": str(nnz_per_row),
+        "@NNZ@": str(shape["nnz"]),
         "@DISPATCHES@": str(dispatches),
+        "@ROW_LENGTH@": indent_mlir(
+            row_length_mlir(nnz_per_row, distribution), 4
+        ),
     }
     rendered = template_path.read_text(encoding="utf-8")
     for token, value in replacements.items():
@@ -186,7 +304,7 @@ def rocm_version(rocm_path):
     return "unknown"
 
 
-def compile_mlir(args, source, output, mapping):
+def compile_mlir(args, source, output, mapping, block_size):
     pipeline = (
         "builtin.module(convert-scf-to-cf,"
         "sparsewave-to-amdgpu-pipeline{"
@@ -194,7 +312,7 @@ def compile_mlir(args, source, output, mapping):
         f"wavefront-size={args.wave_size} "
         f"rocm-path={args.rocm_path} "
         f"spmv-mapping={mapping} "
-        f"spmv-block-size={args.block_size}"
+        f"spmv-block-size={block_size}"
         "},reconcile-unrealized-casts)"
     )
     command = [
@@ -242,19 +360,25 @@ def profile_mlir(args, compiled, trace_directory):
     return command
 
 
-def result_row(args, mapping, nnz_per_row, timing):
-    nnz = args.rows * nnz_per_row
+def result_row(
+    args, mapping, block_size, nnz_per_row, distribution, timing
+):
+    shape = workload_shape(args.rows, nnz_per_row, distribution)
+    nnz = shape["nnz"]
     median_seconds = timing["median_us"] / 1_000_000.0
     return {
         "chip": args.chip,
         "mapping": mapping,
-        "block_size": args.block_size,
+        "block_size": block_size,
         "wave_size": args.wave_size,
         "rows": args.rows,
         "cols": args.columns,
         "nnz": nnz,
         "nnz_per_row": nnz_per_row,
-        "distribution": "uniform",
+        "min_row_nnz": shape["min_row_nnz"],
+        "max_row_nnz": shape["max_row_nnz"],
+        "mean_row_nnz": shape["mean_row_nnz"],
+        "distribution": distribution,
         "warmup": args.warmup,
         "iterations": args.iterations,
         "min_us": timing["min_us"],
@@ -278,6 +402,7 @@ def write_results(path, results):
                 "p95_us",
                 "gnnz_per_sec",
                 "gflops",
+                "mean_row_nnz",
             ):
                 formatted[field] = f"{result[field]:.6f}"
             formatted["correct"] = str(result["correct"]).lower()
@@ -293,11 +418,11 @@ def write_metadata(path, args, repository, commands):
         "gpu": args.gpu_name,
         "chip": args.chip,
         "wave_size": args.wave_size,
-        "block_size": args.block_size,
+        "block_sizes": args.block_sizes,
         "rows": args.rows,
         "columns": args.columns,
         "nnz_per_row": args.nnz_per_row,
-        "distribution": "uniform",
+        "distributions": args.distributions,
         "warmup": args.warmup,
         "iterations": args.iterations,
         "commands": commands,
@@ -313,35 +438,61 @@ def print_results(args, results):
     print(f"  GPU:           {args.gpu_name}")
     print(f"  chip:          {args.chip}")
     print(f"  wave size:     {args.wave_size}")
-    print(f"  block size:    {args.block_size}")
+    print(
+        "  block sizes:   "
+        + ", ".join(str(value) for value in args.block_sizes)
+    )
     print(f"  rows:          {args.rows}")
     print(f"  columns:       {args.columns}")
     print(f"  warmup:        {args.warmup}")
     print(f"  iterations:    {args.iterations}")
-    print("  distribution:  uniform")
+    print(f"  distributions: {', '.join(args.distributions)}")
     print()
     print(
-        "NNZ/row  thread median  wave median  thread GNNZ/s  "
-        "wave GNNZ/s  speedup  winner"
+        "distribution  NNZ/row  block  thread median  wave median  "
+        "thread GNNZ/s  wave GNNZ/s  speedup  winner"
     )
     by_case = {
-        (result["nnz_per_row"], result["mapping"]): result
+        (
+            result["distribution"],
+            result["nnz_per_row"],
+            result["block_size"],
+            result["mapping"],
+        ): result
         for result in results
     }
-    for nnz_per_row in args.nnz_per_row:
-        thread = by_case[(nnz_per_row, "thread-per-row")]
-        wave = by_case[(nnz_per_row, "wave-per-row")]
-        speedup = thread["median_us"] / wave["median_us"]
-        winner = "wave" if speedup > 1.0 else "thread"
-        print(
-            f"{nnz_per_row:7d}"
-            f"  {thread['median_us']:11.2f} us"
-            f"  {wave['median_us']:9.2f} us"
-            f"  {thread['gnnz_per_sec']:13.2f}"
-            f"  {wave['gnnz_per_sec']:11.2f}"
-            f"  {speedup:7.2f}x"
-            f"  {winner}"
-        )
+    for distribution in args.distributions:
+        for nnz_per_row in args.nnz_per_row:
+            for block_size in args.block_sizes:
+                thread = by_case[
+                    (
+                        distribution,
+                        nnz_per_row,
+                        block_size,
+                        "thread-per-row",
+                    )
+                ]
+                wave = by_case[
+                    (
+                        distribution,
+                        nnz_per_row,
+                        block_size,
+                        "wave-per-row",
+                    )
+                ]
+                speedup = thread["median_us"] / wave["median_us"]
+                winner = "wave" if speedup > 1.0 else "thread"
+                print(
+                    f"{distribution:12s}"
+                    f"  {nnz_per_row:7d}"
+                    f"  {block_size:5d}"
+                    f"  {thread['median_us']:11.2f} us"
+                    f"  {wave['median_us']:9.2f} us"
+                    f"  {thread['gnnz_per_sec']:13.2f}"
+                    f"  {wave['gnnz_per_sec']:11.2f}"
+                    f"  {speedup:7.2f}x"
+                    f"  {winner}"
+                )
 
 
 def validate_paths(args):
@@ -355,16 +506,27 @@ def validate_paths(args):
     missing = [str(path) for path in paths if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"required benchmark tools are missing: {missing}")
+    validate_distribution_rows(args.rows, args.distributions)
     if args.wave_size != 32:
         raise ValueError("wave-per-row benchmarking currently requires Wave32")
-    if args.block_size > 1024 or args.block_size % args.wave_size != 0:
+    invalid_block_sizes = [
+        value
+        for value in args.block_sizes
+        if value > 1024 or value % args.wave_size != 0
+    ]
+    if invalid_block_sizes:
         raise ValueError(
-            "block size must not exceed 1024 and must be a multiple of wave size"
+            "block sizes must not exceed 1024 and must be multiples of wave "
+            f"size; invalid values: {invalid_block_sizes}"
         )
     maximum_i32 = (1 << 31) - 1
     if args.columns > maximum_i32:
         raise ValueError("column count must fit in the i32 column-index type")
-    if any(args.rows * value > maximum_i32 for value in args.nnz_per_row):
+    if any(
+        workload_shape(args.rows, value, distribution)["nnz"] > maximum_i32
+        for value in args.nnz_per_row
+        for distribution in args.distributions
+    ):
         raise ValueError("NNZ must fit in the i32 CSR row-offset type")
 
 
@@ -377,12 +539,28 @@ def parse_arguments(argv):
     parser.add_argument("--columns", type=positive_int, default=65536)
     parser.add_argument(
         "--nnz-per-row",
-        type=parse_nnz_per_row,
-        default=parse_nnz_per_row("1,2,4,8,16,32,64,128,256"),
+        type=parse_positive_int_list,
+        default=parse_positive_int_list("1,2,4,8,16,32,64,128,256"),
+    )
+    parser.add_argument(
+        "--distributions",
+        type=parse_distributions,
+        default=parse_distributions("uniform,alternating,skewed"),
     )
     parser.add_argument("--warmup", type=nonnegative_int, default=10)
     parser.add_argument("--iterations", type=positive_int, default=50)
-    parser.add_argument("--block-size", type=positive_int, default=128)
+    block_group = parser.add_mutually_exclusive_group()
+    block_group.add_argument(
+        "--block-sizes",
+        type=parse_positive_int_list,
+        default=parse_positive_int_list("64,128,256,512"),
+    )
+    block_group.add_argument(
+        "--block-size",
+        dest="block_sizes",
+        type=lambda value: [positive_int(value)],
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--wave-size", type=positive_int, default=32)
     parser.add_argument("--chip")
     parser.add_argument("--rocm-path", type=Path, default=Path("/opt/rocm"))
@@ -440,52 +618,72 @@ def main(argv=None):
     results = []
     commands = []
     try:
-        for nnz_per_row in args.nnz_per_row:
-            source_text = render_mlir(
-                template,
-                args.rows,
-                args.columns,
-                nnz_per_row,
-                args.warmup + args.iterations,
-            )
-            for mapping in MAPPINGS:
-                case_directory = (
-                    artifact_root / f"nnz-{nnz_per_row}" / mapping
+        for distribution in args.distributions:
+            for nnz_per_row in args.nnz_per_row:
+                source_text = render_mlir(
+                    template,
+                    args.rows,
+                    args.columns,
+                    nnz_per_row,
+                    args.warmup + args.iterations,
+                    distribution,
                 )
-                case_directory.mkdir(parents=True)
-                source = case_directory / "input.mlir"
-                compiled = case_directory / "compiled.mlir"
-                trace_directory = case_directory / "trace"
-                trace_directory.mkdir()
-                source.write_text(source_text, encoding="utf-8")
-                compile_command = compile_mlir(
-                    args, source, compiled, mapping
-                )
-                profile_command = profile_mlir(
-                    args, compiled, trace_directory
-                )
-                trace = discover_trace(trace_directory)
-                if args.gpu_name == args.chip:
-                    args.gpu_name = discover_gpu_name(
-                        trace_directory, args.chip
-                    )
-                timing = parse_kernel_trace(
-                    trace,
-                    "spmv_kernel",
-                    args.warmup,
-                    args.iterations,
-                )
-                results.append(
-                    result_row(args, mapping, nnz_per_row, timing)
-                )
-                commands.append(
-                    {
-                        "nnz_per_row": nnz_per_row,
-                        "mapping": mapping,
-                        "compile": compile_command,
-                        "profile": profile_command,
-                    }
-                )
+                for block_size in args.block_sizes:
+                    for mapping in MAPPINGS:
+                        case_directory = (
+                            artifact_root
+                            / distribution
+                            / f"nnz-{nnz_per_row}"
+                            / f"block-{block_size}"
+                            / mapping
+                        )
+                        case_directory.mkdir(parents=True)
+                        source = case_directory / "input.mlir"
+                        compiled = case_directory / "compiled.mlir"
+                        trace_directory = case_directory / "trace"
+                        trace_directory.mkdir()
+                        source.write_text(source_text, encoding="utf-8")
+                        compile_command = compile_mlir(
+                            args,
+                            source,
+                            compiled,
+                            mapping,
+                            block_size,
+                        )
+                        profile_command = profile_mlir(
+                            args, compiled, trace_directory
+                        )
+                        trace = discover_trace(trace_directory)
+                        if args.gpu_name == args.chip:
+                            args.gpu_name = discover_gpu_name(
+                                trace_directory, args.chip
+                            )
+                        timing = parse_kernel_trace(
+                            trace,
+                            "spmv_kernel",
+                            args.warmup,
+                            args.iterations,
+                        )
+                        results.append(
+                            result_row(
+                                args,
+                                mapping,
+                                block_size,
+                                nnz_per_row,
+                                distribution,
+                                timing,
+                            )
+                        )
+                        commands.append(
+                            {
+                                "distribution": distribution,
+                                "nnz_per_row": nnz_per_row,
+                                "block_size": block_size,
+                                "mapping": mapping,
+                                "compile": compile_command,
+                                "profile": profile_command,
+                            }
+                        )
 
         write_results(output_directory / "results.csv", results)
         write_metadata(

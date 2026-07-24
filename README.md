@@ -127,15 +127,22 @@ issues.
 ## SpMV benchmark
 
 The SpMV benchmark compares the `thread-per-row` and `wave-per-row` mappings
-using uniform synthetic CSR matrices. It initializes the inputs on the host,
-copies them to device memory once, and uses `rocprofv3` kernel tracing so that
+using synthetic CSR matrices. The `uniform`, `alternating`, and `skewed`
+distributions compare equal-average row lengths with increasingly uneven work:
+`alternating` switches between 1 and `2 * NNZ/row - 1`, while `skewed` assigns
+one long row for every seven single-entry rows. Row counts must be multiples of
+2 for `alternating` and 8 for `skewed`, ensuring that all distributions retain
+the requested average. The benchmark initializes the inputs on the host, copies
+them to device memory once, and uses `rocprofv3` kernel tracing so that
 compilation, JIT, binary loading, and memory transfers are excluded from the
 reported kernel times.
 
 ```sh
 python3 benchmark/run_spmv_benchmark.py \
   --chip=gfx1101 \
-  --nnz-per-row=1,2,4,8,16,32,64,128,256
+  --nnz-per-row=1,2,4,8,16,32,64,128,256 \
+  --distributions=uniform,alternating,skewed \
+  --block-sizes=64,128,256,512
 ```
 
 The benchmark performs 10 warmup dispatches and measures 50 dispatches by
@@ -143,9 +150,10 @@ default. It prints a comparison table and writes `results.csv` and
 `metadata.json` under `build/benchmark/results/<timestamp>`. Generated MLIR and
 raw profiler traces are temporary unless `--keep-artifacts` is specified.
 
-Use `--rows`, `--columns`, `--block-size`, `--warmup`, and `--iterations` to
-change the workload. The benchmark currently requires Wave32 because the
-`wave-per-row` lowering only supports Wave32.
+Use `--rows`, `--columns`, `--nnz-per-row`, `--distributions`,
+`--block-sizes`, `--warmup`, and `--iterations` to change the workload. The
+benchmark currently requires Wave32 because the `wave-per-row` lowering only
+supports Wave32.
 
 ## Bundled LLVM build
 
