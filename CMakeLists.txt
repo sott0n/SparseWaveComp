@@ -56,6 +56,7 @@ add_definitions(${LLVM_DEFINITIONS})
 add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(tools)
+add_subdirectory(benchmark)
 
 option(SPARSEWAVE_INCLUDE_TESTS "Build SparseWave tests" ON)
 if(SPARSEWAVE_INCLUDE_TESTS)

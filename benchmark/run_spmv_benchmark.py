@@ -5,8 +5,10 @@ import csv
 import datetime
 import json
 import math
+import os
 from pathlib import Path
 import statistics
+import struct
 import subprocess
 import sys
 import tempfile
@@ -26,6 +28,7 @@ TRACE_COLUMNS = {
 }
 RESULT_COLUMNS = (
     "chip",
+    "matrix",
     "mapping",
     "block_size",
     "wave_size",
@@ -46,6 +49,7 @@ RESULT_COLUMNS = (
     "gflops",
     "correct",
 )
+CSR_BINARY_MAGIC = b"SWCSR001"
 
 
 def positive_int(value):
@@ -116,6 +120,186 @@ def workload_shape(rows, nnz_per_row, distribution):
     }
 
 
+def read_matrix_market(path):
+    with path.open(encoding="utf-8") as stream:
+        header = stream.readline().strip().split()
+        if len(header) != 5 or header[:3] != [
+            "%%MatrixMarket",
+            "matrix",
+            "coordinate",
+        ]:
+            raise ValueError(
+                f"{path}: expected a Matrix Market coordinate matrix"
+            )
+        field = header[3].lower()
+        symmetry = header[4].lower()
+        if field not in ("real", "integer", "pattern"):
+            raise ValueError(
+                f"{path}: unsupported Matrix Market field '{field}'"
+            )
+        if symmetry not in ("general", "symmetric"):
+            raise ValueError(
+                f"{path}: unsupported Matrix Market symmetry '{symmetry}'"
+            )
+
+        size_line = next(
+            (
+                line
+                for line in stream
+                if line.strip() and not line.lstrip().startswith("%")
+            ),
+            None,
+        )
+        if size_line is None:
+            raise ValueError(f"{path}: missing matrix dimensions")
+        try:
+            rows, columns, stored_nnz = map(int, size_line.split())
+        except ValueError as error:
+            raise ValueError(f"{path}: invalid matrix dimensions") from error
+        if rows <= 0 or columns <= 0 or stored_nnz < 0:
+            raise ValueError(f"{path}: matrix dimensions must be nonnegative")
+        if symmetry == "symmetric" and rows != columns:
+            raise ValueError(f"{path}: a symmetric matrix must be square")
+
+        entries = []
+        read_entries = 0
+        for line_number, line in enumerate(stream, start=3):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("%"):
+                continue
+            parts = stripped.split()
+            expected_fields = 2 if field == "pattern" else 3
+            if len(parts) != expected_fields:
+                raise ValueError(
+                    f"{path}:{line_number}: expected {expected_fields} fields"
+                )
+            try:
+                row = int(parts[0]) - 1
+                column = int(parts[1]) - 1
+                if field == "pattern":
+                    value = 1.0
+                elif field == "integer":
+                    value = float(int(parts[2]))
+                else:
+                    value = float(parts[2])
+            except ValueError as error:
+                raise ValueError(
+                    f"{path}:{line_number}: invalid matrix entry"
+                ) from error
+            if not (0 <= row < rows and 0 <= column < columns):
+                raise ValueError(
+                    f"{path}:{line_number}: matrix index is out of bounds"
+                )
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"{path}:{line_number}: matrix value must be finite"
+                )
+            try:
+                struct.pack("<f", value)
+            except (OverflowError, struct.error) as error:
+                raise ValueError(
+                    f"{path}:{line_number}: matrix value must fit in f32"
+                ) from error
+            entries.append((row, column, value))
+            read_entries += 1
+            if symmetry == "symmetric" and row != column:
+                entries.append((column, row, value))
+
+    if read_entries != stored_nnz:
+        raise ValueError(
+            f"{path}: header declares {stored_nnz} entries, "
+            f"but the file contains {read_entries}"
+        )
+
+    entries.sort(key=lambda entry: (entry[0], entry[1]))
+    row_offsets = [0] * (rows + 1)
+    column_indices = []
+    values = []
+    for row, column, value in entries:
+        row_offsets[row + 1] += 1
+        column_indices.append(column)
+        values.append(value)
+    for row in range(rows):
+        row_offsets[row + 1] += row_offsets[row]
+    row_lengths = [
+        row_offsets[row + 1] - row_offsets[row] for row in range(rows)
+    ]
+    return {
+        "path": path,
+        "name": path.stem,
+        "field": field,
+        "symmetry": symmetry,
+        "rows": rows,
+        "columns": columns,
+        "nnz": len(entries),
+        "min_row_nnz": min(row_lengths),
+        "max_row_nnz": max(row_lengths),
+        "mean_row_nnz": statistics.mean(row_lengths),
+        "row_offsets": row_offsets,
+        "column_indices": column_indices,
+        "values": values,
+    }
+
+
+def write_csr_binary(path, matrix):
+    maximum_i32 = (1 << 31) - 1
+    if matrix["rows"] > maximum_i32 or matrix["nnz"] > maximum_i32:
+        raise ValueError("matrix rows and NNZ must fit in the i32 CSR type")
+    with path.open("wb") as stream:
+        stream.write(CSR_BINARY_MAGIC)
+        stream.write(
+            struct.pack(
+                "<QQQ",
+                matrix["rows"],
+                matrix["columns"],
+                matrix["nnz"],
+            )
+        )
+        stream.write(
+            struct.pack(
+                f"<{len(matrix['row_offsets'])}i", *matrix["row_offsets"]
+            )
+        )
+        stream.write(
+            struct.pack(
+                f"<{len(matrix['column_indices'])}i",
+                *matrix["column_indices"],
+            )
+        )
+        stream.write(
+            struct.pack(f"<{len(matrix['values'])}f", *matrix["values"])
+        )
+
+
+def create_workloads(args):
+    if args.matrix_data is not None:
+        return [
+            {
+                "key": args.matrix_data["name"],
+                "matrix": str(args.matrix_data["path"]),
+                "distribution": "matrix-market",
+                "nnz_per_row": "",
+                "shape": args.matrix_data,
+            }
+        ]
+
+    workloads = []
+    for distribution in args.distributions:
+        for nnz_per_row in args.nnz_per_row:
+            shape = workload_shape(args.rows, nnz_per_row, distribution)
+            shape.update({"rows": args.rows, "columns": args.columns})
+            workloads.append(
+                {
+                    "key": f"{distribution}/nnz-{nnz_per_row}",
+                    "matrix": "",
+                    "distribution": distribution,
+                    "nnz_per_row": nnz_per_row,
+                    "shape": shape,
+                }
+            )
+    return workloads
+
+
 def validate_distribution_rows(rows, distributions):
     invalid = [
         (distribution, DISTRIBUTION_PERIODS[distribution])
@@ -173,6 +357,35 @@ def indent_mlir(value, spaces):
     return value.replace("\n", f"\n{indentation}")
 
 
+def synthetic_initialization_mlir(nnz_per_row, distribution):
+    row_length_code = indent_mlir(
+        row_length_mlir(nnz_per_row, distribution), 4
+    )
+    return f"""%c0I32 = arith.constant 0 : i32
+  memref.store %c0I32, %hostRowOffsets[%c0] : memref<?xi32>
+  scf.for %row = %c0 to %cRows step %c1
+      iter_args(%offset = %c0) -> index {{
+    {row_length_code}
+    %nextOffset = arith.addi %offset, %rowLength : index
+    %nextOffsetI32 = arith.index_cast %nextOffset : index to i32
+    %nextRow = arith.addi %row, %c1 : index
+    memref.store %nextOffsetI32, %hostRowOffsets[%nextRow] : memref<?xi32>
+    %rowLengthI64 = arith.index_cast %rowLength : index to i64
+    %expected = arith.uitofp %rowLengthI64 : i64 to f32
+    memref.store %expected, %hostExpected[%row] : memref<?xf32>
+    scf.yield %nextOffset : index
+  }}
+  scf.for %position = %c0 to %cNnz step %c1 {{
+    %column = arith.remui %position, %cColumns : index
+    %columnI32 = arith.index_cast %column : index to i32
+    memref.store %columnI32, %hostColumnIndices[%position] : memref<?xi32>
+    memref.store %c1F32, %hostValues[%position] : memref<?xf32>
+  }}
+  scf.for %column = %c0 to %cColumns step %c1 {{
+    memref.store %c1F32, %hostVector[%column] : memref<?xf32>
+  }}"""
+
+
 def render_mlir(
     template_path,
     rows,
@@ -180,17 +393,37 @@ def render_mlir(
     nnz_per_row,
     dispatches,
     distribution="uniform",
+    matrix=None,
 ):
-    shape = workload_shape(rows, nnz_per_row, distribution)
+    if matrix is None:
+        shape = workload_shape(rows, nnz_per_row, distribution)
+        initialization = synthetic_initialization_mlir(
+            nnz_per_row, distribution
+        )
+        declarations = ""
+    else:
+        shape = matrix
+        initialization = (
+            "func.call @loadSpMVBenchmarkInputs("
+            "%hostRowOffsets, %hostColumnIndices, %hostValues, "
+            "%hostVector, %hostExpected) : "
+            "(memref<?xi32>, memref<?xi32>, memref<?xf32>, "
+            "memref<?xf32>, memref<?xf32>) -> ()"
+        )
+        declarations = (
+            "func.func private @loadSpMVBenchmarkInputs("
+            "memref<?xi32>, memref<?xi32>, memref<?xf32>, "
+            "memref<?xf32>, memref<?xf32>) "
+            "attributes {llvm.emit_c_interface}"
+        )
     replacements = {
         "@ROWS@": str(rows),
         "@ROWS_PLUS_ONE@": str(rows + 1),
         "@COLUMNS@": str(columns),
         "@NNZ@": str(shape["nnz"]),
         "@DISPATCHES@": str(dispatches),
-        "@ROW_LENGTH@": indent_mlir(
-            row_length_mlir(nnz_per_row, distribution), 4
-        ),
+        "@INITIALIZE_INPUTS@": indent_mlir(initialization, 2),
+        "@EXTERNAL_DECLARATIONS@": declarations,
     }
     rendered = template_path.read_text(encoding="utf-8")
     for token, value in replacements.items():
@@ -326,7 +559,7 @@ def compile_mlir(args, source, output, mapping, block_size):
     return command
 
 
-def profile_mlir(args, compiled, trace_directory):
+def profile_mlir(args, compiled, trace_directory, csr_binary=None):
     command = [
         str(args.rocprofv3),
         "--kernel-trace",
@@ -339,9 +572,16 @@ def profile_mlir(args, compiled, trace_directory):
         str(compiled),
         f"--shared-libs={args.rocm_runtime}",
         f"--shared-libs={args.runner_utils}",
-        "--entry-point-result=void",
     ]
-    completed = subprocess.run(command, capture_output=True, text=True)
+    if csr_binary is not None:
+        command.append(f"--shared-libs={args.benchmark_utils}")
+    command.append("--entry-point-result=void")
+    environment = os.environ.copy()
+    if csr_binary is not None:
+        environment["SPARSEWAVE_BENCHMARK_CSR"] = str(csr_binary)
+    completed = subprocess.run(
+        command, capture_output=True, text=True, env=environment
+    )
     if completed.returncode != 0:
         raise RuntimeError(
             f"profiler command failed with exit code {completed.returncode}:\n"
@@ -360,25 +600,24 @@ def profile_mlir(args, compiled, trace_directory):
     return command
 
 
-def result_row(
-    args, mapping, block_size, nnz_per_row, distribution, timing
-):
-    shape = workload_shape(args.rows, nnz_per_row, distribution)
+def result_row(args, mapping, block_size, workload, timing):
+    shape = workload["shape"]
     nnz = shape["nnz"]
     median_seconds = timing["median_us"] / 1_000_000.0
     return {
         "chip": args.chip,
+        "matrix": workload["matrix"],
         "mapping": mapping,
         "block_size": block_size,
         "wave_size": args.wave_size,
-        "rows": args.rows,
-        "cols": args.columns,
+        "rows": shape["rows"],
+        "cols": shape["columns"],
         "nnz": nnz,
-        "nnz_per_row": nnz_per_row,
+        "nnz_per_row": workload["nnz_per_row"],
         "min_row_nnz": shape["min_row_nnz"],
         "max_row_nnz": shape["max_row_nnz"],
         "mean_row_nnz": shape["mean_row_nnz"],
-        "distribution": distribution,
+        "distribution": workload["distribution"],
         "warmup": args.warmup,
         "iterations": args.iterations,
         "min_us": timing["min_us"],
@@ -421,8 +660,21 @@ def write_metadata(path, args, repository, commands):
         "block_sizes": args.block_sizes,
         "rows": args.rows,
         "columns": args.columns,
-        "nnz_per_row": args.nnz_per_row,
-        "distributions": args.distributions,
+        "nnz_per_row": (
+            args.nnz_per_row if args.matrix_data is None else None
+        ),
+        "distributions": (
+            args.distributions if args.matrix_data is None else None
+        ),
+        "matrix": str(args.matrix) if args.matrix else None,
+        "matrix_field": (
+            args.matrix_data["field"] if args.matrix_data is not None else None
+        ),
+        "matrix_symmetry": (
+            args.matrix_data["symmetry"]
+            if args.matrix_data is not None
+            else None
+        ),
         "warmup": args.warmup,
         "iterations": args.iterations,
         "commands": commands,
@@ -442,12 +694,44 @@ def print_results(args, results):
         "  block sizes:   "
         + ", ".join(str(value) for value in args.block_sizes)
     )
-    print(f"  rows:          {args.rows}")
-    print(f"  columns:       {args.columns}")
+    if args.matrix_data is not None:
+        print(f"  matrix:        {args.matrix}")
+        print(f"  rows:          {args.matrix_data['rows']}")
+        print(f"  columns:       {args.matrix_data['columns']}")
+        print(f"  NNZ:           {args.matrix_data['nnz']}")
+    else:
+        print(f"  rows:          {args.rows}")
+        print(f"  columns:       {args.columns}")
     print(f"  warmup:        {args.warmup}")
     print(f"  iterations:    {args.iterations}")
-    print(f"  distributions: {', '.join(args.distributions)}")
+    if args.matrix_data is None:
+        print(f"  distributions: {', '.join(args.distributions)}")
     print()
+    if args.matrix_data is not None:
+        print(
+            "block  thread median  wave median  thread GNNZ/s  "
+            "wave GNNZ/s  speedup  winner"
+        )
+        by_case = {
+            (result["block_size"], result["mapping"]): result
+            for result in results
+        }
+        for block_size in args.block_sizes:
+            thread = by_case[(block_size, "thread-per-row")]
+            wave = by_case[(block_size, "wave-per-row")]
+            speedup = thread["median_us"] / wave["median_us"]
+            winner = "wave" if speedup > 1.0 else "thread"
+            print(
+                f"{block_size:5d}"
+                f"  {thread['median_us']:11.2f} us"
+                f"  {wave['median_us']:9.2f} us"
+                f"  {thread['gnnz_per_sec']:13.2f}"
+                f"  {wave['gnnz_per_sec']:11.2f}"
+                f"  {speedup:7.2f}x"
+                f"  {winner}"
+            )
+        return
+
     print(
         "distribution  NNZ/row  block  thread median  wave median  "
         "thread GNNZ/s  wave GNNZ/s  speedup  winner"
@@ -496,17 +780,20 @@ def print_results(args, results):
 
 
 def validate_paths(args):
-    paths = (
+    paths = [
         args.sparsewave_opt,
         args.mlir_runner,
         args.rocm_runtime,
         args.runner_utils,
         args.rocprofv3,
-    )
+    ]
+    if args.matrix_data is not None:
+        paths.append(args.benchmark_utils)
     missing = [str(path) for path in paths if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"required benchmark tools are missing: {missing}")
-    validate_distribution_rows(args.rows, args.distributions)
+    if args.matrix_data is None:
+        validate_distribution_rows(args.rows, args.distributions)
     if args.wave_size != 32:
         raise ValueError("wave-per-row benchmarking currently requires Wave32")
     invalid_block_sizes = [
@@ -520,13 +807,22 @@ def validate_paths(args):
             f"size; invalid values: {invalid_block_sizes}"
         )
     maximum_i32 = (1 << 31) - 1
-    if args.columns > maximum_i32:
+    columns = (
+        args.matrix_data["columns"]
+        if args.matrix_data is not None
+        else args.columns
+    )
+    if columns > maximum_i32:
         raise ValueError("column count must fit in the i32 column-index type")
-    if any(
-        workload_shape(args.rows, value, distribution)["nnz"] > maximum_i32
-        for value in args.nnz_per_row
-        for distribution in args.distributions
-    ):
+    if args.matrix_data is not None:
+        invalid_nnz = args.matrix_data["nnz"] > maximum_i32
+    else:
+        invalid_nnz = any(
+            workload_shape(args.rows, value, distribution)["nnz"] > maximum_i32
+            for value in args.nnz_per_row
+            for distribution in args.distributions
+        )
+    if invalid_nnz:
         raise ValueError("NNZ must fit in the i32 CSR row-offset type")
 
 
@@ -534,6 +830,11 @@ def parse_arguments(argv):
     repository = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(
         description="Benchmark SparseWave SpMV mappings on an AMD GPU."
+    )
+    parser.add_argument(
+        "--matrix",
+        type=Path,
+        help="Matrix Market coordinate file to benchmark instead of synthetic inputs.",
     )
     parser.add_argument("--rows", type=positive_int, default=65536)
     parser.add_argument("--columns", type=positive_int, default=65536)
@@ -571,6 +872,7 @@ def parse_arguments(argv):
     parser.add_argument("--mlir-runner", type=Path)
     parser.add_argument("--rocm-runtime", type=Path)
     parser.add_argument("--runner-utils", type=Path)
+    parser.add_argument("--benchmark-utils", type=Path)
     parser.add_argument("--rocprofv3", type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--keep-artifacts", action="store_true")
@@ -586,11 +888,34 @@ def parse_arguments(argv):
     args.runner_utils = (
         args.runner_utils or args.build_dir / "lib" / "libmlir_runner_utils.so"
     )
+    benchmark_utils_candidates = (
+        args.build_dir
+        / "tools"
+        / "sparsewave"
+        / "lib"
+        / "libsparsewave_spmv_benchmark_utils.so",
+        args.build_dir / "lib" / "libsparsewave_spmv_benchmark_utils.so",
+    )
+    args.benchmark_utils = args.benchmark_utils or next(
+        (
+            path
+            for path in benchmark_utils_candidates
+            if path.is_file()
+        ),
+        benchmark_utils_candidates[0],
+    )
     args.rocprofv3 = (
         args.rocprofv3 or args.rocm_path / "bin" / "rocprofv3"
     )
     args.chip = args.chip or detect_chip(args.rocm_path)
     args.gpu_name = args.chip
+    if args.matrix is not None:
+        args.matrix = args.matrix.resolve()
+        args.matrix_data = read_matrix_market(args.matrix)
+        args.rows = args.matrix_data["rows"]
+        args.columns = args.matrix_data["columns"]
+    else:
+        args.matrix_data = None
     return args
 
 
@@ -618,72 +943,77 @@ def main(argv=None):
     results = []
     commands = []
     try:
-        for distribution in args.distributions:
-            for nnz_per_row in args.nnz_per_row:
-                source_text = render_mlir(
-                    template,
-                    args.rows,
-                    args.columns,
-                    nnz_per_row,
-                    args.warmup + args.iterations,
-                    distribution,
-                )
-                for block_size in args.block_sizes:
-                    for mapping in MAPPINGS:
-                        case_directory = (
-                            artifact_root
-                            / distribution
-                            / f"nnz-{nnz_per_row}"
-                            / f"block-{block_size}"
-                            / mapping
+        csr_binary = None
+        if args.matrix_data is not None:
+            csr_binary = artifact_root / "matrix.csr"
+            write_csr_binary(csr_binary, args.matrix_data)
+
+        for workload in create_workloads(args):
+            shape = workload["shape"]
+            source_text = render_mlir(
+                template,
+                shape["rows"],
+                shape["columns"],
+                workload["nnz_per_row"],
+                args.warmup + args.iterations,
+                workload["distribution"],
+                args.matrix_data,
+            )
+            for block_size in args.block_sizes:
+                for mapping in MAPPINGS:
+                    case_directory = (
+                        artifact_root
+                        / workload["key"]
+                        / f"block-{block_size}"
+                        / mapping
+                    )
+                    case_directory.mkdir(parents=True)
+                    source = case_directory / "input.mlir"
+                    compiled = case_directory / "compiled.mlir"
+                    trace_directory = case_directory / "trace"
+                    trace_directory.mkdir()
+                    source.write_text(source_text, encoding="utf-8")
+                    compile_command = compile_mlir(
+                        args,
+                        source,
+                        compiled,
+                        mapping,
+                        block_size,
+                    )
+                    profile_command = profile_mlir(
+                        args, compiled, trace_directory, csr_binary
+                    )
+                    trace = discover_trace(trace_directory)
+                    if args.gpu_name == args.chip:
+                        args.gpu_name = discover_gpu_name(
+                            trace_directory, args.chip
                         )
-                        case_directory.mkdir(parents=True)
-                        source = case_directory / "input.mlir"
-                        compiled = case_directory / "compiled.mlir"
-                        trace_directory = case_directory / "trace"
-                        trace_directory.mkdir()
-                        source.write_text(source_text, encoding="utf-8")
-                        compile_command = compile_mlir(
+                    timing = parse_kernel_trace(
+                        trace,
+                        "spmv_kernel",
+                        args.warmup,
+                        args.iterations,
+                    )
+                    results.append(
+                        result_row(
                             args,
-                            source,
-                            compiled,
                             mapping,
                             block_size,
+                            workload,
+                            timing,
                         )
-                        profile_command = profile_mlir(
-                            args, compiled, trace_directory
-                        )
-                        trace = discover_trace(trace_directory)
-                        if args.gpu_name == args.chip:
-                            args.gpu_name = discover_gpu_name(
-                                trace_directory, args.chip
-                            )
-                        timing = parse_kernel_trace(
-                            trace,
-                            "spmv_kernel",
-                            args.warmup,
-                            args.iterations,
-                        )
-                        results.append(
-                            result_row(
-                                args,
-                                mapping,
-                                block_size,
-                                nnz_per_row,
-                                distribution,
-                                timing,
-                            )
-                        )
-                        commands.append(
-                            {
-                                "distribution": distribution,
-                                "nnz_per_row": nnz_per_row,
-                                "block_size": block_size,
-                                "mapping": mapping,
-                                "compile": compile_command,
-                                "profile": profile_command,
-                            }
-                        )
+                    )
+                    commands.append(
+                        {
+                            "matrix": workload["matrix"],
+                            "distribution": workload["distribution"],
+                            "nnz_per_row": workload["nnz_per_row"],
+                            "block_size": block_size,
+                            "mapping": mapping,
+                            "compile": compile_command,
+                            "profile": profile_command,
+                        }
+                    )
 
         write_results(output_directory / "results.csv", results)
         write_metadata(

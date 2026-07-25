@@ -150,6 +150,24 @@ default. It prints a comparison table and writes `results.csv` and
 `metadata.json` under `build/benchmark/results/<timestamp>`. Generated MLIR and
 raw profiler traces are temporary unless `--keep-artifacts` is specified.
 
+Pass a Matrix Market coordinate file to benchmark a real sparse matrix instead
+of the synthetic distributions:
+
+```sh
+python3 benchmark/run_spmv_benchmark.py \
+  --chip=gfx1101 \
+  --matrix=/path/to/matrix.mtx \
+  --block-sizes=64,128,256,512
+```
+
+Coordinate matrices with `real`, `integer`, or `pattern` entries are supported
+in `general` and `symmetric` form. Symmetric off-diagonal entries are expanded
+before conversion to CSR. The benchmark uses the stored matrix values and an
+all-ones input vector, and validates every output row against a host-computed
+reference. Matrix data is converted to a temporary compact CSR binary and
+loaded by the benchmark runner utility, avoiding source-size and compilation
+overhead proportional to NNZ.
+
 Use `--rows`, `--columns`, `--nnz-per-row`, `--distributions`,
 `--block-sizes`, `--warmup`, and `--iterations` to change the workload. The
 benchmark currently requires Wave32 because the `wave-per-row` lowering only

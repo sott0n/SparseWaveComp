@@ -10,6 +10,7 @@ set(SPARSEWAVE_TEST_DEPENDS
   count
   mlir-translate
   not
+  sparsewave_spmv_benchmark_utils
   sparsewave-opt
 )
 

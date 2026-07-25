@@ -20,35 +20,19 @@ func.func @main() {
   %cDispatches = arith.constant @DISPATCHES@ : index
   %c0I64 = arith.constant 0 : i64
   %c1I64 = arith.constant 1 : i64
+  %c0F32 = arith.constant 0.0 : f32
   %c1F32 = arith.constant 1.0 : f32
+  %cToleranceF32 = arith.constant 1.0e-4 : f32
 
   %hostRowOffsets = memref.alloc(%cRowsPlusOne) : memref<?xi32>
   %hostColumnIndices = memref.alloc(%cNnz) : memref<?xi32>
   %hostValues = memref.alloc(%cNnz) : memref<?xf32>
   %hostVector = memref.alloc(%cColumns) : memref<?xf32>
   %hostOutput = memref.alloc(%cRows) : memref<?xf32>
+  %hostExpected = memref.alloc(%cRows) : memref<?xf32>
   %errorOutput = memref.alloc() : memref<1xi64>
 
-  %c0I32 = arith.constant 0 : i32
-  memref.store %c0I32, %hostRowOffsets[%c0] : memref<?xi32>
-  scf.for %row = %c0 to %cRows step %c1
-      iter_args(%offset = %c0) -> index {
-    @ROW_LENGTH@
-    %nextOffset = arith.addi %offset, %rowLength : index
-    %nextOffsetI32 = arith.index_cast %nextOffset : index to i32
-    %nextRow = arith.addi %row, %c1 : index
-    memref.store %nextOffsetI32, %hostRowOffsets[%nextRow] : memref<?xi32>
-    scf.yield %nextOffset : index
-  }
-  scf.for %position = %c0 to %cNnz step %c1 {
-    %column = arith.remui %position, %cColumns : index
-    %columnI32 = arith.index_cast %column : index to i32
-    memref.store %columnI32, %hostColumnIndices[%position] : memref<?xi32>
-    memref.store %c1F32, %hostValues[%position] : memref<?xf32>
-  }
-  scf.for %column = %c0 to %cColumns step %c1 {
-    memref.store %c1F32, %hostVector[%column] : memref<?xf32>
-  }
+  @INITIALIZE_INPUTS@
 
   %start = gpu.wait async
   %deviceRowOffsets, %alloc0 =
@@ -87,11 +71,26 @@ func.func @main() {
 
   %errors = scf.for %row = %c0 to %cRows step %c1
       iter_args(%count = %c0I64) -> i64 {
-    @ROW_LENGTH@
-    %rowLengthI64 = arith.index_cast %rowLength : index to i64
-    %expected = arith.uitofp %rowLengthI64 : i64 to f32
+    %expected = memref.load %hostExpected[%row] : memref<?xf32>
     %actual = memref.load %hostOutput[%row] : memref<?xf32>
-    %mismatch = arith.cmpf une, %actual, %expected : f32
+    %difference = arith.subf %actual, %expected : f32
+    %differenceIsNegative =
+        arith.cmpf olt, %difference, %c0F32 : f32
+    %negativeDifference = arith.negf %difference : f32
+    %absoluteDifference = arith.select %differenceIsNegative,
+        %negativeDifference, %difference : f32
+    %expectedIsNegative = arith.cmpf olt, %expected, %c0F32 : f32
+    %negativeExpected = arith.negf %expected : f32
+    %absoluteExpected = arith.select %expectedIsNegative,
+        %negativeExpected, %expected : f32
+    %expectedIsLarge = arith.cmpf ogt, %absoluteExpected, %c1F32 : f32
+    %scale = arith.select %expectedIsLarge,
+        %absoluteExpected, %c1F32 : f32
+    %tolerance = arith.mulf %scale, %cToleranceF32 : f32
+    %outsideTolerance =
+        arith.cmpf ogt, %absoluteDifference, %tolerance : f32
+    %unordered = arith.cmpf uno, %actual, %expected : f32
+    %mismatch = arith.ori %outsideTolerance, %unordered : i1
     %increment = arith.select %mismatch, %c1I64, %c0I64 : i64
     %next = arith.addi %count, %increment : i64
     scf.yield %next : i64
@@ -111,8 +110,10 @@ func.func @main() {
   memref.dealloc %hostValues : memref<?xf32>
   memref.dealloc %hostVector : memref<?xf32>
   memref.dealloc %hostOutput : memref<?xf32>
+  memref.dealloc %hostExpected : memref<?xf32>
   memref.dealloc %errorOutput : memref<1xi64>
   return
 }
 
 func.func private @printMemrefI64(memref<*xi64>)
+@EXTERNAL_DECLARATIONS@
