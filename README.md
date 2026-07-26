@@ -186,6 +186,34 @@ Use `--rows`, `--columns`, `--nnz-per-row`, `--distributions`,
 benchmark currently requires Wave32 because the `wave-per-row` and
 `block-per-row` lowerings only support Wave32.
 
+## SpMM benchmark
+
+The SpMM benchmark uses a Matrix Market sparse left-hand side and varies the
+number of columns in the dense right-hand side. It currently establishes the
+`thread-per-output` baseline that future SpMM mappings will be compared
+against:
+
+```sh
+python3 benchmark/run_spmm_benchmark.py \
+  --chip=gfx1101 \
+  --matrix=/path/to/matrix.mtx \
+  --rhs-columns=8,16,32,64,128 \
+  --block-sizes=64,128,256,512
+```
+
+The sparse matrix is converted to the same temporary CSR binary used by the
+SpMV benchmark. The runner initializes a dense RHS, computes the expected
+matrix result on the host, and validates every output element. Ten warmup
+dispatches and 50 measured dispatches are used by default. `rocprofv3` kernel
+tracing excludes compilation, loading, allocation, copies, and validation from
+the reported kernel times.
+
+The comparison table reports median and p95 kernel time, billions of sparse
+value/RHS products per second, and GFLOP/s. `results.csv` and `metadata.json`
+are written under `build/benchmark/spmm-results/<timestamp>`. Generated MLIR,
+the CSR binary, and profiler traces remain temporary unless
+`--keep-artifacts` is specified.
+
 ## Bundled LLVM build
 
 Build SparseWave together with its pinned LLVM and MLIR revision:

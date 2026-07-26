@@ -1,6 +1,6 @@
-add_mlir_library(sparsewave_spmv_benchmark_utils
+add_mlir_library(sparsewave_benchmark_utils
   SHARED
-  SpMVBenchmarkUtils.cpp
+  SparseBenchmarkUtils.cpp
 
   EXCLUDE_FROM_LIBMLIR
   STANDALONE

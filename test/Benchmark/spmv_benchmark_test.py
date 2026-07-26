@@ -13,6 +13,7 @@ SCRIPT = Path(sys.argv[1]).resolve()
 TEMPORARY_ROOT = Path(sys.argv[2]).resolve()
 SPARSEWAVE_OPT = sys.argv[3]
 sys.argv = [sys.argv[0]]
+sys.path.insert(0, str(SCRIPT.parent))
 
 SPEC = importlib.util.spec_from_file_location("spmv_benchmark", SCRIPT)
 BENCHMARK = importlib.util.module_from_spec(SPEC)
@@ -220,6 +221,25 @@ class SpMVBenchmarkTest(unittest.TestCase):
         self.assertEqual(result["min_us"], 1.0)
         self.assertEqual(result["median_us"], 2.5)
         self.assertEqual(result["p95_us"], 4.0)
+
+    def test_report_spec_computes_mapping_speedup(self):
+        rows = [
+            {
+                "block_size": 64,
+                "mapping": "thread-per-row",
+                "median_us": 4.0,
+            },
+            {
+                "block_size": 64,
+                "mapping": "wave-per-row",
+                "median_us": 2.0,
+            },
+        ]
+        reported = BENCHMARK.common.add_speedups(
+            BENCHMARK.MATRIX_REPORT, rows
+        )
+        self.assertEqual(reported[0]["speedup"], 1.0)
+        self.assertEqual(reported[1]["speedup"], 2.0)
 
 
 if __name__ == "__main__":
