@@ -13,22 +13,29 @@ row count, and nonzero count whenever those properties are statically known.
 ## SparseWave GPU lowering
 
 The `convert-sparsewave-to-gpu` pass maps `sparsewave.spmv` to a
-one-dimensional `gpu.launch`. The `mapping` option accepts `thread-per-row` and
-`wave-per-row`. The latter assigns one Wave32 to each CSR row, distributes
-nonzeros across its lanes, and uses shuffle instructions to reduce the partial
-sums. The `block-size` option controls the number of threads per block, defaults
-to 256, and must be between 1 and 1024.
+one-dimensional `gpu.launch`. The `mapping` option accepts `thread-per-row`,
+`wave-per-row`, and `block-per-row`. Wave-per-row assigns one Wave32 to each
+CSR row and reduces lane partial sums with shuffle instructions. Block-per-row
+assigns an entire block to each row, reduces within each wave, then combines
+the wave sums through workgroup memory and a barrier. The `block-size` option
+controls the number of threads per block, defaults to 256, and must be between
+1 and 1024.
 
 ```sh
 sparsewave-opt input.mlir \
   --convert-sparsewave-to-gpu='mapping=thread-per-row block-size=128'
 ```
 
-For wave-per-row, the block size must be a multiple of 32:
+For wave-per-row and block-per-row, the block size must be a multiple of 32:
 
 ```sh
 sparsewave-opt input.mlir \
   --convert-sparsewave-to-gpu='mapping=wave-per-row block-size=128 wave-size=32'
+```
+
+```sh
+sparsewave-opt input.mlir \
+  --convert-sparsewave-to-gpu='mapping=block-per-row block-size=256 wave-size=32'
 ```
 
 The `sparsewave-to-amdgpu-pipeline` composes SparseWave lowering, GPU kernel
@@ -126,9 +133,10 @@ issues.
 
 ## SpMV benchmark
 
-The SpMV benchmark compares the `thread-per-row` and `wave-per-row` mappings
-using synthetic CSR matrices. The `uniform`, `alternating`, and `skewed`
-distributions compare equal-average row lengths with increasingly uneven work:
+The SpMV benchmark compares the `thread-per-row`, `wave-per-row`, and
+`block-per-row` mappings using synthetic CSR matrices. The `uniform`,
+`alternating`, and `skewed` distributions compare equal-average row lengths
+with increasingly uneven work:
 `alternating` switches between 1 and `2 * NNZ/row - 1`, while `skewed` assigns
 one long row for every seven single-entry rows. Row counts must be multiples of
 2 for `alternating` and 8 for `skewed`, ensuring that all distributions retain
@@ -170,8 +178,8 @@ overhead proportional to NNZ.
 
 Use `--rows`, `--columns`, `--nnz-per-row`, `--distributions`,
 `--block-sizes`, `--warmup`, and `--iterations` to change the workload. The
-benchmark currently requires Wave32 because the `wave-per-row` lowering only
-supports Wave32.
+benchmark currently requires Wave32 because the `wave-per-row` and
+`block-per-row` lowerings only support Wave32.
 
 ## Bundled LLVM build
 

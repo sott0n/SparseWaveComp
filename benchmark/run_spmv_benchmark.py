@@ -14,7 +14,7 @@ import sys
 import tempfile
 
 
-MAPPINGS = ("thread-per-row", "wave-per-row")
+MAPPINGS = ("thread-per-row", "wave-per-row", "block-per-row")
 DISTRIBUTIONS = ("uniform", "alternating", "skewed")
 DISTRIBUTION_PERIODS = {
     "uniform": 1,
@@ -708,33 +708,29 @@ def print_results(args, results):
         print(f"  distributions: {', '.join(args.distributions)}")
     print()
     if args.matrix_data is not None:
-        print(
-            "block  thread median  wave median  thread GNNZ/s  "
-            "wave GNNZ/s  speedup  winner"
-        )
+        print("block  mapping          median       p95    GNNZ/s  vs thread")
         by_case = {
             (result["block_size"], result["mapping"]): result
             for result in results
         }
         for block_size in args.block_sizes:
             thread = by_case[(block_size, "thread-per-row")]
-            wave = by_case[(block_size, "wave-per-row")]
-            speedup = thread["median_us"] / wave["median_us"]
-            winner = "wave" if speedup > 1.0 else "thread"
-            print(
-                f"{block_size:5d}"
-                f"  {thread['median_us']:11.2f} us"
-                f"  {wave['median_us']:9.2f} us"
-                f"  {thread['gnnz_per_sec']:13.2f}"
-                f"  {wave['gnnz_per_sec']:11.2f}"
-                f"  {speedup:7.2f}x"
-                f"  {winner}"
-            )
+            for mapping in MAPPINGS:
+                result = by_case[(block_size, mapping)]
+                speedup = thread["median_us"] / result["median_us"]
+                print(
+                    f"{block_size:5d}"
+                    f"  {mapping:15s}"
+                    f"  {result['median_us']:8.2f} us"
+                    f"  {result['p95_us']:8.2f} us"
+                    f"  {result['gnnz_per_sec']:8.2f}"
+                    f"  {speedup:8.2f}x"
+                )
         return
 
     print(
-        "distribution  NNZ/row  block  thread median  wave median  "
-        "thread GNNZ/s  wave GNNZ/s  speedup  winner"
+        "distribution  NNZ/row  block  mapping          median       p95  "
+        "GNNZ/s  vs thread"
     )
     by_case = {
         (
@@ -756,27 +752,26 @@ def print_results(args, results):
                         "thread-per-row",
                     )
                 ]
-                wave = by_case[
-                    (
-                        distribution,
-                        nnz_per_row,
-                        block_size,
-                        "wave-per-row",
+                for mapping in MAPPINGS:
+                    result = by_case[
+                        (
+                            distribution,
+                            nnz_per_row,
+                            block_size,
+                            mapping,
+                        )
+                    ]
+                    speedup = thread["median_us"] / result["median_us"]
+                    print(
+                        f"{distribution:12s}"
+                        f"  {nnz_per_row:7d}"
+                        f"  {block_size:5d}"
+                        f"  {mapping:15s}"
+                        f"  {result['median_us']:8.2f} us"
+                        f"  {result['p95_us']:8.2f} us"
+                        f"  {result['gnnz_per_sec']:6.2f}"
+                        f"  {speedup:8.2f}x"
                     )
-                ]
-                speedup = thread["median_us"] / wave["median_us"]
-                winner = "wave" if speedup > 1.0 else "thread"
-                print(
-                    f"{distribution:12s}"
-                    f"  {nnz_per_row:7d}"
-                    f"  {block_size:5d}"
-                    f"  {thread['median_us']:11.2f} us"
-                    f"  {wave['median_us']:9.2f} us"
-                    f"  {thread['gnnz_per_sec']:13.2f}"
-                    f"  {wave['gnnz_per_sec']:11.2f}"
-                    f"  {speedup:7.2f}x"
-                    f"  {winner}"
-                )
 
 
 def validate_paths(args):
@@ -795,7 +790,10 @@ def validate_paths(args):
     if args.matrix_data is None:
         validate_distribution_rows(args.rows, args.distributions)
     if args.wave_size != 32:
-        raise ValueError("wave-per-row benchmarking currently requires Wave32")
+        raise ValueError(
+            "wave-per-row and block-per-row benchmarking currently require "
+            "Wave32"
+        )
     invalid_block_sizes = [
         value
         for value in args.block_sizes

@@ -23,7 +23,7 @@ class SpMVBenchmarkTest(unittest.TestCase):
     def setUp(self):
         TEMPORARY_ROOT.mkdir(parents=True, exist_ok=True)
 
-    def test_rendered_distributions_lower_both_mappings(self):
+    def test_rendered_distributions_lower_all_mappings(self):
         template = SCRIPT.parent / "spmv.mlir.in"
         for distribution in BENCHMARK.DISTRIBUTIONS:
             rendered = BENCHMARK.render_mlir(
@@ -120,7 +120,7 @@ class SpMVBenchmarkTest(unittest.TestCase):
         self.assertEqual(binary[:8], BENCHMARK.CSR_BINARY_MAGIC)
         self.assertEqual(struct.unpack("<QQQ", binary[8:32]), (2, 3, 2))
 
-    def test_rendered_matrix_market_input_lowers_both_mappings(self):
+    def test_rendered_matrix_market_input_lowers_all_mappings(self):
         template = SCRIPT.parent / "spmv.mlir.in"
         matrix_path = TEMPORARY_ROOT / "lower.mtx"
         matrix_path.write_text(

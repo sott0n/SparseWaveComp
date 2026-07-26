@@ -8,7 +8,8 @@ def ConvertSparseWaveToGPU
   let summary = "Map SparseWave operations to GPU launches";
   let description = [{
     Lowers sparsewave.spmv to a one-dimensional GPU launch. The work mapping
-    can assign either one GPU thread or one GPU wave to each CSR matrix row.
+    can assign one GPU thread, one GPU wave, or one GPU block to each CSR
+    matrix row.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",
