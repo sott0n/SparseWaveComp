@@ -229,14 +229,16 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   pm.addNestedPass<func::FuncOp>(createSCFToControlFlowPass());
   pm.addPass(memref::createExpandStridedMetadataPass());
 
-  // Map SparseWave contractions to GPU work. SpMV uses the selected row
-  // distribution; baseline SpMM assigns one thread to each output element.
-  ConvertSparseWaveToGPUOptions spmvOptions;
-  spmvOptions.mapping = options.spmvMapping;
-  spmvOptions.blockSize = options.spmvBlockSize;
-  spmvOptions.waveSize =
+  // Map SparseWave contractions to GPU work. SpMV and SpMM have independent
+  // mapping strategies and block sizes because their work units differ.
+  ConvertSparseWaveToGPUOptions sparseWaveOptions;
+  sparseWaveOptions.mapping = options.spmvMapping;
+  sparseWaveOptions.blockSize = options.spmvBlockSize;
+  sparseWaveOptions.waveSize =
       static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
-  pm.addPass(createConvertSparseWaveToGPU(spmvOptions));
+  sparseWaveOptions.spmmMapping = options.spmmMapping;
+  sparseWaveOptions.spmmBlockSize = options.spmmBlockSize;
+  pm.addPass(createConvertSparseWaveToGPU(sparseWaveOptions));
   pm.addPass(createGpuKernelOutliningPass());
   buildAMDGPUBackendPipeline(pm, options);
 }

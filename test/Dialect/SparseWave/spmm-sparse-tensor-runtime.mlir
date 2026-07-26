@@ -1,6 +1,6 @@
 // REQUIRES: amdgpu-runtime
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmv-block-size=128})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=thread-per-output spmm-block-size=64})' \
 // RUN:   | mlir-runner \
 // RUN:     --shared-libs=%mlir_rocm_runtime \
 // RUN:     --shared-libs=%mlir_runner_utils \

@@ -1,12 +1,14 @@
 // RUN: sparsewave-opt %s \
-// RUN:   --convert-sparsewave-to-gpu='block-size=128' \
+// RUN:   --convert-sparsewave-to-gpu='block-size=128 spmm-mapping=thread-per-output spmm-block-size=64' \
 // RUN:   | FileCheck %s
 
 // CHECK-LABEL: func.func @spmm(
+// CHECK: %[[BLOCK_SIZE:.*]] = arith.constant 64 : index
 // CHECK: %[[ROWS:.*]] = memref.dim %{{.*}}, %{{.*}} : memref<?x?xf32>
 // CHECK: %[[COLUMNS:.*]] = memref.dim %{{.*}}, %{{.*}} : memref<?x?xf32>
 // CHECK: %[[ELEMENTS:.*]] = arith.muli %[[ROWS]], %[[COLUMNS]] : index
 // CHECK: gpu.launch blocks
+// CHECK-SAME: = %[[BLOCK_SIZE]],
 // CHECK: %[[ROW:.*]] = arith.divui %{{.*}}, %[[COLUMNS]] : index
 // CHECK: %[[COLUMN:.*]] = arith.remui %{{.*}}, %[[COLUMNS]] : index
 // CHECK: %[[START_VALUE:.*]] = memref.load %{{.*}}[%[[ROW]]]

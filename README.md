@@ -21,6 +21,11 @@ the wave sums through workgroup memory and a barrier. The `block-size` option
 controls the number of threads per block, defaults to 256, and must be between
 1 and 1024.
 
+The same pass maps `sparsewave.spmm` with an independent strategy and block
+size. Its current `spmm-mapping` option is `thread-per-output`, which assigns
+one GPU thread to each dense output element. `spmm-block-size` defaults to 256
+and must be between 1 and 1024.
+
 ```sh
 sparsewave-opt input.mlir \
   --convert-sparsewave-to-gpu='mapping=thread-per-row block-size=128'
@@ -43,12 +48,12 @@ outlining, and the AMD GPU backend:
 
 ```sh
 sparsewave-opt input.mlir \
-  --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx1101 wavefront-size=32 spmv-mapping=wave-per-row spmv-block-size=128})'
+  --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx1101 wavefront-size=32 spmv-mapping=wave-per-row spmv-block-size=128 spmm-mapping=thread-per-output spmm-block-size=64})'
 ```
 
-The integrated pipeline exposes the lowering options as `spmv-mapping` and
-`spmv-block-size`. They are intentionally absent from the backend-only
-pipeline.
+The integrated pipeline exposes the lowering options as `spmv-mapping`,
+`spmv-block-size`, `spmm-mapping`, and `spmm-block-size`. They are
+intentionally absent from the backend-only pipeline.
 
 ## AMD GPU pipeline
 

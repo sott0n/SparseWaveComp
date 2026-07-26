@@ -472,10 +472,24 @@ public:
       signalPassFailure();
       return;
     }
+    if (spmmMapping != "thread-per-output") {
+      getOperation().emitError()
+          << "unsupported SpMM mapping strategy '" << spmmMapping
+          << "'; expected 'thread-per-output'";
+      signalPassFailure();
+      return;
+    }
     if (blockSize < 1 || blockSize > 1024) {
       getOperation().emitError()
           << "SpMV block size must be between 1 and 1024, but got "
           << blockSize.getValue();
+      signalPassFailure();
+      return;
+    }
+    if (spmmBlockSize < 1 || spmmBlockSize > 1024) {
+      getOperation().emitError()
+          << "SpMM block size must be between 1 and 1024, but got "
+          << spmmBlockSize.getValue();
       signalPassFailure();
       return;
     }
@@ -495,7 +509,8 @@ public:
     }
 
     RewritePatternSet patterns(&getContext());
-    patterns.add<ThreadPerOutputSpMMPattern>(&getContext(), blockSize);
+    if (spmmMapping == "thread-per-output")
+      patterns.add<ThreadPerOutputSpMMPattern>(&getContext(), spmmBlockSize);
     if (mapping == "thread-per-row")
       patterns.add<ThreadPerRowSpMVPattern>(&getContext(), blockSize);
     else if (mapping == "wave-per-row")
