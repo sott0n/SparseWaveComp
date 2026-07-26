@@ -10,9 +10,13 @@
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/VectorToSCF/VectorToSCF.h"
+#include "mlir/Dialect/Bufferization/Transforms/Passes.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
+#include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/SparseTensor/Transforms/Passes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
@@ -195,6 +199,37 @@ void mlir::sparsewave::buildAMDGPUBackendPipeline(
 
 void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
     OpPassManager &pm, const SparseWaveToAMDGPUPipelineOptions &options) {
+  // Bridge canonical CSR Linalg SpMV operations to sparsewave.spmv while the
+  // SparseTensor encoding and the zero-filled output are still visible.
+  pm.addPass(createConvertLinalgSpMVToSparseWave());
+
+  // Generalize named Linalg operations that were not consumed by the bridge,
+  // then use the upstream SparseTensor pass to materialize sparse storage and
+  // bufferize the remaining tensor program.
+  pm.addNestedPass<func::FuncOp>(createLinalgGeneralizeNamedOpsPass());
+  pm.addPass(createSparsificationAndBufferizationPass());
+
+  // Normalize bufferized function boundaries. Equivalent results are dropped;
+  // other memref results become output parameters accepted by host lowering.
+  bufferization::DropEquivalentBufferResultsPassOptions dropResultsOptions;
+  dropResultsOptions.modifyPublicFunctions = true;
+  pm.addPass(
+      bufferization::createDropEquivalentBufferResultsPass(dropResultsOptions));
+  bufferization::BufferResultsToOutParamsPassOptions outParamsOptions;
+  outParamsOptions.hoistDynamicAllocs = true;
+  outParamsOptions.modifyPublicFunctions = true;
+  pm.addPass(
+      bufferization::createBufferResultsToOutParamsPass(outParamsOptions));
+
+  // Eliminate host-side SparseTensor, Linalg, SCF, and strided-memref metadata
+  // left by upstream bufferization before converting GPU launches to LLVM.
+  pm.addPass(createStorageSpecifierToLLVMPass());
+  pm.addNestedPass<func::FuncOp>(createConvertLinalgToLoopsPass());
+  pm.addNestedPass<func::FuncOp>(createSCFToControlFlowPass());
+  pm.addPass(memref::createExpandStridedMetadataPass());
+
+  // Map sparsewave.spmv to the selected GPU work distribution and outline the
+  // generated kernel before entering the target-specific AMDGPU backend.
   ConvertSparseWaveToGPUOptions spmvOptions;
   spmvOptions.mapping = options.spmvMapping;
   spmvOptions.blockSize = options.spmvBlockSize;

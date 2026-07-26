@@ -7,15 +7,19 @@ add_mlir_library(SparseWaveAMDGPUPipelines
   LINK_LIBS PUBLIC
   MLIRAMDGPUToROCDL
   MLIRAffineToStandard
+  MLIRBufferizationTransforms
+  MLIRFuncDialect
   MLIRGPUDialect
   MLIRGPUToGPURuntimeTransforms
   MLIRGPUToROCDLTransforms
   MLIRGPUTransforms
+  MLIRLinalgTransforms
   MLIRMemRefTransforms
   MLIRPass
   MLIRReconcileUnrealizedCasts
   MLIRROCDLTarget
   MLIRSCFToControlFlow
+  MLIRSparseTensorTransforms
   MLIRTransforms
   MLIRVectorToSCF
   SparseWaveTransforms

@@ -1,4 +1,5 @@
 add_mlir_library(SparseWaveTransforms
+  LinalgSpMVToSparseWave.cpp
   SparseWaveToGPU.cpp
 
   DEPENDS
@@ -6,11 +7,14 @@ add_mlir_library(SparseWaveTransforms
 
   LINK_LIBS PUBLIC
   MLIRArithDialect
+  MLIRBufferizationDialect
   MLIRGPUDialect
   MLIRIR
+  MLIRLinalgDialect
   MLIRMemRefDialect
   MLIRPass
   MLIRSCFDialect
+  MLIRSparseTensorDialect
   MLIRTransforms
   SparseWaveDialect
 )

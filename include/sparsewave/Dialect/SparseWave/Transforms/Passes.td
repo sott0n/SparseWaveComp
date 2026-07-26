@@ -3,6 +3,24 @@
 
 include "mlir/Pass/PassBase.td"
 
+def ConvertLinalgSpMVToSparseWave
+    : Pass<"convert-linalg-spmv-to-sparsewave", "::mlir::ModuleOp"> {
+  let summary = "Recognize sparse Linalg SpMV operations";
+  let description = [{
+    Rewrites a canonical Linalg matrix-vector contraction with a CSR-encoded
+    SparseTensor matrix and a zero-filled dense output to sparsewave.spmv.
+    SparseTensor storage extraction operations expose the CSR positions,
+    coordinates, and values buffers without defining a separate SparseWave
+    storage representation.
+  }];
+  let dependentDialects = [
+    "bufferization::BufferizationDialect",
+    "linalg::LinalgDialect",
+    "sparse_tensor::SparseTensorDialect",
+    "sparsewave::SparseWaveDialect"
+  ];
+}
+
 def ConvertSparseWaveToGPU
     : Pass<"convert-sparsewave-to-gpu", "::mlir::ModuleOp"> {
   let summary = "Map SparseWave operations to GPU launches";
