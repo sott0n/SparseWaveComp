@@ -62,3 +62,29 @@ func.func @nonzero_counts_must_match(
         memref<4xf64>, memref<4xf64>
   return
 }
+
+// -----
+
+func.func @spmm_rhs_must_be_rank_two(
+    %rowOffsets: memref<5xi32>, %columnIndices: memref<8xi32>,
+    %values: memref<8xf32>, %rhs: memref<4xf32>,
+    %output: memref<4x3xf32>) {
+  // expected-error @+1 {{right-hand side must be a rank-2 memref}}
+  sparsewave.spmm %rowOffsets, %columnIndices, %values, %rhs, %output
+      : memref<5xi32>, memref<8xi32>, memref<8xf32>,
+        memref<4xf32>, memref<4x3xf32>
+  return
+}
+
+// -----
+
+func.func @spmm_columns_must_match(
+    %rowOffsets: memref<5xi32>, %columnIndices: memref<8xi32>,
+    %values: memref<8xf32>, %rhs: memref<4x2xf32>,
+    %output: memref<4x3xf32>) {
+  // expected-error @+1 {{right-hand side and output must have the same number of columns}}
+  sparsewave.spmm %rowOffsets, %columnIndices, %values, %rhs, %output
+      : memref<5xi32>, memref<8xi32>, memref<8xf32>,
+        memref<4x2xf32>, memref<4x3xf32>
+  return
+}

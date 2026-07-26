@@ -41,4 +41,39 @@ def SparseWave_SpMVOp : SparseWave_Op<"spmv"> {
   let hasVerifier = 1;
 }
 
+def SparseWave_SpMMOp : SparseWave_Op<"spmm"> {
+  let summary = "Multiply a CSR matrix by a dense matrix";
+  let description = [{
+    `sparsewave.spmm` computes `output = sparse_matrix * dense_matrix`.
+    The sparse left-hand side is represented in compressed sparse row (CSR)
+    form. Each row of `output` has the same number of columns as
+    `dense_matrix`.
+
+    Example:
+
+    ```mlir
+    sparsewave.spmm %row_offsets, %column_indices, %values, %rhs, %output
+        : memref<5xi32>, memref<8xi32>, memref<8xf32>,
+          memref<4x3xf32>, memref<4x3xf32>
+    ```
+  }];
+
+  let arguments = (ins Arg<AnyMemRef, "CSR row offsets", [MemRead]>:$rowOffsets,
+                       Arg<AnyMemRef, "CSR column indices",
+                           [MemRead]>:$columnIndices,
+                       Arg<AnyMemRef, "CSR nonzero values", [MemRead]>:$values,
+                       Arg<AnyMemRef, "dense right-hand-side matrix",
+                           [MemRead]>:$rhs,
+                       Arg<AnyMemRef, "dense output matrix",
+                           [MemWrite]>:$output);
+
+  let assemblyFormat = [{
+    $rowOffsets `,` $columnIndices `,` $values `,` $rhs `,` $output
+    attr-dict `:` type($rowOffsets) `,` type($columnIndices) `,`
+    type($values) `,` type($rhs) `,` type($output)
+  }];
+
+  let hasVerifier = 1;
+}
+
 #endif // SPARSEWAVE_DIALECT_SPARSEWAVE_IR_SPARSEWAVEOPS_TD

@@ -199,9 +199,10 @@ void mlir::sparsewave::buildAMDGPUBackendPipeline(
 
 void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
     OpPassManager &pm, const SparseWaveToAMDGPUPipelineOptions &options) {
-  // Bridge canonical CSR Linalg SpMV operations to sparsewave.spmv while the
-  // SparseTensor encoding and the zero-filled output are still visible.
+  // Bridge canonical CSR Linalg SpMV/SpMM operations while the SparseTensor
+  // encoding and the zero-filled output are still visible.
   pm.addPass(createConvertLinalgSpMVToSparseWave());
+  pm.addPass(createConvertLinalgSpMMToSparseWave());
 
   // Generalize named Linalg operations that were not consumed by the bridge,
   // then use the upstream SparseTensor pass to materialize sparse storage and
@@ -228,8 +229,8 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   pm.addNestedPass<func::FuncOp>(createSCFToControlFlowPass());
   pm.addPass(memref::createExpandStridedMetadataPass());
 
-  // Map sparsewave.spmv to the selected GPU work distribution and outline the
-  // generated kernel before entering the target-specific AMDGPU backend.
+  // Map SparseWave contractions to GPU work. SpMV uses the selected row
+  // distribution; baseline SpMM assigns one thread to each output element.
   ConvertSparseWaveToGPUOptions spmvOptions;
   spmvOptions.mapping = options.spmvMapping;
   spmvOptions.blockSize = options.spmvBlockSize;

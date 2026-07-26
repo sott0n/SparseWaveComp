@@ -365,6 +365,97 @@ private:
   int64_t waveSize;
 };
 
+class ThreadPerOutputSpMMPattern : public OpRewritePattern<SpMMOp> {
+public:
+  ThreadPerOutputSpMMPattern(MLIRContext *context, int64_t blockSize)
+      : OpRewritePattern<SpMMOp>(context), blockSize(blockSize) {}
+
+  LogicalResult matchAndRewrite(SpMMOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value blockSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, blockSize);
+    Value rowCount =
+        memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
+    Value columnCount =
+        memref::DimOp::create(rewriter, loc, op.getOutput(), oneIndex);
+    Value outputElementCount =
+        arith::MulIOp::create(rewriter, loc, rowCount, columnCount);
+    Value requiredBlocks = arith::CeilDivUIOp::create(
+        rewriter, loc, outputElementCount, blockSizeValue);
+    Value gridSize =
+        arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
+
+    gpu::LaunchOp launch =
+        gpu::LaunchOp::create(rewriter, loc, gridSize, oneIndex, oneIndex,
+                              blockSizeValue, oneIndex, oneIndex);
+    rewriter.setInsertionPointToStart(&launch.getBody().front());
+
+    Value elementBase = arith::MulIOp::create(
+        rewriter, loc, launch.getBlockIds().x, launch.getBlockSize().x);
+    Value element = arith::AddIOp::create(rewriter, loc, elementBase,
+                                          launch.getThreadIds().x);
+    Value elementIsActive = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::ult, element, outputElementCount);
+
+    scf::IfOp::create(
+        rewriter, loc, elementIsActive,
+        [&](OpBuilder &builder, Location bodyLoc) {
+          Value row =
+              arith::DivUIOp::create(builder, bodyLoc, element, columnCount);
+          Value outputColumn =
+              arith::RemUIOp::create(builder, bodyLoc, element, columnCount);
+          Value nextRow =
+              arith::AddIOp::create(builder, bodyLoc, row, oneIndex);
+          Value rowStartValue =
+              memref::LoadOp::create(builder, bodyLoc, op.getRowOffsets(), row);
+          Value rowEndValue = memref::LoadOp::create(
+              builder, bodyLoc, op.getRowOffsets(), nextRow);
+          Value rowStart = castToIndex(builder, bodyLoc, rowStartValue);
+          Value rowEnd = castToIndex(builder, bodyLoc, rowEndValue);
+
+          auto valueType =
+              cast<MemRefType>(op.getValues().getType()).getElementType();
+          Value zero = arith::ConstantOp::create(
+              builder, bodyLoc, builder.getZeroAttr(valueType));
+          auto reduction = scf::ForOp::create(
+              builder, bodyLoc, rowStart, rowEnd, oneIndex, ValueRange{zero},
+              [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
+                  ValueRange iterArgs) {
+                Value reductionIndexValue = memref::LoadOp::create(
+                    loopBuilder, loopLoc, op.getColumnIndices(), position);
+                Value reductionIndex =
+                    castToIndex(loopBuilder, loopLoc, reductionIndexValue);
+                Value sparseValue = memref::LoadOp::create(
+                    loopBuilder, loopLoc, op.getValues(), position);
+                Value rhsValue = memref::LoadOp::create(
+                    loopBuilder, loopLoc, op.getRhs(),
+                    ValueRange{reductionIndex, outputColumn});
+                Value product = arith::MulFOp::create(loopBuilder, loopLoc,
+                                                      sparseValue, rhsValue);
+                Value sum = arith::AddFOp::create(loopBuilder, loopLoc,
+                                                  iterArgs.front(), product);
+                scf::YieldOp::create(loopBuilder, loopLoc, sum);
+              });
+          memref::StoreOp::create(builder, bodyLoc, reduction.getResult(0),
+                                  op.getOutput(),
+                                  ValueRange{row, outputColumn});
+          scf::YieldOp::create(builder, bodyLoc);
+        },
+        {});
+
+    rewriter.setInsertionPointToEnd(&launch.getBody().front());
+    gpu::TerminatorOp::create(rewriter, loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  int64_t blockSize;
+};
+
 class ConvertSparseWaveToGPU
     : public impl::ConvertSparseWaveToGPUBase<ConvertSparseWaveToGPU> {
 public:
@@ -404,6 +495,7 @@ public:
     }
 
     RewritePatternSet patterns(&getContext());
+    patterns.add<ThreadPerOutputSpMMPattern>(&getContext(), blockSize);
     if (mapping == "thread-per-row")
       patterns.add<ThreadPerRowSpMVPattern>(&getContext(), blockSize);
     else if (mapping == "wave-per-row")

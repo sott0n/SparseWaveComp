@@ -21,13 +21,30 @@ def ConvertLinalgSpMVToSparseWave
   ];
 }
 
+def ConvertLinalgSpMMToSparseWave
+    : Pass<"convert-linalg-spmm-to-sparsewave", "::mlir::ModuleOp"> {
+  let summary = "Recognize sparse Linalg SpMM operations";
+  let description = [{
+    Rewrites a canonical Linalg matrix-matrix contraction with a CSR-encoded
+    SparseTensor left-hand side and a zero-filled dense output to
+    sparsewave.spmm.
+  }];
+  let dependentDialects = [
+    "bufferization::BufferizationDialect",
+    "linalg::LinalgDialect",
+    "sparse_tensor::SparseTensorDialect",
+    "sparsewave::SparseWaveDialect"
+  ];
+}
+
 def ConvertSparseWaveToGPU
     : Pass<"convert-sparsewave-to-gpu", "::mlir::ModuleOp"> {
   let summary = "Map SparseWave operations to GPU launches";
   let description = [{
-    Lowers sparsewave.spmv to a one-dimensional GPU launch. The work mapping
-    can assign one GPU thread, one GPU wave, or one GPU block to each CSR
-    matrix row.
+    Lowers sparsewave.spmv and sparsewave.spmm to one-dimensional GPU
+    launches. The SpMV work mapping can assign one GPU thread, one GPU wave,
+    or one GPU block to each CSR matrix row. SpMM assigns one thread to each
+    dense output element.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",

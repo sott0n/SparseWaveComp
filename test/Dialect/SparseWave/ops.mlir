@@ -23,3 +23,15 @@ func.func @dynamic_spmv(
         memref<?xf64>, memref<?xf64>
   return
 }
+
+// CHECK-LABEL: func.func @static_spmm(
+func.func @static_spmm(
+    %rowOffsets: memref<5xi32>, %columnIndices: memref<8xi32>,
+    %values: memref<8xf32>, %rhs: memref<4x3xf32>,
+    %output: memref<4x3xf32>) {
+  // CHECK: sparsewave.spmm
+  sparsewave.spmm %rowOffsets, %columnIndices, %values, %rhs, %output
+      : memref<5xi32>, memref<8xi32>, memref<8xf32>,
+        memref<4x3xf32>, memref<4x3xf32>
+  return
+}
