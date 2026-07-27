@@ -4,6 +4,12 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --convert-sparsewave-to-gpu='spmm-mapping=wave-per-row-tile spmm-block-size=64 wave-size=32 spmm-tile-size=4' \
 // RUN:   | FileCheck %s --check-prefix=WAVE-TILE
+// RUN: sparsewave-opt %s \
+// RUN:   --convert-sparsewave-to-gpu='spmm-mapping=wave-per-row-tile spmm-block-size=64 wave-size=32 spmm-tile-size=4' \
+// RUN:   | FileCheck %s --check-prefix=FULL-TILE
+// RUN: sparsewave-opt %s \
+// RUN:   --convert-sparsewave-to-gpu='spmm-mapping=wave-per-row-tile spmm-block-size=64 wave-size=32 spmm-tile-size=4' \
+// RUN:   | FileCheck %s --check-prefix=TAIL-TILE
 
 // CHECK-LABEL: func.func @spmm(
 // CHECK: %[[BLOCK_SIZE:.*]] = arith.constant 64 : index
@@ -38,6 +44,23 @@
 // WAVE-TILE-COUNT-4: gpu.shuffle xor
 // WAVE-TILE-COUNT-4: memref.store %{{.*}}, %{{.*}}[%{{.*}}, %{{.*}}]
 // WAVE-TILE-NOT: sparsewave.spmm
+// FULL-TILE-LABEL: func.func @spmm(
+// FULL-TILE: %[[TILE_SIZE:.*]] = arith.constant 4 : index
+// FULL-TILE: %[[FIRST_OUTPUT_COLUMN:.*]] = arith.muli %{{.*}}, %[[TILE_SIZE]]
+// FULL-TILE: %[[TILE_END:.*]] = arith.addi %[[FIRST_OUTPUT_COLUMN]], %[[TILE_SIZE]]
+// FULL-TILE: %[[IS_FULL_TILE:.*]] = arith.cmpi ule, %[[TILE_END]], %{{.*}}
+// FULL-TILE: scf.if %[[IS_FULL_TILE]]
+// FULL-TILE: scf.for
+// FULL-TILE-NOT: scf.if
+// FULL-TILE: scf.yield
+// FULL-TILE: gpu.shuffle xor
+// FULL-TILE: } else {
+// TAIL-TILE-LABEL: func.func @spmm(
+// TAIL-TILE: } else {
+// TAIL-TILE-COUNT-4: arith.cmpi ult
+// TAIL-TILE: scf.for
+// TAIL-TILE: scf.if
+// TAIL-TILE: } else {
 func.func @spmm(
     %rowOffsets: memref<?xi32>,
     %columnIndices: memref<?xi32>,
