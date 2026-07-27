@@ -22,9 +22,12 @@ controls the number of threads per block, defaults to 256, and must be between
 1 and 1024.
 
 The same pass maps `sparsewave.spmm` with an independent strategy and block
-size. Its current `spmm-mapping` option is `thread-per-output`, which assigns
-one GPU thread to each dense output element. `spmm-block-size` defaults to 256
-and must be between 1 and 1024.
+size. `thread-per-output` assigns one GPU thread to each dense output element.
+`wave-per-row-tile` assigns one Wave32 to a CSR row and a tile of output
+columns. Each lane loads a sparse value once, reuses it across the tile, and
+the wave reduces one partial sum per output column. `spmm-tile-size` controls
+the tile width and defaults to 4. `spmm-block-size` defaults to 256 and must be
+between 1 and 1024; the wave mapping requires a multiple of 32.
 
 ```sh
 sparsewave-opt input.mlir \
@@ -48,11 +51,11 @@ outlining, and the AMD GPU backend:
 
 ```sh
 sparsewave-opt input.mlir \
-  --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx1101 wavefront-size=32 spmv-mapping=wave-per-row spmv-block-size=128 spmm-mapping=thread-per-output spmm-block-size=64})'
+  --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx1101 wavefront-size=32 spmv-mapping=wave-per-row spmv-block-size=128 spmm-mapping=wave-per-row-tile spmm-block-size=64 spmm-tile-size=4})'
 ```
 
 The integrated pipeline exposes the lowering options as `spmv-mapping`,
-`spmv-block-size`, `spmm-mapping`, and `spmm-block-size`. They are
+`spmv-block-size`, `spmm-mapping`, `spmm-block-size`, and `spmm-tile-size`. They are
 intentionally absent from the backend-only pipeline.
 
 ## AMD GPU pipeline
@@ -189,16 +192,16 @@ benchmark currently requires Wave32 because the `wave-per-row` and
 ## SpMM benchmark
 
 The SpMM benchmark uses a Matrix Market sparse left-hand side and varies the
-number of columns in the dense right-hand side. It currently establishes the
-`thread-per-output` baseline that future SpMM mappings will be compared
-against:
+number of columns in the dense right-hand side. It compares
+`thread-per-output` with `wave-per-row-tile`:
 
 ```sh
 python3 benchmark/run_spmm_benchmark.py \
   --chip=gfx1101 \
   --matrix=/path/to/matrix.mtx \
   --rhs-columns=8,16,32,64,128 \
-  --block-sizes=64,128,256,512
+  --block-sizes=64,128,256,512 \
+  --tile-size=4
 ```
 
 The sparse matrix is converted to the same temporary CSR binary used by the
@@ -208,8 +211,9 @@ dispatches and 50 measured dispatches are used by default. `rocprofv3` kernel
 tracing excludes compilation, loading, allocation, copies, and validation from
 the reported kernel times.
 
-The comparison table reports median and p95 kernel time, billions of sparse
-value/RHS products per second, and GFLOP/s. `results.csv` and `metadata.json`
+The comparison table includes the tile size and reports median and p95 kernel
+time, billions of sparse value/RHS products per second, and GFLOP/s.
+`results.csv` and `metadata.json`
 are written under `build/benchmark/spmm-results/<timestamp>`. Generated MLIR,
 the CSR binary, and profiler traces remain temporary unless
 `--keep-artifacts` is specified.

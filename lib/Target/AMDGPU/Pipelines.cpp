@@ -238,6 +238,7 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
       static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
   sparseWaveOptions.spmmMapping = options.spmmMapping;
   sparseWaveOptions.spmmBlockSize = options.spmmBlockSize;
+  sparseWaveOptions.spmmTileSize = options.spmmTileSize;
   pm.addPass(createConvertSparseWaveToGPU(sparseWaveOptions));
   pm.addPass(createGpuKernelOutliningPass());
   buildAMDGPUBackendPipeline(pm, options);

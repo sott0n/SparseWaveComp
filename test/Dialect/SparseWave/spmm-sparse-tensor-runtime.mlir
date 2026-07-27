@@ -6,6 +6,13 @@
 // RUN:     --shared-libs=%mlir_runner_utils \
 // RUN:     --entry-point-result=void \
 // RUN:   | FileCheck %s
+// RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=wave-per-row-tile spmm-block-size=64 spmm-tile-size=4})' \
+// RUN:   | mlir-runner \
+// RUN:     --shared-libs=%mlir_rocm_runtime \
+// RUN:     --shared-libs=%mlir_runner_utils \
+// RUN:     --entry-point-result=void \
+// RUN:   | FileCheck %s
 
 #csr = #sparse_tensor.encoding<{
   map = (d0, d1) -> (d0 : dense, d1 : compressed),

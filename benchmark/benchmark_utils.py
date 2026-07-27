@@ -413,16 +413,28 @@ def validate_block_sizes(args, require_wave_multiple):
         )
 
 
-def compile_mlir(args, source, output, operation, mapping, block_size):
+def compile_mlir(
+    args,
+    source,
+    output,
+    operation,
+    mapping,
+    block_size,
+    pipeline_options=(),
+):
+    lowering_options = [
+        f"{operation}-mapping={mapping}",
+        f"{operation}-block-size={block_size}",
+        *pipeline_options,
+    ]
     pipeline = (
         "builtin.module(convert-scf-to-cf,"
         "sparsewave-to-amdgpu-pipeline{"
         f"chip={args.chip} "
         f"wavefront-size={args.wave_size} "
         f"rocm-path={args.rocm_path} "
-        f"{operation}-mapping={mapping} "
-        f"{operation}-block-size={block_size}"
-        "},reconcile-unrealized-casts)"
+        + " ".join(lowering_options)
+        + "},reconcile-unrealized-casts)"
     )
     command = [
         str(args.sparsewave_opt),
@@ -486,6 +498,7 @@ def run_case(
     mapping,
     block_size,
     csr_binary,
+    pipeline_options=(),
 ):
     case_directory.mkdir(parents=True)
     source = case_directory / "input.mlir"
@@ -494,7 +507,13 @@ def run_case(
     trace_directory.mkdir()
     source.write_text(source_text, encoding="utf-8")
     compile_command = compile_mlir(
-        args, source, compiled, operation, mapping, block_size
+        args,
+        source,
+        compiled,
+        operation,
+        mapping,
+        block_size,
+        pipeline_options,
     )
     profile_command = profile_mlir(
         args, compiled, trace_directory, csr_binary, operation
@@ -589,6 +608,7 @@ REPORT_COLUMNS = {
     "nnz_per_row": TableColumn("NNZ/row", "nnz_per_row", 7, "d"),
     "rhs_cols": TableColumn("RHS cols", "rhs_cols", 8, "d"),
     "block_size": TableColumn("block", "block_size", 5, "d"),
+    "tile_size": TableColumn("tile", "tile_size", 4, "d"),
     "mapping": TableColumn("mapping", "mapping", 18, alignment="<"),
     "median_us": TableColumn("median", "median_us", 11, ".2f", " us"),
     "p95_us": TableColumn("p95", "p95_us", 11, ".2f", " us"),

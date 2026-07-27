@@ -43,8 +43,9 @@ def ConvertSparseWaveToGPU
   let description = [{
     Lowers sparsewave.spmv and sparsewave.spmm to one-dimensional GPU
     launches. The SpMV work mapping can assign one GPU thread, one GPU wave,
-    or one GPU block to each CSR matrix row. The thread-per-output SpMM mapping
-    assigns one GPU thread to each dense output element.
+    or one GPU block to each CSR matrix row. SpMM can assign one GPU thread to
+    each dense output element or one GPU wave to a CSR row and a tile of dense
+    output columns.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",
@@ -61,7 +62,10 @@ def ConvertSparseWaveToGPU
            "SpMM work mapping strategy">,
     Option<"spmmBlockSize", "spmm-block-size", "int64_t",
            /*default=*/"256",
-           "Number of GPU threads in each SpMM block">
+           "Number of GPU threads in each SpMM block">,
+    Option<"spmmTileSize", "spmm-tile-size", "int64_t",
+           /*default=*/"4",
+           "Number of dense output columns in each SpMM wave tile">
   ];
   let dependentDialects = [
     "arith::ArithDialect",

@@ -1,6 +1,9 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --convert-sparsewave-to-gpu='block-size=128 spmm-mapping=thread-per-output spmm-block-size=64' \
 // RUN:   | FileCheck %s
+// RUN: sparsewave-opt %s \
+// RUN:   --convert-sparsewave-to-gpu='spmm-mapping=wave-per-row-tile spmm-block-size=64 wave-size=32 spmm-tile-size=4' \
+// RUN:   | FileCheck %s --check-prefix=WAVE-TILE
 
 // CHECK-LABEL: func.func @spmm(
 // CHECK: %[[BLOCK_SIZE:.*]] = arith.constant 64 : index
@@ -17,6 +20,24 @@
 // CHECK: arith.mulf
 // CHECK: memref.store %{{.*}}, %{{.*}}[%[[ROW]], %[[COLUMN]]]
 // CHECK-NOT: sparsewave.spmm
+// WAVE-TILE-LABEL: func.func @spmm(
+// WAVE-TILE: %[[BLOCK_SIZE:.*]] = arith.constant 64 : index
+// WAVE-TILE: %[[WAVE_SIZE:.*]] = arith.constant 32 : index
+// WAVE-TILE: %[[TILE_SIZE:.*]] = arith.constant 4 : index
+// WAVE-TILE: %[[ROWS:.*]] = memref.dim %{{.*}}, %{{.*}} : memref<?x?xf32>
+// WAVE-TILE: %[[COLUMNS:.*]] = memref.dim %{{.*}}, %{{.*}} : memref<?x?xf32>
+// WAVE-TILE: %[[TILES:.*]] = arith.ceildivui %[[COLUMNS]], %[[TILE_SIZE]]
+// WAVE-TILE: gpu.launch blocks
+// WAVE-TILE-SAME: threads(
+// WAVE-TILE-SAME: = %[[BLOCK_SIZE]],
+// WAVE-TILE: %[[LANE:.*]] = arith.remui %{{.*}}, %[[WAVE_SIZE]]
+// WAVE-TILE: %[[FIRST_POSITION:.*]] = arith.addi %{{.*}}, %[[LANE]]
+// WAVE-TILE: scf.for %{{.*}} = %[[FIRST_POSITION]] to %{{.*}} step %[[WAVE_SIZE]]
+// WAVE-TILE: %[[SPARSE_VALUE:.*]] = memref.load %{{.*}}[%{{.*}}]
+// WAVE-TILE-COUNT-4: memref.load %{{.*}}[%{{.*}}, %{{.*}}]
+// WAVE-TILE-COUNT-4: gpu.shuffle xor
+// WAVE-TILE-COUNT-4: memref.store %{{.*}}, %{{.*}}[%{{.*}}, %{{.*}}]
+// WAVE-TILE-NOT: sparsewave.spmm
 func.func @spmm(
     %rowOffsets: memref<?xi32>,
     %columnIndices: memref<?xi32>,

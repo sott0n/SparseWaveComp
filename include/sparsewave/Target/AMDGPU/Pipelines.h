@@ -123,6 +123,11 @@ struct SparseWaveToAMDGPUPipelineOptions
       *this, "spmm-block-size",
       llvm::cl::desc("Number of GPU threads in each SpMM block."),
       llvm::cl::init(256)};
+
+  PassOptions::Option<int64_t> spmmTileSize{
+      *this, "spmm-tile-size",
+      llvm::cl::desc("Number of output columns in each SpMM wave tile."),
+      llvm::cl::init(4)};
 };
 
 void buildAMDGPUBackendPipeline(OpPassManager &pm,

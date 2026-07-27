@@ -53,7 +53,8 @@ class SpMMBenchmarkTest(unittest.TestCase):
                 str(source),
                 (
                     "--convert-sparsewave-to-gpu="
-                    "spmm-mapping=thread-per-output spmm-block-size=64"
+                    "spmm-mapping=wave-per-row-tile spmm-block-size=64 "
+                    "wave-size=32 spmm-tile-size=4"
                 ),
             ],
             check=True,
@@ -67,6 +68,7 @@ class SpMMBenchmarkTest(unittest.TestCase):
             matrix=self.matrix_path,
             matrix_data=self.matrix,
             wave_size=32,
+            tile_size=4,
             warmup=1,
             iterations=4,
         )
@@ -85,7 +87,7 @@ class SpMMBenchmarkTest(unittest.TestCase):
         self.assertEqual(result["gproducts_per_sec"], 0.012)
         self.assertEqual(result["gflops"], 0.024)
 
-    def test_block_size_validation_allows_non_wave_multiples(self):
+    def test_wave_mapping_validation(self):
         args = types.SimpleNamespace(
             sparsewave_opt=Path(__file__),
             mlir_runner=Path(__file__),
@@ -93,12 +95,14 @@ class SpMMBenchmarkTest(unittest.TestCase):
             runner_utils=Path(__file__),
             benchmark_utils=Path(__file__),
             rocprofv3=Path(__file__),
-            block_sizes=[48, 1024],
+            block_sizes=[64, 1024],
+            wave_size=32,
+            tile_size=4,
             matrix_data=self.matrix,
         )
         BENCHMARK.validate_paths(args)
-        args.block_sizes = [1025]
-        with self.assertRaisesRegex(ValueError, "must not exceed 1024"):
+        args.block_sizes = [48]
+        with self.assertRaisesRegex(ValueError, "multiples of wave size"):
             BENCHMARK.validate_paths(args)
 
 

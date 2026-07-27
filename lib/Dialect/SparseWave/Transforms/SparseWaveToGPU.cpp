@@ -10,6 +10,8 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "llvm/ADT/SmallVector.h"
+
 namespace mlir::sparsewave {
 #define GEN_PASS_DEF_CONVERTSPARSEWAVETOGPU
 #include "sparsewave/Dialect/SparseWave/Transforms/Passes.h.inc"
@@ -456,6 +458,169 @@ private:
   int64_t blockSize;
 };
 
+class WavePerRowTileSpMMPattern : public OpRewritePattern<SpMMOp> {
+public:
+  WavePerRowTileSpMMPattern(MLIRContext *context, int64_t blockSize,
+                            int64_t waveSize, int64_t tileSize)
+      : OpRewritePattern<SpMMOp>(context), blockSize(blockSize),
+        waveSize(waveSize), tileSize(tileSize) {}
+
+  LogicalResult matchAndRewrite(SpMMOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value blockSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, blockSize);
+    Value waveSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, waveSize);
+    Value tileSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, tileSize);
+    Value wavesPerBlockValue =
+        arith::ConstantIndexOp::create(rewriter, loc, blockSize / waveSize);
+    Value rowCount =
+        memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
+    Value columnCount =
+        memref::DimOp::create(rewriter, loc, op.getOutput(), oneIndex);
+    Value tilesPerRow =
+        arith::CeilDivUIOp::create(rewriter, loc, columnCount, tileSizeValue);
+    Value workUnitCount =
+        arith::MulIOp::create(rewriter, loc, rowCount, tilesPerRow);
+    Value requiredBlocks = arith::CeilDivUIOp::create(
+        rewriter, loc, workUnitCount, wavesPerBlockValue);
+    Value gridSize =
+        arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
+
+    gpu::LaunchOp launch =
+        gpu::LaunchOp::create(rewriter, loc, gridSize, oneIndex, oneIndex,
+                              blockSizeValue, oneIndex, oneIndex);
+    rewriter.setInsertionPointToStart(&launch.getBody().front());
+
+    Value waveInBlock = arith::DivUIOp::create(
+        rewriter, loc, launch.getThreadIds().x, waveSizeValue);
+    Value lane = arith::RemUIOp::create(rewriter, loc, launch.getThreadIds().x,
+                                        waveSizeValue);
+    Value waveBase = arith::MulIOp::create(
+        rewriter, loc, launch.getBlockIds().x, wavesPerBlockValue);
+    Value workUnit =
+        arith::AddIOp::create(rewriter, loc, waveBase, waveInBlock);
+    Value workUnitIsActive = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::ult, workUnit, workUnitCount);
+
+    scf::IfOp::create(
+        rewriter, loc, workUnitIsActive,
+        [&](OpBuilder &builder, Location bodyLoc) {
+          Value row =
+              arith::DivUIOp::create(builder, bodyLoc, workUnit, tilesPerRow);
+          Value tile =
+              arith::RemUIOp::create(builder, bodyLoc, workUnit, tilesPerRow);
+          Value firstOutputColumn =
+              arith::MulIOp::create(builder, bodyLoc, tile, tileSizeValue);
+          Value nextRow =
+              arith::AddIOp::create(builder, bodyLoc, row, oneIndex);
+          Value rowStartValue =
+              memref::LoadOp::create(builder, bodyLoc, op.getRowOffsets(), row);
+          Value rowEndValue = memref::LoadOp::create(
+              builder, bodyLoc, op.getRowOffsets(), nextRow);
+          Value rowStart = castToIndex(builder, bodyLoc, rowStartValue);
+          Value rowEnd = castToIndex(builder, bodyLoc, rowEndValue);
+          Value firstPosition =
+              arith::AddIOp::create(builder, bodyLoc, rowStart, lane);
+
+          auto valueType =
+              cast<MemRefType>(op.getValues().getType()).getElementType();
+          Value zero = arith::ConstantOp::create(
+              builder, bodyLoc, builder.getZeroAttr(valueType));
+          SmallVector<Value> outputColumns;
+          SmallVector<Value> activeColumns;
+          outputColumns.reserve(tileSize);
+          activeColumns.reserve(tileSize);
+          for (int64_t tileColumn = 0; tileColumn < tileSize; ++tileColumn) {
+            Value tileColumnValue =
+                arith::ConstantIndexOp::create(builder, bodyLoc, tileColumn);
+            Value outputColumn = arith::AddIOp::create(
+                builder, bodyLoc, firstOutputColumn, tileColumnValue);
+            outputColumns.push_back(outputColumn);
+            activeColumns.push_back(arith::CmpIOp::create(
+                builder, bodyLoc, arith::CmpIPredicate::ult, outputColumn,
+                columnCount));
+          }
+          SmallVector<Value> initialSums(tileSize, zero);
+          auto partialReductions = scf::ForOp::create(
+              builder, bodyLoc, firstPosition, rowEnd, waveSizeValue,
+              initialSums,
+              [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
+                  ValueRange iterArgs) {
+                Value reductionIndexValue = memref::LoadOp::create(
+                    loopBuilder, loopLoc, op.getColumnIndices(), position);
+                Value reductionIndex =
+                    castToIndex(loopBuilder, loopLoc, reductionIndexValue);
+                Value sparseValue = memref::LoadOp::create(
+                    loopBuilder, loopLoc, op.getValues(), position);
+                SmallVector<Value> nextSums;
+                nextSums.reserve(tileSize);
+                for (int64_t tileColumn = 0; tileColumn < tileSize;
+                     ++tileColumn) {
+                  auto update = scf::IfOp::create(
+                      loopBuilder, loopLoc, TypeRange{valueType},
+                      activeColumns[tileColumn], /*withElseRegion=*/true);
+                  loopBuilder.setInsertionPointToStart(
+                      &update.getThenRegion().front());
+                  Value rhsValue = memref::LoadOp::create(
+                      loopBuilder, loopLoc, op.getRhs(),
+                      ValueRange{reductionIndex, outputColumns[tileColumn]});
+                  Value product = arith::MulFOp::create(loopBuilder, loopLoc,
+                                                        sparseValue, rhsValue);
+                  Value sum = arith::AddFOp::create(
+                      loopBuilder, loopLoc, iterArgs[tileColumn], product);
+                  scf::YieldOp::create(loopBuilder, loopLoc, sum);
+                  loopBuilder.setInsertionPointToStart(
+                      &update.getElseRegion().front());
+                  scf::YieldOp::create(loopBuilder, loopLoc,
+                                       iterArgs[tileColumn]);
+                  loopBuilder.setInsertionPointAfter(update);
+                  nextSums.push_back(update.getResult(0));
+                }
+                scf::YieldOp::create(loopBuilder, loopLoc, nextSums);
+              });
+
+          for (int64_t tileColumn = 0; tileColumn < tileSize; ++tileColumn) {
+            Value waveSum = buildWaveReduction(
+                builder, bodyLoc, partialReductions.getResult(tileColumn),
+                waveSize);
+            scf::IfOp::create(
+                builder, bodyLoc, activeColumns[tileColumn],
+                [&](OpBuilder &columnBuilder, Location columnLoc) {
+                  Value laneIsZero = arith::CmpIOp::create(
+                      columnBuilder, columnLoc, arith::CmpIPredicate::eq, lane,
+                      zeroIndex);
+                  scf::IfOp::create(
+                      columnBuilder, columnLoc, laneIsZero,
+                      [&](OpBuilder &storeBuilder, Location storeLoc) {
+                        memref::StoreOp::create(
+                            storeBuilder, storeLoc, waveSum, op.getOutput(),
+                            ValueRange{row, outputColumns[tileColumn]});
+                        scf::YieldOp::create(storeBuilder, storeLoc);
+                      });
+                  scf::YieldOp::create(columnBuilder, columnLoc);
+                });
+          }
+          scf::YieldOp::create(builder, bodyLoc);
+        },
+        {});
+
+    rewriter.setInsertionPointToEnd(&launch.getBody().front());
+    gpu::TerminatorOp::create(rewriter, loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  int64_t blockSize;
+  int64_t waveSize;
+  int64_t tileSize;
+};
+
 class ConvertSparseWaveToGPU
     : public impl::ConvertSparseWaveToGPUBase<ConvertSparseWaveToGPU> {
 public:
@@ -472,10 +637,11 @@ public:
       signalPassFailure();
       return;
     }
-    if (spmmMapping != "thread-per-output") {
+    if (spmmMapping != "thread-per-output" &&
+        spmmMapping != "wave-per-row-tile") {
       getOperation().emitError()
           << "unsupported SpMM mapping strategy '" << spmmMapping
-          << "'; expected 'thread-per-output'";
+          << "'; expected 'thread-per-output' or 'wave-per-row-tile'";
       signalPassFailure();
       return;
     }
@@ -490,6 +656,28 @@ public:
       getOperation().emitError()
           << "SpMM block size must be between 1 and 1024, but got "
           << spmmBlockSize.getValue();
+      signalPassFailure();
+      return;
+    }
+    if (spmmTileSize < 1 || spmmTileSize > 32) {
+      getOperation().emitError()
+          << "SpMM tile size must be between 1 and 32, but got "
+          << spmmTileSize.getValue();
+      signalPassFailure();
+      return;
+    }
+    if (spmmMapping == "wave-per-row-tile" && waveSize != 32) {
+      getOperation().emitError()
+          << "wave-per-row-tile currently requires Wave32, but got wave size "
+          << waveSize.getValue();
+      signalPassFailure();
+      return;
+    }
+    if (spmmMapping == "wave-per-row-tile" && spmmBlockSize % waveSize != 0) {
+      getOperation().emitError()
+          << "wave-per-row-tile requires the SpMM block size to be a multiple "
+             "of "
+          << waveSize.getValue() << ", but got " << spmmBlockSize.getValue();
       signalPassFailure();
       return;
     }
@@ -511,6 +699,9 @@ public:
     RewritePatternSet patterns(&getContext());
     if (spmmMapping == "thread-per-output")
       patterns.add<ThreadPerOutputSpMMPattern>(&getContext(), spmmBlockSize);
+    else
+      patterns.add<WavePerRowTileSpMMPattern>(&getContext(), spmmBlockSize,
+                                              waveSize, spmmTileSize);
     if (mapping == "thread-per-row")
       patterns.add<ThreadPerRowSpMVPattern>(&getContext(), blockSize);
     else if (mapping == "wave-per-row")
