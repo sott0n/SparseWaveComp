@@ -220,6 +220,10 @@ are written under `build/benchmark/spmm-results/<timestamp>`. Generated MLIR,
 the CSR binary, and profiler traces remain temporary unless
 `--keep-artifacts` is specified.
 
+See the
+[gfx1101 SpMM tile-size sweep](docs/benchmarks/spmm-tile-size-sweep-gfx1101.md)
+for a recorded comparison across representative SuiteSparse matrices.
+
 ## Bundled LLVM build
 
 Build SparseWave together with its pinned LLVM and MLIR revision:
