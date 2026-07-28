@@ -589,7 +589,11 @@ class TableColumn:
         return f"{self.header:{self.alignment}{self.width}}"
 
     def format_value(self, row):
-        value = format(row[self.key], self.format_spec) + self.suffix
+        raw_value = row[self.key]
+        if raw_value is None:
+            value = "-"
+        else:
+            value = format(raw_value, self.format_spec) + self.suffix
         return f"{value:{self.alignment}{self.width}}"
 
 

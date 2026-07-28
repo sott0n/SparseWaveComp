@@ -201,7 +201,7 @@ python3 benchmark/run_spmm_benchmark.py \
   --matrix=/path/to/matrix.mtx \
   --rhs-columns=8,16,32,64,128 \
   --block-sizes=64,128,256,512 \
-  --tile-size=4
+  --tile-sizes=1,2,4,8,16
 ```
 
 The sparse matrix is converted to the same temporary CSR binary used by the
@@ -211,8 +211,10 @@ dispatches and 50 measured dispatches are used by default. `rocprofv3` kernel
 tracing excludes compilation, loading, allocation, copies, and validation from
 the reported kernel times.
 
-The comparison table includes the tile size and reports median and p95 kernel
-time, billions of sparse value/RHS products per second, and GFLOP/s.
+The `thread-per-output` baseline is measured once for each block size, while
+`wave-per-row-tile` is measured for every requested tile size. The comparison
+table reports median and p95 kernel time, billions of sparse value/RHS
+products per second, and GFLOP/s.
 `results.csv` and `metadata.json`
 are written under `build/benchmark/spmm-results/<timestamp>`. Generated MLIR,
 the CSR binary, and profiler traces remain temporary unless

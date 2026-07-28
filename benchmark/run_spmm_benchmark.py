@@ -8,7 +8,8 @@ import sys
 import benchmark_utils as common
 
 
-MAPPINGS = ("thread-per-output", "wave-per-row-tile")
+BASELINE_MAPPING = "thread-per-output"
+TILED_MAPPING = "wave-per-row-tile"
 RESULT_COLUMNS = (
     "chip",
     "matrix",
@@ -61,7 +62,16 @@ def render_mlir(template_path, matrix, rhs_columns, dispatches):
     )
 
 
-def result_row(args, mapping, block_size, rhs_columns, timing):
+def benchmark_cases(block_sizes, tile_sizes):
+    for block_size in block_sizes:
+        yield BASELINE_MAPPING, block_size, None
+        for tile_size in tile_sizes:
+            yield TILED_MAPPING, block_size, tile_size
+
+
+def result_row(
+    args, mapping, block_size, tile_size, rhs_columns, timing
+):
     matrix = args.matrix_data
     products = matrix["nnz"] * rhs_columns
     median_seconds = timing["median_us"] / 1_000_000.0
@@ -71,7 +81,7 @@ def result_row(args, mapping, block_size, rhs_columns, timing):
         "mapping": mapping,
         "block_size": block_size,
         "wave_size": args.wave_size,
-        "tile_size": args.tile_size,
+        "tile_size": tile_size,
         "rows": matrix["rows"],
         "input_cols": matrix["columns"],
         "rhs_cols": rhs_columns,
@@ -95,7 +105,7 @@ def build_metadata(args, repository, commands):
     metadata.update(
         {
             "rhs_columns": args.rhs_columns,
-            "tile_size": args.tile_size,
+            "tile_sizes": args.tile_sizes,
             "matrix": str(args.matrix),
             "matrix_field": args.matrix_data["field"],
             "matrix_symmetry": args.matrix_data["symmetry"],
@@ -122,8 +132,8 @@ def validate_paths(args):
     common.validate_block_sizes(args, require_wave_multiple=True)
     if args.wave_size != 32:
         raise ValueError("wave-per-row-tile currently requires wave size 32")
-    if args.tile_size > 32:
-        raise ValueError("tile size must not exceed 32")
+    if any(tile_size > 32 for tile_size in args.tile_sizes):
+        raise ValueError("tile sizes must not exceed 32")
     maximum_i32 = (1 << 31) - 1
     if args.matrix_data["columns"] > maximum_i32:
         raise ValueError(
@@ -153,11 +163,21 @@ def parse_arguments(argv):
         default=common.parse_positive_int_list("8,16,32,64,128"),
         help="Comma-separated dense RHS column counts.",
     )
-    parser.add_argument(
+    tile_group = parser.add_mutually_exclusive_group()
+    tile_group.add_argument(
+        "--tile-sizes",
+        type=common.parse_positive_int_list,
+        default=common.parse_positive_int_list("1,2,4,8,16"),
+        help=(
+            "Comma-separated output-column tile sizes measured for "
+            "wave-per-row-tile."
+        ),
+    )
+    tile_group.add_argument(
         "--tile-size",
-        type=common.positive_int,
-        default=4,
-        help="Output columns computed together by wave-per-row-tile.",
+        dest="tile_sizes",
+        type=lambda value: [common.positive_int(value)],
+        help=argparse.SUPPRESS,
     )
     common.add_common_arguments(parser, repository)
     args = parser.parse_args(argv)
@@ -189,44 +209,49 @@ def main(argv=None):
                 rhs_columns,
                 args.warmup + args.iterations,
             )
-            for block_size in args.block_sizes:
-                for mapping in MAPPINGS:
-                    case_directory = (
-                        workspace.artifact_root
-                        / f"rhs-{rhs_columns}"
-                        / f"block-{block_size}"
-                        / mapping
-                    )
-                    timing, compile_command, profile_command = common.run_case(
+            for mapping, block_size, tile_size in benchmark_cases(
+                args.block_sizes, args.tile_sizes
+            ):
+                case_directory = (
+                    workspace.artifact_root
+                    / f"rhs-{rhs_columns}"
+                    / f"block-{block_size}"
+                    / mapping
+                )
+                pipeline_options = ()
+                if tile_size is not None:
+                    case_directory /= f"tile-{tile_size}"
+                    pipeline_options = (f"spmm-tile-size={tile_size}",)
+                timing, compile_command, profile_command = common.run_case(
+                    args,
+                    source_text,
+                    case_directory,
+                    "spmm",
+                    mapping,
+                    block_size,
+                    csr_binary,
+                    pipeline_options=pipeline_options,
+                )
+                results.append(
+                    result_row(
                         args,
-                        source_text,
-                        case_directory,
-                        "spmm",
                         mapping,
                         block_size,
-                        csr_binary,
-                        pipeline_options=(
-                            f"spmm-tile-size={args.tile_size}",
-                        ),
+                        tile_size,
+                        rhs_columns,
+                        timing,
                     )
-                    results.append(
-                        result_row(
-                            args,
-                            mapping,
-                            block_size,
-                            rhs_columns,
-                            timing,
-                        )
-                    )
-                    commands.append(
-                        {
-                            "rhs_columns": rhs_columns,
-                            "block_size": block_size,
-                            "mapping": mapping,
-                            "compile": compile_command,
-                            "profile": profile_command,
-                        }
-                    )
+                )
+                commands.append(
+                    {
+                        "rhs_columns": rhs_columns,
+                        "block_size": block_size,
+                        "mapping": mapping,
+                        "tile_size": tile_size,
+                        "compile": compile_command,
+                        "profile": profile_command,
+                    }
+                )
 
         common.write_results(
             workspace.output_directory / "results.csv",

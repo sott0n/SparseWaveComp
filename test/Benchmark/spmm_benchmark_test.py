@@ -68,7 +68,6 @@ class SpMMBenchmarkTest(unittest.TestCase):
             matrix=self.matrix_path,
             matrix_data=self.matrix,
             wave_size=32,
-            tile_size=4,
             warmup=1,
             iterations=4,
         )
@@ -76,6 +75,7 @@ class SpMMBenchmarkTest(unittest.TestCase):
             args,
             mapping="thread-per-output",
             block_size=64,
+            tile_size=None,
             rhs_columns=8,
             timing={
                 "min_us": 1.0,
@@ -84,8 +84,25 @@ class SpMMBenchmarkTest(unittest.TestCase):
             },
         )
         self.assertEqual(result["rhs_cols"], 8)
+        self.assertIsNone(result["tile_size"])
         self.assertEqual(result["gproducts_per_sec"], 0.012)
         self.assertEqual(result["gflops"], 0.024)
+
+    def test_benchmark_cases_run_each_baseline_once(self):
+        cases = list(BENCHMARK.benchmark_cases([64, 128], [1, 4, 8]))
+        self.assertEqual(
+            cases,
+            [
+                ("thread-per-output", 64, None),
+                ("wave-per-row-tile", 64, 1),
+                ("wave-per-row-tile", 64, 4),
+                ("wave-per-row-tile", 64, 8),
+                ("thread-per-output", 128, None),
+                ("wave-per-row-tile", 128, 1),
+                ("wave-per-row-tile", 128, 4),
+                ("wave-per-row-tile", 128, 8),
+            ],
+        )
 
     def test_wave_mapping_validation(self):
         args = types.SimpleNamespace(
@@ -97,12 +114,16 @@ class SpMMBenchmarkTest(unittest.TestCase):
             rocprofv3=Path(__file__),
             block_sizes=[64, 1024],
             wave_size=32,
-            tile_size=4,
+            tile_sizes=[1, 4, 32],
             matrix_data=self.matrix,
         )
         BENCHMARK.validate_paths(args)
         args.block_sizes = [48]
         with self.assertRaisesRegex(ValueError, "multiples of wave size"):
+            BENCHMARK.validate_paths(args)
+        args.block_sizes = [64]
+        args.tile_sizes = [33]
+        with self.assertRaisesRegex(ValueError, "must not exceed 32"):
             BENCHMARK.validate_paths(args)
 
 
