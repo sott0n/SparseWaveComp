@@ -31,6 +31,14 @@ RESULT_COLUMNS = (
     "p95_us",
     "gproducts_per_sec",
     "gflops",
+    "vgpr_count",
+    "sgpr_count",
+    "vgpr_spill_count",
+    "sgpr_spill_count",
+    "lds_bytes",
+    "scratch_bytes",
+    "kernel_wave_size",
+    "max_workgroup_size",
     "correct",
 )
 RESULT_FLOAT_FIELDS = (
@@ -45,6 +53,18 @@ REPORT = common.BenchmarkReport(
     details=("matrix", "rows", "input_columns", "nnz", "rhs_columns"),
     dimensions=("rhs_cols", "block_size", "tile_size", "mapping"),
     metrics=("median_us", "p95_us", "gproducts_per_sec", "gflops"),
+)
+RESOURCE_REPORT = common.BenchmarkReport(
+    details=(),
+    dimensions=("rhs_cols", "block_size", "tile_size", "mapping"),
+    metrics=(
+        "vgpr_count",
+        "sgpr_count",
+        "lds_bytes",
+        "scratch_bytes",
+        "vgpr_spill_count",
+        "sgpr_spill_count",
+    ),
 )
 
 
@@ -70,7 +90,7 @@ def benchmark_cases(block_sizes, tile_sizes):
 
 
 def result_row(
-    args, mapping, block_size, tile_size, rhs_columns, timing
+    args, mapping, block_size, tile_size, rhs_columns, timing, resources
 ):
     matrix = args.matrix_data
     products = matrix["nnz"] * rhs_columns
@@ -96,6 +116,7 @@ def result_row(
         "p95_us": timing["p95_us"],
         "gproducts_per_sec": products / median_seconds / 1_000_000_000.0,
         "gflops": 2.0 * products / median_seconds / 1_000_000_000.0,
+        **resources,
         "correct": True,
     }
 
@@ -125,10 +146,21 @@ def print_results(args, results):
         REPORT,
         results,
     )
+    print()
+    common.print_benchmark_report(
+        args,
+        "SparseWave SpMM GPU resources",
+        RESOURCE_REPORT,
+        results,
+    )
 
 
 def validate_paths(args):
-    common.validate_required_paths(args, needs_benchmark_utils=True)
+    common.validate_required_paths(
+        args,
+        needs_benchmark_utils=True,
+        needs_resource_inspector=True,
+    )
     common.validate_block_sizes(args, require_wave_multiple=True)
     if args.wave_size != 32:
         raise ValueError("wave-per-row-tile currently requires wave size 32")
@@ -232,6 +264,24 @@ def main(argv=None):
                     csr_binary,
                     pipeline_options=pipeline_options,
                 )
+                resources, resource_command = common.inspect_gpu_resources(
+                    args,
+                    case_directory / "compiled.mlir",
+                    case_directory / "kernel.hsaco",
+                    "spmm_kernel",
+                )
+                if resources["kernel_wave_size"] != args.wave_size:
+                    raise ValueError(
+                        "compiled kernel wave size does not match the requested "
+                        f"wave size: {resources['kernel_wave_size']} != "
+                        f"{args.wave_size}"
+                    )
+                if resources["max_workgroup_size"] != block_size:
+                    raise ValueError(
+                        "compiled maximum workgroup size does not match the "
+                        f"requested block size: "
+                        f"{resources['max_workgroup_size']} != {block_size}"
+                    )
                 results.append(
                     result_row(
                         args,
@@ -240,6 +290,7 @@ def main(argv=None):
                         tile_size,
                         rhs_columns,
                         timing,
+                        resources,
                     )
                 )
                 commands.append(
@@ -249,6 +300,7 @@ def main(argv=None):
                         "mapping": mapping,
                         "tile_size": tile_size,
                         "compile": compile_command,
+                        "resources": resource_command,
                         "profile": profile_command,
                     }
                 )

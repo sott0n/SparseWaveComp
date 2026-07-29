@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import statistics
 import struct
 import subprocess
@@ -341,6 +342,7 @@ def add_common_arguments(parser, repository):
     parser.add_argument("--runner-utils", type=Path)
     parser.add_argument("--benchmark-utils", type=Path)
     parser.add_argument("--rocprofv3", type=Path)
+    parser.add_argument("--llvm-readobj", type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--keep-artifacts", action="store_true")
 
@@ -375,11 +377,17 @@ def configure_common_arguments(args):
     args.rocprofv3 = (
         args.rocprofv3 or args.rocm_path / "bin" / "rocprofv3"
     )
+    args.llvm_readobj = (
+        args.llvm_readobj
+        or args.rocm_path / "llvm" / "bin" / "llvm-readobj"
+    )
     args.chip = args.chip or detect_chip(args.rocm_path)
     args.gpu_name = args.chip
 
 
-def validate_required_paths(args, needs_benchmark_utils):
+def validate_required_paths(
+    args, needs_benchmark_utils, needs_resource_inspector=False
+):
     paths = [
         args.sparsewave_opt,
         args.mlir_runner,
@@ -389,6 +397,8 @@ def validate_required_paths(args, needs_benchmark_utils):
     ]
     if needs_benchmark_utils:
         paths.append(args.benchmark_utils)
+    if needs_resource_inspector:
+        paths.append(args.llvm_readobj)
     missing = [str(path) for path in paths if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"required benchmark tools are missing: {missing}")
@@ -530,6 +540,121 @@ def run_case(
     return timing, compile_command, profile_command
 
 
+def extract_gpu_binary(compiled, output):
+    text = compiled.read_text(encoding="utf-8")
+    matches = list(re.finditer(r"\bbin\s*=\s*\"", text))
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected one embedded GPU binary in {compiled}, "
+            f"found {len(matches)}"
+        )
+
+    binary = bytearray()
+    cursor = matches[0].end()
+    while cursor < len(text) and text[cursor] != '"':
+        character = text[cursor]
+        if character != "\\":
+            binary.extend(character.encode("utf-8"))
+            cursor += 1
+            continue
+        if cursor + 1 < len(text) and text[cursor + 1] == "\\":
+            binary.append(ord("\\"))
+            cursor += 2
+            continue
+        escaped = text[cursor + 1 : cursor + 3]
+        if len(escaped) != 2 or not all(
+            character in "0123456789abcdefABCDEF" for character in escaped
+        ):
+            raise ValueError(
+                f"invalid byte escape in embedded GPU binary: {escaped!r}"
+            )
+        binary.append(int(escaped, 16))
+        cursor += 3
+
+    if cursor == len(text):
+        raise ValueError(f"unterminated embedded GPU binary in {compiled}")
+    if not binary.startswith(b"\x7fELF"):
+        raise ValueError(f"embedded GPU binary in {compiled} is not an ELF file")
+    output.write_bytes(binary)
+
+
+def parse_kernel_resources(readobj_output, kernel_name):
+    documents = json.loads(readobj_output)
+    metadata_documents = []
+
+    def collect_metadata(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "AMDGPU Metadata":
+                    metadata_documents.append(child)
+                else:
+                    collect_metadata(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect_metadata(child)
+
+    collect_metadata(documents)
+    if len(metadata_documents) != 1:
+        raise ValueError(
+            "expected one AMDGPU metadata document, "
+            f"found {len(metadata_documents)}"
+        )
+
+    kernel_blocks = re.split(
+        r"(?=^  - \.args:)", metadata_documents[0], flags=re.MULTILINE
+    )
+    kernel_block = next(
+        (
+            block
+            for block in kernel_blocks
+            if re.search(
+                rf"^    \.name:\s+{re.escape(kernel_name)}\s*$",
+                block,
+                flags=re.MULTILINE,
+            )
+        ),
+        None,
+    )
+    if kernel_block is None:
+        raise ValueError(f"missing AMDGPU metadata for kernel '{kernel_name}'")
+
+    fields = {
+        "vgpr_count": "vgpr_count",
+        "sgpr_count": "sgpr_count",
+        "vgpr_spill_count": "vgpr_spill_count",
+        "sgpr_spill_count": "sgpr_spill_count",
+        "lds_bytes": "group_segment_fixed_size",
+        "scratch_bytes": "private_segment_fixed_size",
+        "kernel_wave_size": "wavefront_size",
+        "max_workgroup_size": "max_flat_workgroup_size",
+    }
+    resources = {}
+    for result_name, metadata_name in fields.items():
+        match = re.search(
+            rf"^    \.{metadata_name}:\s+(\d+)\s*$",
+            kernel_block,
+            flags=re.MULTILINE,
+        )
+        if match is None:
+            raise ValueError(
+                f"missing '.{metadata_name}' for kernel '{kernel_name}'"
+            )
+        resources[result_name] = int(match.group(1))
+    return resources
+
+
+def inspect_gpu_resources(args, compiled, hsaco, kernel_name):
+    extract_gpu_binary(compiled, hsaco)
+    command = [
+        str(args.llvm_readobj),
+        "--notes",
+        "--elf-output-style=JSON",
+        str(hsaco),
+    ]
+    output = run_command(command, capture_output=True).stdout
+    return parse_kernel_resources(output, kernel_name), command
+
+
 def write_results(path, columns, float_fields, results):
     with path.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=columns)
@@ -623,6 +748,16 @@ REPORT_COLUMNS = {
         "GProduct/s", "gproducts_per_sec", 10, ".2f"
     ),
     "gflops": TableColumn("GFLOP/s", "gflops", 7, ".2f"),
+    "vgpr_count": TableColumn("VGPR", "vgpr_count", 4, "d"),
+    "sgpr_count": TableColumn("SGPR", "sgpr_count", 4, "d"),
+    "lds_bytes": TableColumn("LDS B", "lds_bytes", 6, "d"),
+    "scratch_bytes": TableColumn("scratch B", "scratch_bytes", 9, "d"),
+    "vgpr_spill_count": TableColumn(
+        "VGPR spill", "vgpr_spill_count", 10, "d"
+    ),
+    "sgpr_spill_count": TableColumn(
+        "SGPR spill", "sgpr_spill_count", 10, "d"
+    ),
     "speedup": TableColumn("vs baseline", "speedup", 11, ".2f", "x"),
 }
 

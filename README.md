@@ -214,10 +214,13 @@ the reported kernel times.
 The `thread-per-output` baseline is measured once for each block size, while
 `wave-per-row-tile` is measured for every requested tile size. The comparison
 table reports median and p95 kernel time, billions of sparse value/RHS
-products per second, and GFLOP/s.
+products per second, and GFLOP/s. A second table reports VGPR and SGPR counts,
+fixed LDS and per-work-item scratch bytes, and register spills read from the
+generated HSACO metadata with `llvm-readobj`. The recorded wave size and
+maximum workgroup size are also written to `results.csv`.
 `results.csv` and `metadata.json`
 are written under `build/benchmark/spmm-results/<timestamp>`. Generated MLIR,
-the CSR binary, and profiler traces remain temporary unless
+the extracted HSACO, the CSR binary, and profiler traces remain temporary unless
 `--keep-artifacts` is specified.
 
 See the

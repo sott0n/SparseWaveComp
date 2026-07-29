@@ -1,6 +1,7 @@
 # RUN: %python %s %S/../../benchmark/run_spmm_benchmark.py %t sparsewave-opt
 
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -82,11 +83,68 @@ class SpMMBenchmarkTest(unittest.TestCase):
                 "median_us": 2.0,
                 "p95_us": 3.0,
             },
+            resources={
+                "vgpr_count": 24,
+                "sgpr_count": 20,
+                "vgpr_spill_count": 0,
+                "sgpr_spill_count": 0,
+                "lds_bytes": 0,
+                "scratch_bytes": 0,
+                "kernel_wave_size": 32,
+                "max_workgroup_size": 64,
+            },
         )
         self.assertEqual(result["rhs_cols"], 8)
         self.assertIsNone(result["tile_size"])
         self.assertEqual(result["gproducts_per_sec"], 0.012)
         self.assertEqual(result["gflops"], 0.024)
+        self.assertEqual(result["vgpr_count"], 24)
+        self.assertEqual(result["max_workgroup_size"], 64)
+
+    def test_embedded_gpu_binary_and_resources_are_parsed(self):
+        compiled = TEMPORARY_ROOT / "compiled.mlir"
+        compiled.write_text(
+            r'gpu.binary @kernel [#gpu.object<bin = "\7FELF\00\5C">]'
+            "\n",
+            encoding="utf-8",
+        )
+        hsaco = TEMPORARY_ROOT / "kernel.hsaco"
+        BENCHMARK.common.extract_gpu_binary(compiled, hsaco)
+        self.assertEqual(hsaco.read_bytes(), b"\x7fELF\x00\\")
+
+        metadata = """---
+amdhsa.kernels:
+  - .args: []
+    .group_segment_fixed_size: 256
+    .max_flat_workgroup_size: 128
+    .name:           spmm_kernel
+    .private_segment_fixed_size: 16
+    .sgpr_count:     20
+    .sgpr_spill_count: 1
+    .vgpr_count:     32
+    .vgpr_spill_count: 2
+    .wavefront_size: 32
+...
+"""
+        readobj_output = json.dumps(
+            [{"NoteSections": [{"AMDGPU Metadata": metadata}]}]
+        )
+        resources = BENCHMARK.common.parse_kernel_resources(
+            readobj_output, "spmm_kernel"
+        )
+        self.assertEqual(
+            resources,
+            {
+                "vgpr_count": 32,
+                "sgpr_count": 20,
+                "vgpr_spill_count": 2,
+                "sgpr_spill_count": 1,
+                "lds_bytes": 256,
+                "scratch_bytes": 16,
+                "kernel_wave_size": 32,
+                "max_workgroup_size": 128,
+            },
+        )
 
     def test_benchmark_cases_run_each_baseline_once(self):
         cases = list(BENCHMARK.benchmark_cases([64, 128], [1, 4, 8]))
@@ -112,6 +170,7 @@ class SpMMBenchmarkTest(unittest.TestCase):
             runner_utils=Path(__file__),
             benchmark_utils=Path(__file__),
             rocprofv3=Path(__file__),
+            llvm_readobj=Path(__file__),
             block_sizes=[64, 1024],
             wave_size=32,
             tile_sizes=[1, 4, 32],
