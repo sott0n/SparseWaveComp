@@ -747,7 +747,30 @@ def parse_kernel_resources(readobj_output, kernel_name):
     return resources
 
 
-def inspect_gpu_resources(args, compiled, hsaco, kernel_name):
+def validate_gpu_resources(
+    resources, expected_wave_size, expected_block_size
+):
+    if resources["kernel_wave_size"] != expected_wave_size:
+        raise ValueError(
+            "compiled kernel wave size does not match the requested wave "
+            f"size: {resources['kernel_wave_size']} != {expected_wave_size}"
+        )
+    if resources["max_workgroup_size"] != expected_block_size:
+        raise ValueError(
+            "compiled maximum workgroup size does not match the requested "
+            f"block size: {resources['max_workgroup_size']} != "
+            f"{expected_block_size}"
+        )
+
+
+def inspect_gpu_resources(
+    args,
+    compiled,
+    hsaco,
+    kernel_name,
+    expected_wave_size,
+    expected_block_size,
+):
     extract_gpu_binary(compiled, hsaco)
     command = [
         str(args.llvm_readobj),
@@ -756,7 +779,35 @@ def inspect_gpu_resources(args, compiled, hsaco, kernel_name):
         str(hsaco),
     ]
     output = run_command(command, capture_output=True).stdout
-    return parse_kernel_resources(output, kernel_name), command
+    resources = parse_kernel_resources(output, kernel_name)
+    validate_gpu_resources(
+        resources, expected_wave_size, expected_block_size
+    )
+    return resources, command
+
+
+GPU_RESOURCE_FIELDS = (
+    "vgpr_count",
+    "sgpr_count",
+    "vgpr_spill_count",
+    "sgpr_spill_count",
+    "lds_bytes",
+    "scratch_bytes",
+    "kernel_wave_size",
+    "max_workgroup_size",
+)
+GPU_RESOURCE_METRICS = (
+    "vgpr_count",
+    "sgpr_count",
+    "lds_bytes",
+    "scratch_bytes",
+    "vgpr_spill_count",
+    "sgpr_spill_count",
+)
+
+
+def empty_gpu_resources():
+    return {field: None for field in GPU_RESOURCE_FIELDS}
 
 
 def write_results(path, columns, float_fields, results):
@@ -967,6 +1018,19 @@ def print_benchmark_report(args, title, report, rows):
     columns = tuple(REPORT_COLUMNS[key] for key in column_keys)
     rows = add_speedups(report, rows)
     print_table(columns, rows)
+
+
+def print_gpu_resource_report(args, title, report, rows):
+    print_benchmark_report(
+        args,
+        title,
+        report,
+        [
+            row
+            for row in rows
+            if row["implementation"] == "sparsewave"
+        ],
+    )
 
 
 class BenchmarkWorkspace:

@@ -34,14 +34,7 @@ RESULT_COLUMNS = (
     "p95_us",
     "gproducts_per_sec",
     "gflops",
-    "vgpr_count",
-    "sgpr_count",
-    "vgpr_spill_count",
-    "sgpr_spill_count",
-    "lds_bytes",
-    "scratch_bytes",
-    "kernel_wave_size",
-    "max_workgroup_size",
+    *common.GPU_RESOURCE_FIELDS,
     "correct",
 )
 RESULT_FLOAT_FIELDS = (
@@ -74,14 +67,7 @@ ROCSPARSE_REPORT = common.BenchmarkReport(
 RESOURCE_REPORT = common.BenchmarkReport(
     details=(),
     dimensions=("rhs_cols", "block_size", "tile_size", "mapping"),
-    metrics=(
-        "vgpr_count",
-        "sgpr_count",
-        "lds_bytes",
-        "scratch_bytes",
-        "vgpr_spill_count",
-        "sgpr_spill_count",
-    ),
+    metrics=common.GPU_RESOURCE_METRICS,
 )
 
 
@@ -177,15 +163,11 @@ def print_results(args, results):
         results,
     )
     print()
-    common.print_benchmark_report(
+    common.print_gpu_resource_report(
         args,
         "SparseWave SpMM GPU resources",
         RESOURCE_REPORT,
-        [
-            result
-            for result in results
-            if result["implementation"] == "sparsewave"
-        ],
+        results,
     )
 
 
@@ -303,19 +285,9 @@ def main(argv=None):
                     case_directory / "compiled.mlir",
                     case_directory / "kernel.hsaco",
                     "spmm_kernel",
+                    args.wave_size,
+                    block_size,
                 )
-                if resources["kernel_wave_size"] != args.wave_size:
-                    raise ValueError(
-                        "compiled kernel wave size does not match the requested "
-                        f"wave size: {resources['kernel_wave_size']} != "
-                        f"{args.wave_size}"
-                    )
-                if resources["max_workgroup_size"] != block_size:
-                    raise ValueError(
-                        "compiled maximum workgroup size does not match the "
-                        f"requested block size: "
-                        f"{resources['max_workgroup_size']} != {block_size}"
-                    )
                 results.append(
                     result_row(
                         args,
@@ -351,16 +323,6 @@ def main(argv=None):
                         rhs_columns=rhs_columns,
                     )
                 )
-                empty_resources = {
-                    "vgpr_count": None,
-                    "sgpr_count": None,
-                    "vgpr_spill_count": None,
-                    "sgpr_spill_count": None,
-                    "lds_bytes": None,
-                    "scratch_bytes": None,
-                    "kernel_wave_size": None,
-                    "max_workgroup_size": None,
-                }
                 results.append(
                     result_row(
                         args,
@@ -369,7 +331,7 @@ def main(argv=None):
                         None,
                         rhs_columns,
                         timing,
-                        empty_resources,
+                        common.empty_gpu_resources(),
                         implementation="rocsparse",
                         preprocess_us=preprocess_us,
                     )

@@ -6,6 +6,7 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+import types
 import unittest
 
 
@@ -233,6 +234,61 @@ class SpMVBenchmarkTest(unittest.TestCase):
         self.assertEqual(result["min_us"], 1.0)
         self.assertEqual(result["median_us"], 2.5)
         self.assertEqual(result["p95_us"], 4.0)
+
+    def test_result_includes_gpu_resources(self):
+        args = types.SimpleNamespace(
+            chip="gfx1101",
+            wave_size=32,
+            warmup=1,
+            iterations=4,
+        )
+        workload = {
+            "matrix": "",
+            "distribution": "uniform",
+            "nnz_per_row": 4,
+            "shape": {
+                "rows": 8,
+                "columns": 16,
+                "nnz": 32,
+                "min_row_nnz": 4,
+                "max_row_nnz": 4,
+                "mean_row_nnz": 4,
+            },
+        }
+        resources = {
+            "vgpr_count": 24,
+            "sgpr_count": 20,
+            "vgpr_spill_count": 0,
+            "sgpr_spill_count": 0,
+            "lds_bytes": 128,
+            "scratch_bytes": 0,
+            "kernel_wave_size": 32,
+            "max_workgroup_size": 64,
+        }
+        result = BENCHMARK.result_row(
+            args,
+            mapping="block-per-row",
+            block_size=64,
+            workload=workload,
+            timing={
+                "min_us": 1.0,
+                "median_us": 2.0,
+                "p95_us": 3.0,
+            },
+            resources=resources,
+        )
+        self.assertEqual(result["gnnz_per_sec"], 0.016)
+        self.assertEqual(result["gflops"], 0.032)
+        self.assertEqual(result["vgpr_count"], 24)
+        self.assertEqual(result["lds_bytes"], 128)
+        self.assertEqual(result["max_workgroup_size"], 64)
+
+    def test_empty_gpu_resources_cover_result_columns(self):
+        resources = BENCHMARK.common.empty_gpu_resources()
+        self.assertEqual(
+            set(resources), set(BENCHMARK.common.GPU_RESOURCE_FIELDS)
+        )
+        self.assertTrue(all(value is None for value in resources.values()))
 
     def test_rocsparse_output_and_timings_are_parsed(self):
         runner = BENCHMARK.common.parse_rocsparse_output(

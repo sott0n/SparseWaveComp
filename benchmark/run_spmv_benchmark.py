@@ -39,6 +39,7 @@ RESULT_COLUMNS = (
     "p95_us",
     "gnnz_per_sec",
     "gflops",
+    *common.GPU_RESOURCE_FIELDS,
     "correct",
 )
 RESULT_FLOAT_FIELDS = (
@@ -81,6 +82,16 @@ SYNTHETIC_ROCSPARSE_REPORT = common.BenchmarkReport(
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("implementation", "rocsparse"),
     baseline_group=("distribution", "nnz_per_row"),
+)
+MATRIX_RESOURCE_REPORT = common.BenchmarkReport(
+    details=(),
+    dimensions=("block_size", "mapping"),
+    metrics=common.GPU_RESOURCE_METRICS,
+)
+SYNTHETIC_RESOURCE_REPORT = common.BenchmarkReport(
+    details=(),
+    dimensions=("distribution", "nnz_per_row", "block_size", "mapping"),
+    metrics=MATRIX_RESOURCE_REPORT.metrics,
 )
 CSR_BINARY_MAGIC = common.CSR_BINARY_MAGIC
 positive_int = common.positive_int
@@ -311,6 +322,7 @@ def result_row(
     block_size,
     workload,
     timing,
+    resources,
     implementation="sparsewave",
     preprocess_us=None,
 ):
@@ -343,6 +355,7 @@ def result_row(
         "p95_us": timing["p95_us"],
         "gnnz_per_sec": nnz / median_seconds / 1_000_000_000.0,
         "gflops": 2.0 * nnz / median_seconds / 1_000_000_000.0,
+        **resources,
         "correct": True,
     }
 
@@ -391,11 +404,24 @@ def print_results(args, results):
         report,
         results,
     )
+    print()
+    common.print_gpu_resource_report(
+        args,
+        "SparseWave SpMV GPU resources",
+        (
+            MATRIX_RESOURCE_REPORT
+            if args.matrix_data is not None
+            else SYNTHETIC_RESOURCE_REPORT
+        ),
+        results,
+    )
 
 
 def validate_paths(args):
     common.validate_required_paths(
-        args, needs_benchmark_utils=args.matrix_data is not None
+        args,
+        needs_benchmark_utils=args.matrix_data is not None,
+        needs_resource_inspector=True,
     )
     if args.matrix_data is None:
         validate_distribution_rows(args.rows, args.distributions)
@@ -522,6 +548,16 @@ def main(argv=None):
                         block_size,
                         csr_binary,
                     )
+                    resources, resource_command = (
+                        common.inspect_gpu_resources(
+                            args,
+                            case_directory / "compiled.mlir",
+                            case_directory / "kernel.hsaco",
+                            "spmv_kernel",
+                            args.wave_size,
+                            block_size,
+                        )
+                    )
                     results.append(
                         result_row(
                             args,
@@ -529,6 +565,7 @@ def main(argv=None):
                             block_size,
                             workload,
                             timing,
+                            resources,
                         )
                     )
                     commands.append(
@@ -539,6 +576,7 @@ def main(argv=None):
                             "block_size": block_size,
                             "mapping": mapping,
                             "compile": compile_command,
+                            "resources": resource_command,
                             "profile": profile_command,
                         }
                     )
@@ -561,6 +599,7 @@ def main(argv=None):
                         None,
                         workload,
                         timing,
+                        common.empty_gpu_resources(),
                         implementation="rocsparse",
                         preprocess_us=preprocess_us,
                     )

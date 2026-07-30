@@ -145,6 +145,11 @@ amdhsa.kernels:
                 "max_workgroup_size": 128,
             },
         )
+        BENCHMARK.common.validate_gpu_resources(resources, 32, 128)
+        with self.assertRaisesRegex(ValueError, "wave size"):
+            BENCHMARK.common.validate_gpu_resources(resources, 64, 128)
+        with self.assertRaisesRegex(ValueError, "block size"):
+            BENCHMARK.common.validate_gpu_resources(resources, 32, 256)
 
     def test_benchmark_cases_run_each_baseline_once(self):
         cases = list(BENCHMARK.benchmark_cases([64, 128], [1, 4, 8]))

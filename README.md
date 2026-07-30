@@ -162,9 +162,13 @@ python3 benchmark/run_spmv_benchmark.py \
 ```
 
 The benchmark performs 10 warmup dispatches and measures 50 dispatches by
-default. It prints a comparison table and writes `results.csv` and
-`metadata.json` under `build/benchmark/results/<timestamp>`. Generated MLIR and
-raw profiler traces are temporary unless `--keep-artifacts` is specified.
+default. It prints timing and GPU-resource tables and writes `results.csv` and
+`metadata.json` under `build/benchmark/results/<timestamp>`. VGPR and SGPR
+counts, register spills, fixed LDS, and per-work-item scratch bytes are read
+from the generated HSACO metadata with `llvm-readobj`. The recorded wave size
+and maximum workgroup size are also written to `results.csv`. Generated MLIR,
+the extracted HSACO, and raw profiler traces are temporary unless
+`--keep-artifacts` is specified.
 
 Pass a Matrix Market coordinate file to benchmark a real sparse matrix instead
 of the synthetic distributions:
