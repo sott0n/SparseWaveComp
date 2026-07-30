@@ -23,6 +23,28 @@ The sweep compares the `thread-per-output` baseline with
 and 256; and tile sizes are 1, 2, 4, 8, and 16. Every reported configuration
 passed the benchmark's output validation.
 
+## Benchmark method
+
+The benchmark accepts a Matrix Market coordinate matrix with `real`, `integer`,
+or `pattern` entries in `general` or `symmetric` form. It expands symmetric
+off-diagonal entries and converts the sparse matrix to a compact temporary CSR
+binary. The runner initializes a row-major dense RHS and validates every output
+element against a host reference.
+
+SparseWave kernel time comes from `rocprofv3` kernel timestamps, excluding
+compilation, binary loading, allocation, copies, and validation. The timing
+report includes median and p95 latency, billions of sparse value/RHS products
+per second, and GFLOP/s. A resource report reads VGPRs, SGPRs, spills, fixed
+LDS, per-work-item scratch, wave size, and maximum workgroup size from the
+generated HSACO metadata.
+
+Each run writes `results.csv` and `metadata.json` under
+`build/benchmark/spmm-results`. Generated MLIR, extracted HSACOs, CSR binaries,
+and profiler traces are retained only with `--keep-artifacts`. Current runs can
+also add the rocSPARSE default CSR SpMM algorithm with `--rocsparse`; the
+recorded experiment below predates that baseline and compares only SparseWave
+mappings.
+
 ## Matrices
 
 The input matrices come from the
