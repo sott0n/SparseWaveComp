@@ -171,6 +171,8 @@ amdhsa.kernels:
             benchmark_utils=Path(__file__),
             rocprofv3=Path(__file__),
             llvm_readobj=Path(__file__),
+            rocsparse=False,
+            rocsparse_benchmark=Path(__file__),
             block_sizes=[64, 1024],
             wave_size=32,
             tile_sizes=[1, 4, 32],

@@ -13,7 +13,9 @@ TILED_MAPPING = "wave-per-row-tile"
 RESULT_COLUMNS = (
     "chip",
     "matrix",
+    "implementation",
     "mapping",
+    "algorithm",
     "block_size",
     "wave_size",
     "tile_size",
@@ -26,6 +28,7 @@ RESULT_COLUMNS = (
     "mean_row_nnz",
     "warmup",
     "iterations",
+    "preprocess_us",
     "min_us",
     "median_us",
     "p95_us",
@@ -42,6 +45,7 @@ RESULT_COLUMNS = (
     "correct",
 )
 RESULT_FLOAT_FIELDS = (
+    "preprocess_us",
     "min_us",
     "median_us",
     "p95_us",
@@ -53,6 +57,19 @@ REPORT = common.BenchmarkReport(
     details=("matrix", "rows", "input_columns", "nnz", "rhs_columns"),
     dimensions=("rhs_cols", "block_size", "tile_size", "mapping"),
     metrics=("median_us", "p95_us", "gproducts_per_sec", "gflops"),
+)
+ROCSPARSE_REPORT = common.BenchmarkReport(
+    details=("matrix", "rows", "input_columns", "nnz", "rhs_columns"),
+    dimensions=(
+        "rhs_cols",
+        "implementation",
+        "block_size",
+        "tile_size",
+        "mapping",
+    ),
+    metrics=("median_us", "p95_us", "gproducts_per_sec", "gflops"),
+    baseline=("implementation", "rocsparse"),
+    baseline_group=("rhs_cols",),
 )
 RESOURCE_REPORT = common.BenchmarkReport(
     details=(),
@@ -90,7 +107,15 @@ def benchmark_cases(block_sizes, tile_sizes):
 
 
 def result_row(
-    args, mapping, block_size, tile_size, rhs_columns, timing, resources
+    args,
+    mapping,
+    block_size,
+    tile_size,
+    rhs_columns,
+    timing,
+    resources,
+    implementation="sparsewave",
+    preprocess_us=None,
 ):
     matrix = args.matrix_data
     products = matrix["nnz"] * rhs_columns
@@ -98,9 +123,13 @@ def result_row(
     return {
         "chip": args.chip,
         "matrix": str(args.matrix),
+        "implementation": implementation,
         "mapping": mapping,
+        "algorithm": "default" if implementation == "rocsparse" else "",
         "block_size": block_size,
-        "wave_size": args.wave_size,
+        "wave_size": (
+            args.wave_size if implementation == "sparsewave" else None
+        ),
         "tile_size": tile_size,
         "rows": matrix["rows"],
         "input_cols": matrix["columns"],
@@ -111,6 +140,7 @@ def result_row(
         "mean_row_nnz": matrix["mean_row_nnz"],
         "warmup": args.warmup,
         "iterations": args.iterations,
+        "preprocess_us": preprocess_us,
         "min_us": timing["min_us"],
         "median_us": timing["median_us"],
         "p95_us": timing["p95_us"],
@@ -143,7 +173,7 @@ def print_results(args, results):
     common.print_benchmark_report(
         args,
         "SparseWave SpMM benchmark",
-        REPORT,
+        ROCSPARSE_REPORT if args.rocsparse else REPORT,
         results,
     )
     print()
@@ -151,7 +181,11 @@ def print_results(args, results):
         args,
         "SparseWave SpMM GPU resources",
         RESOURCE_REPORT,
-        results,
+        [
+            result
+            for result in results
+            if result["implementation"] == "sparsewave"
+        ],
     )
 
 
@@ -301,6 +335,50 @@ def main(argv=None):
                         "tile_size": tile_size,
                         "compile": compile_command,
                         "resources": resource_command,
+                        "profile": profile_command,
+                    }
+                )
+            if args.rocsparse:
+                timing, preprocess_us, profile_command = (
+                    common.run_rocsparse_case(
+                        args,
+                        workspace.artifact_root
+                        / f"rhs-{rhs_columns}"
+                        / "rocsparse"
+                        / "default",
+                        "spmm",
+                        csr_binary,
+                        rhs_columns=rhs_columns,
+                    )
+                )
+                empty_resources = {
+                    "vgpr_count": None,
+                    "sgpr_count": None,
+                    "vgpr_spill_count": None,
+                    "sgpr_spill_count": None,
+                    "lds_bytes": None,
+                    "scratch_bytes": None,
+                    "kernel_wave_size": None,
+                    "max_workgroup_size": None,
+                }
+                results.append(
+                    result_row(
+                        args,
+                        "default",
+                        None,
+                        None,
+                        rhs_columns,
+                        timing,
+                        empty_resources,
+                        implementation="rocsparse",
+                        preprocess_us=preprocess_us,
+                    )
+                )
+                commands.append(
+                    {
+                        "rhs_columns": rhs_columns,
+                        "implementation": "rocsparse",
+                        "algorithm": "default",
                         "profile": profile_command,
                     }
                 )

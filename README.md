@@ -173,6 +173,7 @@ of the synthetic distributions:
 python3 benchmark/run_spmv_benchmark.py \
   --chip=gfx1101 \
   --matrix=/path/to/matrix.mtx \
+  --rocsparse \
   --block-sizes=64,128,256,512
 ```
 
@@ -183,6 +184,15 @@ all-ones input vector, and validates every output row against a host-computed
 reference. Matrix data is converted to a temporary compact CSR binary and
 loaded by the benchmark runner utility, avoiding source-size and compilation
 overhead proportional to NNZ.
+
+Pass `--rocsparse` with either synthetic or Matrix Market inputs to add the
+rocSPARSE default CSR algorithm as a baseline. SparseWave kernel time comes
+from the rocprofv3 GPU timestamps. The rocSPARSE runner uses HIP events around
+each compute call so that an algorithm that launches multiple kernels is
+measured as one operation. rocSPARSE buffer sizing and preprocessing happen
+before warmup and are excluded from steady-state time; preprocessing time is
+recorded separately in `results.csv`. The rocSPARSE version, Git revision, and
+selected `default` algorithm are recorded in `metadata.json`.
 
 Use `--rows`, `--columns`, `--nnz-per-row`, `--distributions`,
 `--block-sizes`, `--warmup`, and `--iterations` to change the workload. The
@@ -199,6 +209,7 @@ number of columns in the dense right-hand side. It compares
 python3 benchmark/run_spmm_benchmark.py \
   --chip=gfx1101 \
   --matrix=/path/to/matrix.mtx \
+  --rocsparse \
   --rhs-columns=8,16,32,64,128 \
   --block-sizes=64,128,256,512 \
   --tile-sizes=1,2,4,8,16
@@ -218,6 +229,10 @@ products per second, and GFLOP/s. A second table reports VGPR and SGPR counts,
 fixed LDS and per-work-item scratch bytes, and register spills read from the
 generated HSACO metadata with `llvm-readobj`. The recorded wave size and
 maximum workgroup size are also written to `results.csv`.
+With `--rocsparse`, each RHS width also runs the rocSPARSE default CSR SpMM
+algorithm against the same row-major dense RHS and host reference. The printed
+speedup is relative to rocSPARSE; its preprocessing cost and library revision
+are retained with the result.
 `results.csv` and `metadata.json`
 are written under `build/benchmark/spmm-results/<timestamp>`. Generated MLIR,
 the extracted HSACO, the CSR binary, and profiler traces remain temporary unless

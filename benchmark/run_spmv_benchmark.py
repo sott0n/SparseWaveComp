@@ -18,7 +18,9 @@ DISTRIBUTION_PERIODS = {
 RESULT_COLUMNS = (
     "chip",
     "matrix",
+    "implementation",
     "mapping",
+    "algorithm",
     "block_size",
     "wave_size",
     "rows",
@@ -31,6 +33,7 @@ RESULT_COLUMNS = (
     "distribution",
     "warmup",
     "iterations",
+    "preprocess_us",
     "min_us",
     "median_us",
     "p95_us",
@@ -39,6 +42,7 @@ RESULT_COLUMNS = (
     "correct",
 )
 RESULT_FLOAT_FIELDS = (
+    "preprocess_us",
     "min_us",
     "median_us",
     "p95_us",
@@ -52,11 +56,31 @@ MATRIX_REPORT = common.BenchmarkReport(
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("mapping", "thread-per-row"),
 )
+MATRIX_ROCSPARSE_REPORT = common.BenchmarkReport(
+    details=("matrix", "rows", "columns", "nnz"),
+    dimensions=("implementation", "block_size", "mapping"),
+    metrics=("median_us", "p95_us", "gnnz_per_sec"),
+    baseline=("implementation", "rocsparse"),
+    baseline_group=(),
+)
 SYNTHETIC_REPORT = common.BenchmarkReport(
     details=("rows", "columns", "distributions"),
     dimensions=("distribution", "nnz_per_row", "block_size", "mapping"),
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("mapping", "thread-per-row"),
+)
+SYNTHETIC_ROCSPARSE_REPORT = common.BenchmarkReport(
+    details=("rows", "columns", "distributions"),
+    dimensions=(
+        "distribution",
+        "nnz_per_row",
+        "implementation",
+        "block_size",
+        "mapping",
+    ),
+    metrics=("median_us", "p95_us", "gnnz_per_sec"),
+    baseline=("implementation", "rocsparse"),
+    baseline_group=("distribution", "nnz_per_row"),
 )
 CSR_BINARY_MAGIC = common.CSR_BINARY_MAGIC
 positive_int = common.positive_int
@@ -102,6 +126,25 @@ def workload_shape(rows, nnz_per_row, distribution):
         "min_row_nnz": min(lengths),
         "max_row_nnz": max(lengths),
         "mean_row_nnz": statistics.mean(lengths),
+    }
+
+
+def synthetic_matrix(rows, columns, nnz_per_row, distribution):
+    shape = workload_shape(rows, nnz_per_row, distribution)
+    row_offsets = [0]
+    for row in range(rows):
+        row_offsets.append(
+            row_offsets[-1] + row_length(nnz_per_row, distribution, row)
+        )
+    return {
+        **shape,
+        "rows": rows,
+        "columns": columns,
+        "row_offsets": row_offsets,
+        "column_indices": [
+            position % columns for position in range(shape["nnz"])
+        ],
+        "values": [1.0] * shape["nnz"],
     }
 
 
@@ -262,16 +305,28 @@ def render_mlir(
     return common.render_template(template_path, replacements)
 
 
-def result_row(args, mapping, block_size, workload, timing):
+def result_row(
+    args,
+    mapping,
+    block_size,
+    workload,
+    timing,
+    implementation="sparsewave",
+    preprocess_us=None,
+):
     shape = workload["shape"]
     nnz = shape["nnz"]
     median_seconds = timing["median_us"] / 1_000_000.0
     return {
         "chip": args.chip,
         "matrix": workload["matrix"],
+        "implementation": implementation,
         "mapping": mapping,
+        "algorithm": "default" if implementation == "rocsparse" else "",
         "block_size": block_size,
-        "wave_size": args.wave_size,
+        "wave_size": (
+            args.wave_size if implementation == "sparsewave" else None
+        ),
         "rows": shape["rows"],
         "cols": shape["columns"],
         "nnz": nnz,
@@ -282,6 +337,7 @@ def result_row(args, mapping, block_size, workload, timing):
         "distribution": workload["distribution"],
         "warmup": args.warmup,
         "iterations": args.iterations,
+        "preprocess_us": preprocess_us,
         "min_us": timing["min_us"],
         "median_us": timing["median_us"],
         "p95_us": timing["p95_us"],
@@ -321,7 +377,14 @@ def build_metadata(args, repository, commands):
 
 
 def print_results(args, results):
-    report = MATRIX_REPORT if args.matrix_data is not None else SYNTHETIC_REPORT
+    if args.matrix_data is not None:
+        report = MATRIX_ROCSPARSE_REPORT if args.rocsparse else MATRIX_REPORT
+    else:
+        report = (
+            SYNTHETIC_ROCSPARSE_REPORT
+            if args.rocsparse
+            else SYNTHETIC_REPORT
+        )
     common.print_benchmark_report(
         args,
         "SparseWave SpMV benchmark",
@@ -418,6 +481,21 @@ def main(argv=None):
 
         for workload in create_workloads(args):
             shape = workload["shape"]
+            workload_csr = csr_binary
+            if args.rocsparse and workload_csr is None:
+                workload_csr = (
+                    workspace.artifact_root / workload["key"] / "matrix.csr"
+                )
+                workload_csr.parent.mkdir(parents=True)
+                write_csr_binary(
+                    workload_csr,
+                    synthetic_matrix(
+                        shape["rows"],
+                        shape["columns"],
+                        workload["nnz_per_row"],
+                        workload["distribution"],
+                    ),
+                )
             source_text = render_mlir(
                 template,
                 shape["rows"],
@@ -464,6 +542,39 @@ def main(argv=None):
                             "profile": profile_command,
                         }
                     )
+            if args.rocsparse:
+                timing, preprocess_us, profile_command = (
+                    common.run_rocsparse_case(
+                        args,
+                        workspace.artifact_root
+                        / workload["key"]
+                        / "rocsparse"
+                        / "default",
+                        "spmv",
+                        workload_csr,
+                    )
+                )
+                results.append(
+                    result_row(
+                        args,
+                        "default",
+                        None,
+                        workload,
+                        timing,
+                        implementation="rocsparse",
+                        preprocess_us=preprocess_us,
+                    )
+                )
+                commands.append(
+                    {
+                        "matrix": workload["matrix"],
+                        "distribution": workload["distribution"],
+                        "nnz_per_row": workload["nnz_per_row"],
+                        "implementation": "rocsparse",
+                        "algorithm": "default",
+                        "profile": profile_command,
+                    }
+                )
 
         common.write_results(
             workspace.output_directory / "results.csv",

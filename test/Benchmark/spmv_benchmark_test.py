@@ -176,6 +176,18 @@ class SpMVBenchmarkTest(unittest.TestCase):
         self.assertEqual(skewed["min_row_nnz"], 1)
         self.assertEqual(skewed["max_row_nnz"], 57)
 
+    def test_synthetic_matrix_matches_generated_workload(self):
+        matrix = BENCHMARK.synthetic_matrix(
+            rows=8,
+            columns=16,
+            nnz_per_row=4,
+            distribution="skewed",
+        )
+        self.assertEqual(matrix["row_offsets"], [0, 1, 2, 3, 4, 5, 6, 7, 32])
+        self.assertEqual(matrix["nnz"], 32)
+        self.assertEqual(len(matrix["column_indices"]), 32)
+        self.assertEqual(matrix["values"], [1.0] * 32)
+
     def test_block_size_list_parser(self):
         self.assertEqual(
             BENCHMARK.parse_positive_int_list("64,128,256,512"),
@@ -221,6 +233,46 @@ class SpMVBenchmarkTest(unittest.TestCase):
         self.assertEqual(result["min_us"], 1.0)
         self.assertEqual(result["median_us"], 2.5)
         self.assertEqual(result["p95_us"], 4.0)
+
+    def test_rocsparse_output_and_timings_are_parsed(self):
+        runner = BENCHMARK.common.parse_rocsparse_output(
+            """rocsparse_version=304000
+rocsparse_git_rev=8fbfc797
+preprocess_us=12.5
+timings_us=100.0,4.0,2.0,3.0
+[0]
+"""
+        )
+        self.assertEqual(runner["version"], "304000")
+        self.assertEqual(runner["git_rev"], "8fbfc797")
+        self.assertEqual(runner["preprocess_us"], 12.5)
+        timing = BENCHMARK.common.summarize_timings(
+            runner["timings_us"], warmup=1, iterations=3
+        )
+        self.assertEqual(timing["min_us"], 2.0)
+        self.assertEqual(timing["median_us"], 3.0)
+        self.assertEqual(timing["p95_us"], 4.0)
+
+    def test_rocsparse_report_uses_library_baseline(self):
+        rows = [
+            {
+                "implementation": "sparsewave",
+                "block_size": 64,
+                "mapping": "wave-per-row",
+                "median_us": 2.0,
+            },
+            {
+                "implementation": "rocsparse",
+                "block_size": None,
+                "mapping": "default",
+                "median_us": 4.0,
+            },
+        ]
+        reported = BENCHMARK.common.add_speedups(
+            BENCHMARK.MATRIX_ROCSPARSE_REPORT, rows
+        )
+        self.assertEqual(reported[0]["speedup"], 2.0)
+        self.assertEqual(reported[1]["speedup"], 1.0)
 
     def test_report_spec_computes_mapping_speedup(self):
         rows = [

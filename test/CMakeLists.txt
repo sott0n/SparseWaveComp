@@ -13,6 +13,9 @@ set(SPARSEWAVE_TEST_DEPENDS
   sparsewave_benchmark_utils
   sparsewave-opt
 )
+if(TARGET sparsewave-rocsparse-benchmark)
+  list(APPEND SPARSEWAVE_TEST_DEPENDS sparsewave-rocsparse-benchmark)
+endif()
 
 add_lit_testsuite(check-sparsewave "Running the SparseWave regression tests"
   "${CMAKE_CURRENT_BINARY_DIR}"

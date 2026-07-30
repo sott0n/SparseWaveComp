@@ -255,6 +255,21 @@ def parse_kernel_trace(path, kernel_name, warmup, iterations):
     }
 
 
+def summarize_timings(durations, warmup, iterations):
+    expected = warmup + iterations
+    if len(durations) != expected:
+        raise ValueError(
+            f"expected {expected} timings, found {len(durations)}"
+        )
+    measured = sorted(durations[warmup:])
+    p95_index = max(0, math.ceil(0.95 * len(measured)) - 1)
+    return {
+        "min_us": measured[0],
+        "median_us": statistics.median(measured),
+        "p95_us": measured[p95_index],
+    }
+
+
 def discover_trace(directory):
     candidates = sorted(directory.rglob("*kernel_trace*.csv"))
     if len(candidates) != 1:
@@ -343,6 +358,12 @@ def add_common_arguments(parser, repository):
     parser.add_argument("--benchmark-utils", type=Path)
     parser.add_argument("--rocprofv3", type=Path)
     parser.add_argument("--llvm-readobj", type=Path)
+    parser.add_argument(
+        "--rocsparse",
+        action="store_true",
+        help="Include the rocSPARSE default algorithm as a baseline.",
+    )
+    parser.add_argument("--rocsparse-benchmark", type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--keep-artifacts", action="store_true")
 
@@ -381,6 +402,12 @@ def configure_common_arguments(args):
         args.llvm_readobj
         or args.rocm_path / "llvm" / "bin" / "llvm-readobj"
     )
+    args.rocsparse_benchmark = (
+        args.rocsparse_benchmark
+        or args.build_dir / "bin" / "sparsewave-rocsparse-benchmark"
+    )
+    args.rocsparse_version = None
+    args.rocsparse_git_rev = None
     args.chip = args.chip or detect_chip(args.rocm_path)
     args.gpu_name = args.chip
 
@@ -399,6 +426,8 @@ def validate_required_paths(
         paths.append(args.benchmark_utils)
     if needs_resource_inspector:
         paths.append(args.llvm_readobj)
+    if args.rocsparse:
+        paths.append(args.rocsparse_benchmark)
     missing = [str(path) for path in paths if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"required benchmark tools are missing: {missing}")
@@ -540,6 +569,81 @@ def run_case(
     return timing, compile_command, profile_command
 
 
+def parse_rocsparse_output(output):
+    fields = {}
+    for line in output.splitlines():
+        if "=" in line:
+            key, value = line.strip().split("=", 1)
+            fields[key] = value
+    required = (
+        "rocsparse_version",
+        "rocsparse_git_rev",
+        "preprocess_us",
+        "timings_us",
+    )
+    missing = [field for field in required if field not in fields]
+    if missing:
+        raise ValueError(f"missing rocSPARSE runner output fields: {missing}")
+    output_lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not output_lines or output_lines[-1] != "[0]":
+        raise ValueError(
+            "rocSPARSE correctness validation failed; expected zero "
+            f"mismatches, got stdout: {output!r}"
+        )
+    return {
+        "version": fields["rocsparse_version"],
+        "git_rev": fields["rocsparse_git_rev"],
+        "preprocess_us": float(fields["preprocess_us"]),
+        "timings_us": [
+            float(value) for value in fields["timings_us"].split(",")
+        ],
+    }
+
+
+def run_rocsparse_case(
+    args, case_directory, operation, csr_binary, rhs_columns=1
+):
+    case_directory.mkdir(parents=True)
+    trace_directory = case_directory / "trace"
+    trace_directory.mkdir()
+    command = [
+        str(args.rocprofv3),
+        "--kernel-trace",
+        "--output-format",
+        "csv",
+        "--output-directory",
+        str(trace_directory),
+        "--",
+        str(args.rocsparse_benchmark),
+        "--operation",
+        operation,
+        "--csr",
+        str(csr_binary),
+        "--warmup",
+        str(args.warmup),
+        "--iterations",
+        str(args.iterations),
+        "--rhs-columns",
+        str(rhs_columns),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "rocSPARSE profiler command failed with exit code "
+            f"{completed.returncode}:\n{completed.stderr}"
+        )
+    runner = parse_rocsparse_output(completed.stdout)
+    trace = discover_trace(trace_directory)
+    if args.gpu_name == args.chip:
+        args.gpu_name = discover_gpu_name(trace_directory, args.chip)
+    timing = summarize_timings(
+        runner["timings_us"], args.warmup, args.iterations
+    )
+    args.rocsparse_version = runner["version"]
+    args.rocsparse_git_rev = runner["git_rev"]
+    return timing, runner["preprocess_us"], command
+
+
 def extract_gpu_binary(compiled, output):
     text = compiled.read_text(encoding="utf-8")
     matches = list(re.finditer(r"\bbin\s*=\s*\"", text))
@@ -662,7 +766,11 @@ def write_results(path, columns, float_fields, results):
         for result in results:
             formatted = dict(result)
             for field in float_fields:
-                formatted[field] = f"{result[field]:.6f}"
+                formatted[field] = (
+                    ""
+                    if result[field] is None
+                    else f"{result[field]:.6f}"
+                )
             formatted["correct"] = str(result["correct"]).lower()
             writer.writerow(formatted)
 
@@ -674,6 +782,18 @@ def base_metadata(args, repository, operation):
         "compiler_commit": git_output(repository, "rev-parse", "HEAD"),
         "llvm_commit": git_output(llvm_repository, "rev-parse", "HEAD"),
         "rocm_version": rocm_version(args.rocm_path),
+        "rocsparse": {
+            "enabled": args.rocsparse,
+            "version": args.rocsparse_version,
+            "git_revision": args.rocsparse_git_rev,
+            "algorithm": "default" if args.rocsparse else None,
+        },
+        "timing": {
+            "sparsewave": "rocprofv3 kernel trace",
+            "rocsparse": (
+                "HIP events under rocprofv3" if args.rocsparse else None
+            ),
+        },
         "gpu": args.gpu_name,
         "chip": args.chip,
         "wave_size": args.wave_size,
@@ -728,9 +848,13 @@ class BenchmarkReport:
     dimensions: tuple
     metrics: tuple
     baseline: object = None
+    baseline_group: object = None
 
 
 REPORT_COLUMNS = {
+    "implementation": TableColumn(
+        "implementation", "implementation", 14, alignment="<"
+    ),
     "distribution": TableColumn(
         "distribution", "distribution", 12, alignment="<"
     ),
@@ -788,8 +912,10 @@ def add_speedups(report, rows):
     if report.baseline is None:
         return rows
     baseline_key, baseline_value = report.baseline
-    group_keys = tuple(
-        key for key in report.dimensions if key != baseline_key
+    group_keys = (
+        report.baseline_group
+        if report.baseline_group is not None
+        else tuple(key for key in report.dimensions if key != baseline_key)
     )
     baselines = {
         tuple(row[key] for key in group_keys): row
