@@ -143,6 +143,11 @@ issues.
 
 See [benchmarks and recorded results](docs/benchmarks/README.md).
 
+## Design
+
+See the [sparse GPU execution model](docs/design/sparse-gpu-execution-model.md)
+for the responsibility boundaries guiding reusable sparse lowering.
+
 ## Bundled LLVM build
 
 Build SparseWave together with its pinned LLVM and MLIR revision:
