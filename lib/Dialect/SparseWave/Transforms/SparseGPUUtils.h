@@ -2,9 +2,11 @@
 #define SPARSEWAVE_LIB_DIALECT_SPARSEWAVE_TRANSFORMS_SPARSEGPUUTILS_H
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/PatternMatch.h"
 
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace mlir::sparsewave {
@@ -29,6 +31,15 @@ struct StridedPositionRange {
   Value stride;
 };
 
+struct CSRPosition {
+  Value position;
+  Value column;
+  Value value;
+};
+
+using CSRPositionBodyBuilder = llvm::function_ref<SmallVector<Value>(
+    OpBuilder &, Location, CSRPosition, ValueRange)>;
+
 Value castToIndex(OpBuilder &builder, Location loc, Value value);
 
 WaveWorkDistribution
@@ -43,6 +54,12 @@ StridedPositionRange buildStridedPositionRange(OpBuilder &builder, Location loc,
                                                CSRRowBounds rowBounds,
                                                Value participantOffset,
                                                Value stride);
+
+SmallVector<Value> buildCSRPositionTraversal(OpBuilder &builder, Location loc,
+                                             Value columnIndices, Value values,
+                                             StridedPositionRange positions,
+                                             ValueRange initialValues,
+                                             CSRPositionBodyBuilder buildBody);
 
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
                          int64_t waveSize);

@@ -61,25 +61,22 @@ public:
               cast<MemRefType>(op.getValues().getType()).getElementType();
           Value zero = arith::ConstantOp::create(
               builder, bodyLoc, builder.getZeroAttr(valueType));
-          auto reduction = scf::ForOp::create(
-              builder, bodyLoc, rowBounds.start, rowBounds.end, oneIndex,
-              ValueRange{zero},
-              [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
-                  ValueRange iterArgs) {
-                Value columnValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getColumnIndices(), position);
-                Value column = castToIndex(loopBuilder, loopLoc, columnValue);
-                Value matrixValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getValues(), position);
+          StridedPositionRange positions{rowBounds.start, rowBounds.end,
+                                         oneIndex};
+          SmallVector<Value> reduction = buildCSRPositionTraversal(
+              builder, bodyLoc, op.getColumnIndices(), op.getValues(),
+              positions, ValueRange{zero},
+              [&](OpBuilder &loopBuilder, Location loopLoc,
+                  CSRPosition position, ValueRange iterArgs) {
                 Value vectorValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getVector(), column);
-                Value product = arith::MulFOp::create(loopBuilder, loopLoc,
-                                                      matrixValue, vectorValue);
+                    loopBuilder, loopLoc, op.getVector(), position.column);
+                Value product = arith::MulFOp::create(
+                    loopBuilder, loopLoc, position.value, vectorValue);
                 Value sum = arith::AddFOp::create(loopBuilder, loopLoc,
                                                   iterArgs.front(), product);
-                scf::YieldOp::create(loopBuilder, loopLoc, sum);
+                return SmallVector<Value>{sum};
               });
-          memref::StoreOp::create(builder, bodyLoc, reduction.getResult(0),
+          memref::StoreOp::create(builder, bodyLoc, reduction.front(),
                                   op.getOutput(), row);
           scf::YieldOp::create(builder, bodyLoc);
         },
@@ -133,27 +130,22 @@ public:
               cast<MemRefType>(op.getValues().getType()).getElementType();
           Value zero = arith::ConstantOp::create(
               builder, bodyLoc, builder.getZeroAttr(valueType));
-          auto partialReduction = scf::ForOp::create(
-              builder, bodyLoc, positions.first, positions.end,
-              positions.stride, ValueRange{zero},
-              [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
-                  ValueRange iterArgs) {
-                Value columnValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getColumnIndices(), position);
-                Value column = castToIndex(loopBuilder, loopLoc, columnValue);
-                Value matrixValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getValues(), position);
+          SmallVector<Value> partialReduction = buildCSRPositionTraversal(
+              builder, bodyLoc, op.getColumnIndices(), op.getValues(),
+              positions, ValueRange{zero},
+              [&](OpBuilder &loopBuilder, Location loopLoc,
+                  CSRPosition position, ValueRange iterArgs) {
                 Value vectorValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getVector(), column);
-                Value product = arith::MulFOp::create(loopBuilder, loopLoc,
-                                                      matrixValue, vectorValue);
+                    loopBuilder, loopLoc, op.getVector(), position.column);
+                Value product = arith::MulFOp::create(
+                    loopBuilder, loopLoc, position.value, vectorValue);
                 Value sum = arith::AddFOp::create(loopBuilder, loopLoc,
                                                   iterArgs.front(), product);
-                scf::YieldOp::create(loopBuilder, loopLoc, sum);
+                return SmallVector<Value>{sum};
               });
 
           Value waveSum = buildWaveReduction(
-              builder, bodyLoc, partialReduction.getResult(0), waveSize);
+              builder, bodyLoc, partialReduction.front(), waveSize);
 
           Value laneIsZero =
               arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
@@ -234,27 +226,22 @@ public:
           Value zero = arith::ConstantOp::create(
               builder, bodyLoc, builder.getZeroAttr(valueType));
 
-          auto partialReduction = scf::ForOp::create(
-              builder, bodyLoc, positions.first, positions.end,
-              positions.stride, ValueRange{zero},
-              [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
-                  ValueRange iterArgs) {
-                Value columnValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getColumnIndices(), position);
-                Value column = castToIndex(loopBuilder, loopLoc, columnValue);
-                Value matrixValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getValues(), position);
+          SmallVector<Value> partialReduction = buildCSRPositionTraversal(
+              builder, bodyLoc, op.getColumnIndices(), op.getValues(),
+              positions, ValueRange{zero},
+              [&](OpBuilder &loopBuilder, Location loopLoc,
+                  CSRPosition position, ValueRange iterArgs) {
                 Value vectorValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getVector(), column);
-                Value product = arith::MulFOp::create(loopBuilder, loopLoc,
-                                                      matrixValue, vectorValue);
+                    loopBuilder, loopLoc, op.getVector(), position.column);
+                Value product = arith::MulFOp::create(
+                    loopBuilder, loopLoc, position.value, vectorValue);
                 Value sum = arith::AddFOp::create(loopBuilder, loopLoc,
                                                   iterArgs.front(), product);
-                scf::YieldOp::create(loopBuilder, loopLoc, sum);
+                return SmallVector<Value>{sum};
               });
 
           Value waveSum = buildWaveReduction(
-              builder, bodyLoc, partialReduction.getResult(0), waveSize);
+              builder, bodyLoc, partialReduction.front(), waveSize);
           Value laneIsZero = arith::CmpIOp::create(
               builder, bodyLoc, arith::CmpIPredicate::eq, lane, zeroIndex);
           scf::IfOp::create(builder, bodyLoc, laneIsZero,
@@ -367,27 +354,23 @@ public:
               cast<MemRefType>(op.getValues().getType()).getElementType();
           Value zero = arith::ConstantOp::create(
               builder, bodyLoc, builder.getZeroAttr(valueType));
-          auto reduction = scf::ForOp::create(
-              builder, bodyLoc, rowBounds.start, rowBounds.end, oneIndex,
-              ValueRange{zero},
-              [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
-                  ValueRange iterArgs) {
-                Value reductionIndexValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getColumnIndices(), position);
-                Value reductionIndex =
-                    castToIndex(loopBuilder, loopLoc, reductionIndexValue);
-                Value sparseValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getValues(), position);
+          StridedPositionRange positions{rowBounds.start, rowBounds.end,
+                                         oneIndex};
+          SmallVector<Value> reduction = buildCSRPositionTraversal(
+              builder, bodyLoc, op.getColumnIndices(), op.getValues(),
+              positions, ValueRange{zero},
+              [&](OpBuilder &loopBuilder, Location loopLoc,
+                  CSRPosition position, ValueRange iterArgs) {
                 Value rhsValue = memref::LoadOp::create(
                     loopBuilder, loopLoc, op.getRhs(),
-                    ValueRange{reductionIndex, outputColumn});
+                    ValueRange{position.column, outputColumn});
                 Value product = arith::MulFOp::create(loopBuilder, loopLoc,
-                                                      sparseValue, rhsValue);
+                                                      position.value, rhsValue);
                 Value sum = arith::AddFOp::create(loopBuilder, loopLoc,
                                                   iterArgs.front(), product);
-                scf::YieldOp::create(loopBuilder, loopLoc, sum);
+                return SmallVector<Value>{sum};
               });
-          memref::StoreOp::create(builder, bodyLoc, reduction.getResult(0),
+          memref::StoreOp::create(builder, bodyLoc, reduction.front(),
                                   op.getOutput(),
                                   ValueRange{row, outputColumn});
           scf::YieldOp::create(builder, bodyLoc);
@@ -480,17 +463,11 @@ public:
             }
 
             SmallVector<Value> initialSums(tileSize, zero);
-            auto partialReductions = scf::ForOp::create(
-                tileBuilder, tileLoc, positions.first, positions.end,
-                positions.stride, initialSums,
-                [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
-                    ValueRange iterArgs) {
-                  Value reductionIndexValue = memref::LoadOp::create(
-                      loopBuilder, loopLoc, op.getColumnIndices(), position);
-                  Value reductionIndex =
-                      castToIndex(loopBuilder, loopLoc, reductionIndexValue);
-                  Value sparseValue = memref::LoadOp::create(
-                      loopBuilder, loopLoc, op.getValues(), position);
+            return buildCSRPositionTraversal(
+                tileBuilder, tileLoc, op.getColumnIndices(), op.getValues(),
+                positions, initialSums,
+                [&](OpBuilder &loopBuilder, Location loopLoc,
+                    CSRPosition position, ValueRange iterArgs) {
                   SmallVector<Value> nextSums;
                   nextSums.reserve(tileSize);
                   for (int64_t tileColumn = 0; tileColumn < tileSize;
@@ -498,10 +475,10 @@ public:
                     if (!guardColumns) {
                       Value rhsValue = memref::LoadOp::create(
                           loopBuilder, loopLoc, op.getRhs(),
-                          ValueRange{reductionIndex,
+                          ValueRange{position.column,
                                      outputColumns[tileColumn]});
                       Value product = arith::MulFOp::create(
-                          loopBuilder, loopLoc, sparseValue, rhsValue);
+                          loopBuilder, loopLoc, position.value, rhsValue);
                       nextSums.push_back(arith::AddFOp::create(
                           loopBuilder, loopLoc, iterArgs[tileColumn], product));
                       continue;
@@ -514,9 +491,9 @@ public:
                         &update.getThenRegion().front());
                     Value rhsValue = memref::LoadOp::create(
                         loopBuilder, loopLoc, op.getRhs(),
-                        ValueRange{reductionIndex, outputColumns[tileColumn]});
+                        ValueRange{position.column, outputColumns[tileColumn]});
                     Value product = arith::MulFOp::create(
-                        loopBuilder, loopLoc, sparseValue, rhsValue);
+                        loopBuilder, loopLoc, position.value, rhsValue);
                     Value sum = arith::AddFOp::create(
                         loopBuilder, loopLoc, iterArgs[tileColumn], product);
                     scf::YieldOp::create(loopBuilder, loopLoc, sum);
@@ -527,9 +504,8 @@ public:
                     loopBuilder.setInsertionPointAfter(update);
                     nextSums.push_back(update.getResult(0));
                   }
-                  scf::YieldOp::create(loopBuilder, loopLoc, nextSums);
+                  return nextSums;
                 });
-            return SmallVector<Value>(partialReductions.getResults());
           };
 
           Value tileEnd = arith::AddIOp::create(

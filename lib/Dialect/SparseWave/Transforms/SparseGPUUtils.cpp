@@ -61,6 +61,29 @@ StridedPositionRange buildStridedPositionRange(OpBuilder &builder, Location loc,
   return {first, rowBounds.end, stride};
 }
 
+SmallVector<Value> buildCSRPositionTraversal(OpBuilder &builder, Location loc,
+                                             Value columnIndices, Value values,
+                                             StridedPositionRange positions,
+                                             ValueRange initialValues,
+                                             CSRPositionBodyBuilder buildBody) {
+  auto loop = scf::ForOp::create(
+      builder, loc, positions.first, positions.end, positions.stride,
+      initialValues,
+      [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
+          ValueRange iterArgs) {
+        Value columnValue = memref::LoadOp::create(loopBuilder, loopLoc,
+                                                   columnIndices, position);
+        Value column = castToIndex(loopBuilder, loopLoc, columnValue);
+        Value sparseValue =
+            memref::LoadOp::create(loopBuilder, loopLoc, values, position);
+        SmallVector<Value> nextValues =
+            buildBody(loopBuilder, loopLoc,
+                      CSRPosition{position, column, sparseValue}, iterArgs);
+        scf::YieldOp::create(loopBuilder, loopLoc, nextValues);
+      });
+  return SmallVector<Value>(loop.getResults());
+}
+
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
                          int64_t waveSize) {
   for (int32_t offset = 1; offset < waveSize; offset <<= 1) {
