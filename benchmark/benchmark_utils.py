@@ -19,6 +19,7 @@ TRACE_COLUMNS = {
     "end": ("End_Timestamp", "End Timestamp", "End"),
 }
 CSR_BINARY_MAGIC = b"SWCSR001"
+COO_BINARY_MAGIC = b"SWCOO001"
 
 
 def positive_int(value):
@@ -144,10 +145,12 @@ def read_matrix_market(path):
 
     entries.sort(key=lambda entry: (entry[0], entry[1]))
     row_offsets = [0] * (rows + 1)
+    row_indices = []
     column_indices = []
     values = []
     for row, column, value in entries:
         row_offsets[row + 1] += 1
+        row_indices.append(row)
         column_indices.append(column)
         values.append(value)
     for row in range(rows):
@@ -167,9 +170,22 @@ def read_matrix_market(path):
         "max_row_nnz": max(row_lengths),
         "mean_row_nnz": statistics.mean(row_lengths),
         "row_offsets": row_offsets,
+        "row_indices": row_indices,
         "column_indices": column_indices,
         "values": values,
     }
+
+
+def write_sparse_binary_header(stream, magic, matrix):
+    stream.write(magic)
+    stream.write(
+        struct.pack(
+            "<QQQ",
+            matrix["rows"],
+            matrix["columns"],
+            matrix["nnz"],
+        )
+    )
 
 
 def write_csr_binary(path, matrix):
@@ -177,18 +193,36 @@ def write_csr_binary(path, matrix):
     if matrix["rows"] > maximum_i32 or matrix["nnz"] > maximum_i32:
         raise ValueError("matrix rows and NNZ must fit in the i32 CSR type")
     with path.open("wb") as stream:
-        stream.write(CSR_BINARY_MAGIC)
+        write_sparse_binary_header(stream, CSR_BINARY_MAGIC, matrix)
         stream.write(
             struct.pack(
-                "<QQQ",
-                matrix["rows"],
-                matrix["columns"],
-                matrix["nnz"],
+                f"<{len(matrix['row_offsets'])}i", *matrix["row_offsets"]
             )
         )
         stream.write(
             struct.pack(
-                f"<{len(matrix['row_offsets'])}i", *matrix["row_offsets"]
+                f"<{len(matrix['column_indices'])}i",
+                *matrix["column_indices"],
+            )
+        )
+        stream.write(
+            struct.pack(f"<{len(matrix['values'])}f", *matrix["values"])
+        )
+
+
+def write_coo_binary(path, matrix):
+    maximum_i32 = (1 << 31) - 1
+    if (
+        matrix["rows"] > maximum_i32
+        or matrix["columns"] > maximum_i32
+        or matrix["nnz"] > maximum_i32
+    ):
+        raise ValueError("matrix dimensions and NNZ must fit in the i32 COO type")
+    with path.open("wb") as stream:
+        write_sparse_binary_header(stream, COO_BINARY_MAGIC, matrix)
+        stream.write(
+            struct.pack(
+                f"<{len(matrix['row_indices'])}i", *matrix["row_indices"]
             )
         )
         stream.write(
@@ -222,7 +256,9 @@ def find_column(fieldnames, candidates):
     )
 
 
-def parse_kernel_trace(path, kernel_name, warmup, iterations):
+def parse_kernel_trace(
+    path, kernel_name, warmup, iterations, kernels_per_dispatch=1
+):
     with path.open(newline="", encoding="utf-8-sig") as stream:
         reader = csv.DictReader(stream)
         if not reader.fieldnames:
@@ -230,7 +266,7 @@ def parse_kernel_trace(path, kernel_name, warmup, iterations):
         kernel_column = find_column(reader.fieldnames, TRACE_COLUMNS["kernel"])
         start_column = find_column(reader.fieldnames, TRACE_COLUMNS["start"])
         end_column = find_column(reader.fieldnames, TRACE_COLUMNS["end"])
-        durations = []
+        intervals = []
         for row in reader:
             if kernel_name not in row[kernel_column]:
                 continue
@@ -238,13 +274,20 @@ def parse_kernel_trace(path, kernel_name, warmup, iterations):
             end = int(row[end_column])
             if end < start:
                 raise ValueError(f"trace contains a negative duration: {row}")
-            durations.append((end - start) / 1000.0)
+            intervals.append((start, end))
 
     expected = warmup + iterations
-    if len(durations) != expected:
+    expected_kernels = expected * kernels_per_dispatch
+    if len(intervals) != expected_kernels:
         raise ValueError(
-            f"expected {expected} '{kernel_name}' dispatches, "
-            f"found {len(durations)} in {path}"
+            f"expected {expected_kernels} '{kernel_name}' kernel records for "
+            f"{expected} dispatches, found {len(intervals)} in {path}"
+        )
+    durations = []
+    for offset in range(0, len(intervals), kernels_per_dispatch):
+        dispatch = intervals[offset : offset + kernels_per_dispatch]
+        durations.append(
+            sum(end - start for start, end in dispatch) / 1000.0
         )
     measured = sorted(durations[warmup:])
     p95_index = max(0, math.ceil(0.95 * len(measured)) - 1)
@@ -487,7 +530,7 @@ def compile_mlir(
 
 
 def profile_mlir(
-    args, compiled, trace_directory, csr_binary, operation
+    args, compiled, trace_directory, sparse_binary, operation, sparse_format="csr"
 ):
     command = [
         str(args.rocprofv3),
@@ -502,12 +545,14 @@ def profile_mlir(
         f"--shared-libs={args.rocm_runtime}",
         f"--shared-libs={args.runner_utils}",
     ]
-    if csr_binary is not None:
+    if sparse_binary is not None:
         command.append(f"--shared-libs={args.benchmark_utils}")
     command.append("--entry-point-result=void")
     environment = os.environ.copy()
-    if csr_binary is not None:
-        environment["SPARSEWAVE_BENCHMARK_CSR"] = str(csr_binary)
+    if sparse_binary is not None:
+        environment[f"SPARSEWAVE_BENCHMARK_{sparse_format.upper()}"] = str(
+            sparse_binary
+        )
     completed = subprocess.run(
         command, capture_output=True, text=True, env=environment
     )
@@ -536,8 +581,10 @@ def run_case(
     operation,
     mapping,
     block_size,
-    csr_binary,
+    sparse_binary,
     pipeline_options=(),
+    sparse_format="csr",
+    kernels_per_dispatch=1,
 ):
     case_directory.mkdir(parents=True)
     source = case_directory / "input.mlir"
@@ -555,7 +602,12 @@ def run_case(
         pipeline_options,
     )
     profile_command = profile_mlir(
-        args, compiled, trace_directory, csr_binary, operation
+        args,
+        compiled,
+        trace_directory,
+        sparse_binary,
+        operation,
+        sparse_format,
     )
     trace = discover_trace(trace_directory)
     if args.gpu_name == args.chip:
@@ -565,6 +617,7 @@ def run_case(
         f"{operation}_kernel",
         args.warmup,
         args.iterations,
+        kernels_per_dispatch,
     )
     return timing, compile_command, profile_command
 
@@ -644,17 +697,24 @@ def run_rocsparse_case(
     return timing, runner["preprocess_us"], command
 
 
-def extract_gpu_binary(compiled, output):
+def extract_gpu_binary(compiled, output, binary_index=None):
     text = compiled.read_text(encoding="utf-8")
     matches = list(re.finditer(r"\bbin\s*=\s*\"", text))
-    if len(matches) != 1:
+    if binary_index is None:
+        if len(matches) != 1:
+            raise ValueError(
+                f"expected one embedded GPU binary in {compiled}, "
+                f"found {len(matches)}"
+            )
+        binary_index = 0
+    if binary_index < 0 or binary_index >= len(matches):
         raise ValueError(
-            f"expected one embedded GPU binary in {compiled}, "
-            f"found {len(matches)}"
+            f"GPU binary index {binary_index} is out of range for {compiled}; "
+            f"found {len(matches)} embedded binaries"
         )
 
     binary = bytearray()
-    cursor = matches[0].end()
+    cursor = matches[binary_index].end()
     while cursor < len(text) and text[cursor] != '"':
         character = text[cursor]
         if character != "\\":
@@ -770,8 +830,9 @@ def inspect_gpu_resources(
     kernel_name,
     expected_wave_size,
     expected_block_size,
+    binary_index=None,
 ):
-    extract_gpu_binary(compiled, hsaco)
+    extract_gpu_binary(compiled, hsaco, binary_index)
     command = [
         str(args.llvm_readobj),
         "--notes",
@@ -909,6 +970,7 @@ REPORT_COLUMNS = {
     "distribution": TableColumn(
         "distribution", "distribution", 12, alignment="<"
     ),
+    "format": TableColumn("format", "format", 6, alignment="<"),
     "nnz_per_row": TableColumn("NNZ/row", "nnz_per_row", 7, "d"),
     "rhs_cols": TableColumn("RHS cols", "rhs_cols", 8, "d"),
     "block_size": TableColumn("block", "block_size", 5, "d"),

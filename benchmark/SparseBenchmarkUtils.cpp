@@ -23,7 +23,8 @@
 
 namespace {
 
-constexpr char magic[] = "SWCSR001";
+constexpr char csrMagic[] = "SWCSR001";
+constexpr char cooMagic[] = "SWCOO001";
 
 [[noreturn]] void fail(const std::string &message) {
   std::cerr << "SparseWave benchmark input error: " << message << '\n';
@@ -49,15 +50,34 @@ uint64_t readU64(std::ifstream &stream, const char *name) {
   return value;
 }
 
-struct CSRDimensions {
+struct SparseDimensions {
   uint64_t rows;
   uint64_t columns;
   uint64_t nnz;
 };
 
-CSRDimensions loadCSRInputs(StridedMemRefType<int32_t, 1> *rowOffsets,
-                            StridedMemRefType<int32_t, 1> *columnIndices,
-                            StridedMemRefType<float, 1> *values) {
+SparseDimensions readSparseHeader(std::ifstream &stream, const char *magic,
+                                  const char *format) {
+  char fileMagic[8];
+  stream.read(fileMagic, sizeof(fileMagic));
+  if (!stream || !std::equal(std::begin(fileMagic), std::end(fileMagic), magic))
+    fail(std::string("invalid ") + format + " binary header");
+
+  SparseDimensions dimensions{
+      readU64(stream, "row count"),
+      readU64(stream, "column count"),
+      readU64(stream, "NNZ count"),
+  };
+  if (dimensions.rows > std::numeric_limits<int64_t>::max() ||
+      dimensions.columns > std::numeric_limits<int64_t>::max() ||
+      dimensions.nnz > std::numeric_limits<int64_t>::max())
+    fail(std::string(format) + " dimensions exceed the runner limits");
+  return dimensions;
+}
+
+SparseDimensions loadCSRInputs(StridedMemRefType<int32_t, 1> *rowOffsets,
+                               StridedMemRefType<int32_t, 1> *columnIndices,
+                               StridedMemRefType<float, 1> *values) {
   const char *path = std::getenv("SPARSEWAVE_BENCHMARK_CSR");
   if (!path)
     fail("SPARSEWAVE_BENCHMARK_CSR is not set");
@@ -66,21 +86,7 @@ CSRDimensions loadCSRInputs(StridedMemRefType<int32_t, 1> *rowOffsets,
   if (!stream)
     fail(std::string("could not open ") + path);
 
-  char fileMagic[sizeof(magic) - 1];
-  stream.read(fileMagic, sizeof(fileMagic));
-  if (!stream || !std::equal(std::begin(fileMagic), std::end(fileMagic),
-                             std::begin(magic)))
-    fail("invalid CSR binary header");
-
-  CSRDimensions dimensions{
-      readU64(stream, "row count"),
-      readU64(stream, "column count"),
-      readU64(stream, "NNZ count"),
-  };
-  if (dimensions.rows > std::numeric_limits<int64_t>::max() ||
-      dimensions.columns > std::numeric_limits<int64_t>::max() ||
-      dimensions.nnz > std::numeric_limits<int64_t>::max())
-    fail("CSR dimensions exceed the runner limits");
+  SparseDimensions dimensions = readSparseHeader(stream, csrMagic, "CSR");
 
   readArray(stream, rowOffsets, static_cast<int64_t>(dimensions.rows + 1),
             "row offsets");
@@ -88,6 +94,42 @@ CSRDimensions loadCSRInputs(StridedMemRefType<int32_t, 1> *rowOffsets,
             "column indices");
   readArray(stream, values, static_cast<int64_t>(dimensions.nnz), "values");
   return dimensions;
+}
+
+SparseDimensions loadCOOInputs(StridedMemRefType<int32_t, 1> *rowIndices,
+                               StridedMemRefType<int32_t, 1> *columnIndices,
+                               StridedMemRefType<float, 1> *values) {
+  const char *path = std::getenv("SPARSEWAVE_BENCHMARK_COO");
+  if (!path)
+    fail("SPARSEWAVE_BENCHMARK_COO is not set");
+
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream)
+    fail(std::string("could not open ") + path);
+
+  SparseDimensions dimensions = readSparseHeader(stream, cooMagic, "COO");
+  readArray(stream, rowIndices, static_cast<int64_t>(dimensions.nnz),
+            "row indices");
+  readArray(stream, columnIndices, static_cast<int64_t>(dimensions.nnz),
+            "column indices");
+  readArray(stream, values, static_cast<int64_t>(dimensions.nnz), "values");
+  return dimensions;
+}
+
+void initializeVector(StridedMemRefType<float, 1> *vector,
+                      uint64_t columnCount) {
+  if (vector->sizes[0] != static_cast<int64_t>(columnCount) ||
+      vector->strides[0] != 1)
+    fail("vector memref has an unexpected layout");
+  std::fill_n(vector->data + vector->offset, columnCount, 1.0f);
+}
+
+void initializeExpected(StridedMemRefType<float, 1> *expected,
+                        uint64_t rowCount) {
+  if (expected->sizes[0] != static_cast<int64_t>(rowCount) ||
+      expected->strides[0] != 1)
+    fail("expected-output memref has an unexpected layout");
+  std::fill_n(expected->data + expected->offset, rowCount, 0.0f);
 }
 
 template <typename T>
@@ -99,21 +141,16 @@ T &element(StridedMemRefType<T, 2> *memref, int64_t row, int64_t column) {
 } // namespace
 
 extern "C" SPARSEWAVE_BENCHMARK_EXPORT void
-_mlir_ciface_loadSpMVBenchmarkInputs(
+_mlir_ciface_loadCSRSpMVBenchmarkInputs(
     StridedMemRefType<int32_t, 1> *rowOffsets,
     StridedMemRefType<int32_t, 1> *columnIndices,
     StridedMemRefType<float, 1> *values, StridedMemRefType<float, 1> *vector,
     StridedMemRefType<float, 1> *expected) {
-  CSRDimensions dimensions = loadCSRInputs(rowOffsets, columnIndices, values);
+  SparseDimensions dimensions =
+      loadCSRInputs(rowOffsets, columnIndices, values);
 
-  if (vector->sizes[0] != static_cast<int64_t>(dimensions.columns) ||
-      vector->strides[0] != 1)
-    fail("vector memref has an unexpected layout");
-  std::fill_n(vector->data + vector->offset, dimensions.columns, 1.0f);
-
-  if (expected->sizes[0] != static_cast<int64_t>(dimensions.rows) ||
-      expected->strides[0] != 1)
-    fail("expected-output memref has an unexpected layout");
+  initializeVector(vector, dimensions.columns);
+  initializeExpected(expected, dimensions.rows);
   for (uint64_t row = 0; row < dimensions.rows; ++row) {
     float sum = 0.0f;
     for (int32_t position = rowOffsets->data[rowOffsets->offset + row];
@@ -124,12 +161,35 @@ _mlir_ciface_loadSpMVBenchmarkInputs(
 }
 
 extern "C" SPARSEWAVE_BENCHMARK_EXPORT void
+_mlir_ciface_loadCOOSpMVBenchmarkInputs(
+    StridedMemRefType<int32_t, 1> *rowIndices,
+    StridedMemRefType<int32_t, 1> *columnIndices,
+    StridedMemRefType<float, 1> *values, StridedMemRefType<float, 1> *vector,
+    StridedMemRefType<float, 1> *expected) {
+  SparseDimensions dimensions =
+      loadCOOInputs(rowIndices, columnIndices, values);
+
+  initializeVector(vector, dimensions.columns);
+  initializeExpected(expected, dimensions.rows);
+  for (uint64_t position = 0; position < dimensions.nnz; ++position) {
+    int32_t row = rowIndices->data[rowIndices->offset + position];
+    int32_t column = columnIndices->data[columnIndices->offset + position];
+    if (row < 0 || static_cast<uint64_t>(row) >= dimensions.rows ||
+        column < 0 || static_cast<uint64_t>(column) >= dimensions.columns)
+      fail("COO coordinate is out of bounds");
+    expected->data[expected->offset + row] +=
+        values->data[values->offset + position];
+  }
+}
+
+extern "C" SPARSEWAVE_BENCHMARK_EXPORT void
 _mlir_ciface_loadSpMMBenchmarkInputs(
     StridedMemRefType<int32_t, 1> *rowOffsets,
     StridedMemRefType<int32_t, 1> *columnIndices,
     StridedMemRefType<float, 1> *values, StridedMemRefType<float, 2> *rhs,
     StridedMemRefType<float, 2> *expected) {
-  CSRDimensions dimensions = loadCSRInputs(rowOffsets, columnIndices, values);
+  SparseDimensions dimensions =
+      loadCSRInputs(rowOffsets, columnIndices, values);
   if (rhs->sizes[0] != static_cast<int64_t>(dimensions.columns) ||
       rhs->sizes[1] < 1 || rhs->strides[1] != 1 ||
       rhs->strides[0] != rhs->sizes[1])

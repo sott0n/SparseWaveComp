@@ -55,6 +55,32 @@ class SpMVBenchmarkTest(unittest.TestCase):
                     text=True,
                 )
 
+    def test_rendered_synthetic_coo_input_lowers(self):
+        template = SCRIPT.parent / "spmv.mlir.in"
+        rendered = BENCHMARK.render_mlir(
+            template,
+            rows=8,
+            columns=16,
+            nnz_per_row=4,
+            dispatches=3,
+            distribution="skewed",
+            sparse_format="coo",
+        )
+        self.assertIn("sparsewave.coo_spmv", rendered)
+        self.assertNotIn("@loadCOOSpMVBenchmarkInputs", rendered)
+        source = TEMPORARY_ROOT / "spmv-synthetic-coo.mlir"
+        source.write_text(rendered, encoding="utf-8")
+        subprocess.run(
+            [
+                SPARSEWAVE_OPT,
+                str(source),
+                "--convert-sparsewave-to-gpu=block-size=128 wave-size=32",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def test_matrix_market_general_converts_to_csr(self):
         matrix_path = TEMPORARY_ROOT / "general.mtx"
         matrix_path.write_text(
@@ -71,6 +97,7 @@ class SpMVBenchmarkTest(unittest.TestCase):
         self.assertEqual(matrix["rows"], 3)
         self.assertEqual(matrix["columns"], 4)
         self.assertEqual(matrix["row_offsets"], [0, 2, 2, 3])
+        self.assertEqual(matrix["row_indices"], [0, 0, 2])
         self.assertEqual(matrix["column_indices"], [1, 3, 0])
         self.assertEqual(matrix["values"], [-1.0, 2.5, 4.0])
         self.assertEqual(matrix["min_row_nnz"], 0)
@@ -122,6 +149,26 @@ class SpMVBenchmarkTest(unittest.TestCase):
         self.assertEqual(binary[:8], BENCHMARK.CSR_BINARY_MAGIC)
         self.assertEqual(struct.unpack("<QQQ", binary[8:32]), (2, 3, 2))
 
+    def test_matrix_coo_binary_preserves_duplicate_coordinates(self):
+        matrix_path = TEMPORARY_ROOT / "duplicates.mtx"
+        matrix_path.write_text(
+            """%%MatrixMarket matrix coordinate real general
+2 3 3
+1 2 2
+1 2 3
+2 3 4
+""",
+            encoding="utf-8",
+        )
+        matrix = BENCHMARK.read_matrix_market(matrix_path)
+        binary_path = TEMPORARY_ROOT / "matrix.coo"
+        BENCHMARK.write_coo_binary(binary_path, matrix)
+        binary = binary_path.read_bytes()
+        self.assertEqual(binary[:8], BENCHMARK.COO_BINARY_MAGIC)
+        self.assertEqual(struct.unpack("<QQQ", binary[8:32]), (2, 3, 3))
+        self.assertEqual(struct.unpack("<3i", binary[32:44]), (0, 0, 1))
+        self.assertEqual(struct.unpack("<3i", binary[44:56]), (1, 1, 2))
+
     def test_rendered_matrix_market_input_lowers_all_mappings(self):
         template = SCRIPT.parent / "spmv.mlir.in"
         matrix_path = TEMPORARY_ROOT / "lower.mtx"
@@ -143,7 +190,7 @@ class SpMVBenchmarkTest(unittest.TestCase):
             distribution="matrix-market",
             matrix=matrix,
         )
-        self.assertIn("@loadSpMVBenchmarkInputs", rendered)
+        self.assertIn("@loadCSRSpMVBenchmarkInputs", rendered)
         self.assertNotIn("@EXTERNAL_DECLARATIONS@", rendered)
         source = TEMPORARY_ROOT / "spmv-matrix-market.mlir"
         source.write_text(rendered, encoding="utf-8")
@@ -161,6 +208,45 @@ class SpMVBenchmarkTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
+
+    def test_rendered_matrix_market_coo_input_lowers(self):
+        template = SCRIPT.parent / "spmv.mlir.in"
+        matrix_path = TEMPORARY_ROOT / "lower-coo.mtx"
+        matrix_path.write_text(
+            """%%MatrixMarket matrix coordinate real general
+2 3 3
+1 2 2
+1 2 3
+2 3 4
+""",
+            encoding="utf-8",
+        )
+        matrix = BENCHMARK.read_matrix_market(matrix_path)
+        rendered = BENCHMARK.render_mlir(
+            template,
+            rows=matrix["rows"],
+            columns=matrix["columns"],
+            nnz_per_row=None,
+            dispatches=3,
+            distribution="matrix-market",
+            matrix=matrix,
+            sparse_format="coo",
+        )
+        self.assertIn("sparsewave.coo_spmv", rendered)
+        self.assertIn("@loadCOOSpMVBenchmarkInputs", rendered)
+        self.assertIn("arith.constant 3 : index", rendered)
+        source = TEMPORARY_ROOT / "spmv-matrix-market-coo.mlir"
+        source.write_text(rendered, encoding="utf-8")
+        subprocess.run(
+            [
+                SPARSEWAVE_OPT,
+                str(source),
+                "--convert-sparsewave-to-gpu=block-size=128 wave-size=32",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
     def test_distributions_preserve_mean_for_complete_periods(self):
         for distribution in BENCHMARK.DISTRIBUTIONS:
@@ -205,6 +291,17 @@ class SpMVBenchmarkTest(unittest.TestCase):
         ):
             BENCHMARK.parse_distributions("uniform,uniform")
 
+    def test_format_parser_rejects_unknown_and_duplicate_formats(self):
+        self.assertEqual(BENCHMARK.parse_formats("csr,coo"), ["csr", "coo"])
+        with self.assertRaisesRegex(
+            BENCHMARK.argparse.ArgumentTypeError, "unknown sparse formats"
+        ):
+            BENCHMARK.parse_formats("ell")
+        with self.assertRaisesRegex(
+            BENCHMARK.argparse.ArgumentTypeError, "duplicate sparse formats"
+        ):
+            BENCHMARK.parse_formats("coo,coo")
+
     def test_distribution_periods_are_required(self):
         BENCHMARK.validate_distribution_rows(
             16, ["uniform", "alternating", "skewed"]
@@ -234,6 +331,41 @@ class SpMVBenchmarkTest(unittest.TestCase):
         self.assertEqual(result["min_us"], 1.0)
         self.assertEqual(result["median_us"], 2.5)
         self.assertEqual(result["p95_us"], 4.0)
+
+    def test_trace_parser_combines_coo_initialization_and_compute(self):
+        trace = TEMPORARY_ROOT / "coo_kernel_trace.csv"
+        with trace.open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(
+                ["Kernel_Name", "Start_Timestamp", "End_Timestamp"]
+            )
+            writer.writerow(["spmv_kernel", 0, 1000])
+            writer.writerow(["spmv_kernel_1", 1200, 3200])
+            writer.writerow(["spmv_kernel", 4000, 5000])
+            writer.writerow(["spmv_kernel_1", 5200, 8200])
+
+        result = BENCHMARK.parse_kernel_trace(
+            trace,
+            kernel_name="spmv_kernel",
+            warmup=1,
+            iterations=1,
+            kernels_per_dispatch=2,
+        )
+        self.assertEqual(result["min_us"], 4.0)
+        self.assertEqual(result["median_us"], 4.0)
+        self.assertEqual(result["p95_us"], 4.0)
+
+    def test_gpu_binary_extraction_selects_coo_compute_kernel(self):
+        compiled = TEMPORARY_ROOT / "two-binaries.mlir"
+        compiled.write_text(
+            r"""gpu.binary @initialize [#gpu.object<bin = "\7FELF\01">]
+gpu.binary @compute [#gpu.object<bin = "\7FELF\02">]
+""",
+            encoding="utf-8",
+        )
+        hsaco = TEMPORARY_ROOT / "compute.hsaco"
+        BENCHMARK.common.extract_gpu_binary(compiled, hsaco, binary_index=1)
+        self.assertEqual(hsaco.read_bytes(), b"\x7fELF\x02")
 
     def test_result_includes_gpu_resources(self):
         args = types.SimpleNamespace(
@@ -313,12 +445,14 @@ timings_us=100.0,4.0,2.0,3.0
         rows = [
             {
                 "implementation": "sparsewave",
+                "format": "csr",
                 "block_size": 64,
                 "mapping": "wave-per-row",
                 "median_us": 2.0,
             },
             {
                 "implementation": "rocsparse",
+                "format": "csr",
                 "block_size": None,
                 "mapping": "default",
                 "median_us": 4.0,
@@ -333,11 +467,13 @@ timings_us=100.0,4.0,2.0,3.0
     def test_report_spec_computes_mapping_speedup(self):
         rows = [
             {
+                "format": "csr",
                 "block_size": 64,
                 "mapping": "thread-per-row",
                 "median_us": 4.0,
             },
             {
+                "format": "csr",
                 "block_size": 64,
                 "mapping": "wave-per-row",
                 "median_us": 2.0,

@@ -1,10 +1,10 @@
 func.func @spmv(
-    %rowOffsets: memref<?xi32>,
+    %firstIndices: memref<?xi32>,
     %columnIndices: memref<?xi32>,
     %values: memref<?xf32>,
     %vector: memref<?xf32>,
     %output: memref<?xf32>) {
-  sparsewave.spmv %rowOffsets, %columnIndices, %values, %vector, %output
+  @SPMV_OPERATION@ %firstIndices, %columnIndices, %values, %vector, %output
       : memref<?xi32>, memref<?xi32>, memref<?xf32>, memref<?xf32>,
         memref<?xf32>
   return
@@ -14,7 +14,7 @@ func.func @main() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %cRows = arith.constant @ROWS@ : index
-  %cRowsPlusOne = arith.constant @ROWS_PLUS_ONE@ : index
+  %cFirstIndexCount = arith.constant @FIRST_INDEX_COUNT@ : index
   %cColumns = arith.constant @COLUMNS@ : index
   %cNnz = arith.constant @NNZ@ : index
   %cDispatches = arith.constant @DISPATCHES@ : index
@@ -24,7 +24,7 @@ func.func @main() {
   %c1F32 = arith.constant 1.0 : f32
   %cToleranceF32 = arith.constant 1.0e-4 : f32
 
-  %hostRowOffsets = memref.alloc(%cRowsPlusOne) : memref<?xi32>
+  %hostFirstIndices = memref.alloc(%cFirstIndexCount) : memref<?xi32>
   %hostColumnIndices = memref.alloc(%cNnz) : memref<?xi32>
   %hostValues = memref.alloc(%cNnz) : memref<?xf32>
   %hostVector = memref.alloc(%cColumns) : memref<?xf32>
@@ -35,8 +35,8 @@ func.func @main() {
   @INITIALIZE_INPUTS@
 
   %start = gpu.wait async
-  %deviceRowOffsets, %alloc0 =
-      gpu.alloc async [%start] (%cRowsPlusOne) : memref<?xi32>
+  %deviceFirstIndices, %alloc0 =
+      gpu.alloc async [%start] (%cFirstIndexCount) : memref<?xi32>
   %deviceColumnIndices, %alloc1 =
       gpu.alloc async [%alloc0] (%cNnz) : memref<?xi32>
   %deviceValues, %alloc2 =
@@ -46,7 +46,7 @@ func.func @main() {
   %deviceOutput, %alloc4 =
       gpu.alloc async [%alloc3] (%cRows) : memref<?xf32>
 
-  %copy0 = gpu.memcpy async [%alloc4] %deviceRowOffsets, %hostRowOffsets
+  %copy0 = gpu.memcpy async [%alloc4] %deviceFirstIndices, %hostFirstIndices
       : memref<?xi32>, memref<?xi32>
   %copy1 =
       gpu.memcpy async [%copy0] %deviceColumnIndices, %hostColumnIndices
@@ -58,7 +58,7 @@ func.func @main() {
   gpu.wait [%copy3]
 
   scf.for %iteration = %c0 to %cDispatches step %c1 {
-    func.call @spmv(%deviceRowOffsets, %deviceColumnIndices, %deviceValues,
+    func.call @spmv(%deviceFirstIndices, %deviceColumnIndices, %deviceValues,
                     %deviceVector, %deviceOutput)
         : (memref<?xi32>, memref<?xi32>, memref<?xf32>, memref<?xf32>,
            memref<?xf32>) -> ()
@@ -100,12 +100,12 @@ func.func @main() {
       memref.cast %errorOutput : memref<1xi64> to memref<*xi64>
   func.call @printMemrefI64(%errorOutputUnranked) : (memref<*xi64>) -> ()
 
-  gpu.dealloc %deviceRowOffsets : memref<?xi32>
+  gpu.dealloc %deviceFirstIndices : memref<?xi32>
   gpu.dealloc %deviceColumnIndices : memref<?xi32>
   gpu.dealloc %deviceValues : memref<?xf32>
   gpu.dealloc %deviceVector : memref<?xf32>
   gpu.dealloc %deviceOutput : memref<?xf32>
-  memref.dealloc %hostRowOffsets : memref<?xi32>
+  memref.dealloc %hostFirstIndices : memref<?xi32>
   memref.dealloc %hostColumnIndices : memref<?xi32>
   memref.dealloc %hostValues : memref<?xf32>
   memref.dealloc %hostVector : memref<?xf32>

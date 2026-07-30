@@ -32,8 +32,10 @@ All reported configurations passed output validation.
 The benchmark accepts either generated matrices or Matrix Market coordinate
 matrices with `real`, `integer`, or `pattern` entries in `general` or
 `symmetric` form. Symmetric off-diagonal entries are expanded. Matrix Market
-data is converted to a compact temporary CSR binary, avoiding MLIR source size
-and compilation time proportional to NNZ.
+data is converted to a compact temporary sparse binary, avoiding MLIR source
+size and compilation time proportional to NNZ. The recorded sweep uses CSR;
+the runner also accepts `--formats=csr,coo` to compare CSR with the COO
+thread-per-nonzero atomic implementation on the same entries.
 
 The runner uses the stored sparse values and an all-ones input vector and
 checks every output row against a host reference. Each run prints timing and

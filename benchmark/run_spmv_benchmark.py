@@ -5,10 +5,16 @@ from pathlib import Path
 import statistics
 import subprocess
 import sys
+import time
 
 import benchmark_utils as common
 
 MAPPINGS = ("thread-per-row", "wave-per-row", "block-per-row")
+FORMATS = ("csr", "coo")
+FORMAT_MAPPINGS = {
+    "csr": MAPPINGS,
+    "coo": ("thread-per-nonzero",),
+}
 DISTRIBUTIONS = ("uniform", "alternating", "skewed")
 DISTRIBUTION_PERIODS = {
     "uniform": 1,
@@ -19,6 +25,7 @@ RESULT_COLUMNS = (
     "chip",
     "matrix",
     "implementation",
+    "format",
     "mapping",
     "algorithm",
     "block_size",
@@ -34,6 +41,7 @@ RESULT_COLUMNS = (
     "warmup",
     "iterations",
     "preprocess_us",
+    "conversion_us",
     "min_us",
     "median_us",
     "p95_us",
@@ -44,6 +52,7 @@ RESULT_COLUMNS = (
 )
 RESULT_FLOAT_FIELDS = (
     "preprocess_us",
+    "conversion_us",
     "min_us",
     "median_us",
     "p95_us",
@@ -53,22 +62,30 @@ RESULT_FLOAT_FIELDS = (
 )
 MATRIX_REPORT = common.BenchmarkReport(
     details=("matrix", "rows", "columns", "nnz"),
-    dimensions=("block_size", "mapping"),
+    dimensions=("format", "block_size", "mapping"),
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("mapping", "thread-per-row"),
+    baseline_group=("block_size",),
 )
 MATRIX_ROCSPARSE_REPORT = common.BenchmarkReport(
     details=("matrix", "rows", "columns", "nnz"),
-    dimensions=("implementation", "block_size", "mapping"),
+    dimensions=("implementation", "format", "block_size", "mapping"),
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("implementation", "rocsparse"),
     baseline_group=(),
 )
 SYNTHETIC_REPORT = common.BenchmarkReport(
     details=("rows", "columns", "distributions"),
-    dimensions=("distribution", "nnz_per_row", "block_size", "mapping"),
+    dimensions=(
+        "distribution",
+        "nnz_per_row",
+        "format",
+        "block_size",
+        "mapping",
+    ),
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("mapping", "thread-per-row"),
+    baseline_group=("distribution", "nnz_per_row", "block_size"),
 )
 SYNTHETIC_ROCSPARSE_REPORT = common.BenchmarkReport(
     details=("rows", "columns", "distributions"),
@@ -76,6 +93,7 @@ SYNTHETIC_ROCSPARSE_REPORT = common.BenchmarkReport(
         "distribution",
         "nnz_per_row",
         "implementation",
+        "format",
         "block_size",
         "mapping",
     ),
@@ -85,20 +103,28 @@ SYNTHETIC_ROCSPARSE_REPORT = common.BenchmarkReport(
 )
 MATRIX_RESOURCE_REPORT = common.BenchmarkReport(
     details=(),
-    dimensions=("block_size", "mapping"),
+    dimensions=("format", "block_size", "mapping"),
     metrics=common.GPU_RESOURCE_METRICS,
 )
 SYNTHETIC_RESOURCE_REPORT = common.BenchmarkReport(
     details=(),
-    dimensions=("distribution", "nnz_per_row", "block_size", "mapping"),
+    dimensions=(
+        "distribution",
+        "nnz_per_row",
+        "format",
+        "block_size",
+        "mapping",
+    ),
     metrics=MATRIX_RESOURCE_REPORT.metrics,
 )
 CSR_BINARY_MAGIC = common.CSR_BINARY_MAGIC
+COO_BINARY_MAGIC = common.COO_BINARY_MAGIC
 positive_int = common.positive_int
 nonnegative_int = common.nonnegative_int
 parse_positive_int_list = common.parse_positive_int_list
 read_matrix_market = common.read_matrix_market
 write_csr_binary = common.write_csr_binary
+write_coo_binary = common.write_coo_binary
 parse_kernel_trace = common.parse_kernel_trace
 
 
@@ -114,6 +140,22 @@ def parse_distributions(value):
     if len(values) != len(set(values)):
         raise argparse.ArgumentTypeError(
             f"duplicate distributions are not allowed: {values}"
+        )
+    return values
+
+
+def parse_formats(value):
+    values = [item.strip() for item in value.split(",") if item.strip()]
+    invalid = [item for item in values if item not in FORMATS]
+    if not values:
+        raise argparse.ArgumentTypeError("expected at least one sparse format")
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            f"unknown sparse formats {invalid}; expected {FORMATS}"
+        )
+    if len(values) != len(set(values)):
+        raise argparse.ArgumentTypeError(
+            f"duplicate sparse formats are not allowed: {values}"
         )
     return values
 
@@ -245,24 +287,43 @@ def indent_mlir(value, spaces):
     return value.replace("\n", f"\n{indentation}")
 
 
-def synthetic_initialization_mlir(nnz_per_row, distribution):
+def synthetic_initialization_mlir(nnz_per_row, distribution, sparse_format):
     row_length_code = indent_mlir(
         row_length_mlir(nnz_per_row, distribution), 4
     )
-    return f"""%c0I32 = arith.constant 0 : i32
-  memref.store %c0I32, %hostRowOffsets[%c0] : memref<?xi32>
+    expected = f"""scf.for %row = %c0 to %cRows step %c1 {{
+    {row_length_code}
+    %rowLengthI64 = arith.index_cast %rowLength : index to i64
+    %expected = arith.uitofp %rowLengthI64 : i64 to f32
+    memref.store %expected, %hostExpected[%row] : memref<?xf32>
+  }}"""
+    if sparse_format == "csr":
+        sparse_indices = f"""%c0I32 = arith.constant 0 : i32
+  memref.store %c0I32, %hostFirstIndices[%c0] : memref<?xi32>
   scf.for %row = %c0 to %cRows step %c1
       iter_args(%offset = %c0) -> index {{
     {row_length_code}
     %nextOffset = arith.addi %offset, %rowLength : index
     %nextOffsetI32 = arith.index_cast %nextOffset : index to i32
     %nextRow = arith.addi %row, %c1 : index
-    memref.store %nextOffsetI32, %hostRowOffsets[%nextRow] : memref<?xi32>
-    %rowLengthI64 = arith.index_cast %rowLength : index to i64
-    %expected = arith.uitofp %rowLengthI64 : i64 to f32
-    memref.store %expected, %hostExpected[%row] : memref<?xf32>
+    memref.store %nextOffsetI32, %hostFirstIndices[%nextRow] : memref<?xi32>
     scf.yield %nextOffset : index
-  }}
+  }}"""
+    elif sparse_format == "coo":
+        sparse_indices = f"""scf.for %row = %c0 to %cRows step %c1
+      iter_args(%offset = %c0) -> index {{
+    {row_length_code}
+    %rowI32 = arith.index_cast %row : index to i32
+    %nextOffset = arith.addi %offset, %rowLength : index
+    scf.for %position = %offset to %nextOffset step %c1 {{
+      memref.store %rowI32, %hostFirstIndices[%position] : memref<?xi32>
+    }}
+    scf.yield %nextOffset : index
+  }}"""
+    else:
+        raise ValueError(f"unknown sparse format: {sparse_format}")
+    return f"""{sparse_indices}
+  {expected}
   scf.for %position = %c0 to %cNnz step %c1 {{
     %column = arith.remui %position, %cColumns : index
     %columnI32 = arith.index_cast %column : index to i32
@@ -282,35 +343,48 @@ def render_mlir(
     dispatches,
     distribution="uniform",
     matrix=None,
+    sparse_format="csr",
 ):
     if matrix is None:
         shape = workload_shape(rows, nnz_per_row, distribution)
         initialization = synthetic_initialization_mlir(
-            nnz_per_row, distribution
+            nnz_per_row, distribution, sparse_format
         )
         declarations = ""
     else:
         shape = matrix
+        loader = (
+            "loadCSRSpMVBenchmarkInputs"
+            if sparse_format == "csr"
+            else "loadCOOSpMVBenchmarkInputs"
+        )
         initialization = (
-            "func.call @loadSpMVBenchmarkInputs("
-            "%hostRowOffsets, %hostColumnIndices, %hostValues, "
+            f"func.call @{loader}("
+            "%hostFirstIndices, %hostColumnIndices, %hostValues, "
             "%hostVector, %hostExpected) : "
             "(memref<?xi32>, memref<?xi32>, memref<?xf32>, "
             "memref<?xf32>, memref<?xf32>) -> ()"
         )
         declarations = (
-            "func.func private @loadSpMVBenchmarkInputs("
+            f"func.func private @{loader}("
             "memref<?xi32>, memref<?xi32>, memref<?xf32>, "
             "memref<?xf32>, memref<?xf32>) "
             "attributes {llvm.emit_c_interface}"
         )
     replacements = {
         "@ROWS@": str(rows),
-        "@ROWS_PLUS_ONE@": str(rows + 1),
+        "@FIRST_INDEX_COUNT@": str(
+            rows + 1 if sparse_format == "csr" else shape["nnz"]
+        ),
         "@COLUMNS@": str(columns),
         "@NNZ@": str(shape["nnz"]),
         "@DISPATCHES@": str(dispatches),
         "@INITIALIZE_INPUTS@": indent_mlir(initialization, 2),
+        "@SPMV_OPERATION@": (
+            "sparsewave.spmv"
+            if sparse_format == "csr"
+            else "sparsewave.coo_spmv"
+        ),
         "@EXTERNAL_DECLARATIONS@": declarations,
     }
     return common.render_template(template_path, replacements)
@@ -323,8 +397,10 @@ def result_row(
     workload,
     timing,
     resources,
+    sparse_format="csr",
     implementation="sparsewave",
     preprocess_us=None,
+    conversion_us=None,
 ):
     shape = workload["shape"]
     nnz = shape["nnz"]
@@ -333,6 +409,7 @@ def result_row(
         "chip": args.chip,
         "matrix": workload["matrix"],
         "implementation": implementation,
+        "format": sparse_format,
         "mapping": mapping,
         "algorithm": "default" if implementation == "rocsparse" else "",
         "block_size": block_size,
@@ -350,6 +427,7 @@ def result_row(
         "warmup": args.warmup,
         "iterations": args.iterations,
         "preprocess_us": preprocess_us,
+        "conversion_us": conversion_us,
         "min_us": timing["min_us"],
         "median_us": timing["median_us"],
         "p95_us": timing["p95_us"],
@@ -383,6 +461,7 @@ def build_metadata(args, repository, commands):
                 if args.matrix_data is not None
                 else None
             ),
+            "formats": args.formats,
             "commands": commands,
         }
     )
@@ -439,6 +518,8 @@ def validate_paths(args):
     )
     if columns > maximum_i32:
         raise ValueError("column count must fit in the i32 column-index type")
+    if "coo" in args.formats and args.rows > maximum_i32:
+        raise ValueError("row count must fit in the i32 COO row-index type")
     if args.matrix_data is not None:
         invalid_nnz = args.matrix_data["nnz"] > maximum_i32
     else:
@@ -448,7 +529,7 @@ def validate_paths(args):
             for distribution in args.distributions
         )
     if invalid_nnz:
-        raise ValueError("NNZ must fit in the i32 CSR row-offset type")
+        raise ValueError("NNZ must fit in the i32 sparse index type")
 
 
 def parse_arguments(argv):
@@ -460,6 +541,12 @@ def parse_arguments(argv):
         "--matrix",
         type=Path,
         help="Matrix Market coordinate file to benchmark instead of synthetic inputs.",
+    )
+    parser.add_argument(
+        "--formats",
+        type=parse_formats,
+        default=parse_formats("csr"),
+        help="Comma-separated SparseWave storage formats: csr,coo.",
     )
     parser.add_argument("--rows", type=positive_int, default=65536)
     parser.add_argument("--columns", type=positive_int, default=65536)
@@ -500,14 +587,29 @@ def main(argv=None):
         result_directory="results",
         temporary_prefix="sparsewave-spmv-benchmark-",
     ) as workspace:
-        csr_binary = None
+        sparse_binaries = {}
+        conversion_us = {}
         if args.matrix_data is not None:
             csr_binary = workspace.artifact_root / "matrix.csr"
-            write_csr_binary(csr_binary, args.matrix_data)
+            coo_binary = workspace.artifact_root / "matrix.coo"
+            for sparse_format, binary, writer in (
+                ("csr", csr_binary, write_csr_binary),
+                ("coo", coo_binary, write_coo_binary),
+            ):
+                if sparse_format not in args.formats and not (
+                    sparse_format == "csr" and args.rocsparse
+                ):
+                    continue
+                start = time.perf_counter_ns()
+                writer(binary, args.matrix_data)
+                conversion_us[sparse_format] = (
+                    time.perf_counter_ns() - start
+                ) / 1000.0
+                sparse_binaries[sparse_format] = binary
 
         for workload in create_workloads(args):
             shape = workload["shape"]
-            workload_csr = csr_binary
+            workload_csr = sparse_binaries.get("csr")
             if args.rocsparse and workload_csr is None:
                 workload_csr = (
                     workspace.artifact_root / workload["key"] / "matrix.csr"
@@ -522,64 +624,83 @@ def main(argv=None):
                         workload["distribution"],
                     ),
                 )
-            source_text = render_mlir(
-                template,
-                shape["rows"],
-                shape["columns"],
-                workload["nnz_per_row"],
-                args.warmup + args.iterations,
-                workload["distribution"],
-                args.matrix_data,
-            )
-            for block_size in args.block_sizes:
-                for mapping in MAPPINGS:
-                    case_directory = (
-                        workspace.artifact_root
-                        / workload["key"]
-                        / f"block-{block_size}"
-                        / mapping
-                    )
-                    timing, compile_command, profile_command = common.run_case(
-                        args,
-                        source_text,
-                        case_directory,
-                        "spmv",
-                        mapping,
-                        block_size,
-                        csr_binary,
-                    )
-                    resources, resource_command = (
-                        common.inspect_gpu_resources(
-                            args,
-                            case_directory / "compiled.mlir",
-                            case_directory / "kernel.hsaco",
-                            "spmv_kernel",
-                            args.wave_size,
-                            block_size,
+            for sparse_format in args.formats:
+                source_text = render_mlir(
+                    template,
+                    shape["rows"],
+                    shape["columns"],
+                    workload["nnz_per_row"],
+                    args.warmup + args.iterations,
+                    workload["distribution"],
+                    args.matrix_data,
+                    sparse_format,
+                )
+                for block_size in args.block_sizes:
+                    for mapping in FORMAT_MAPPINGS[sparse_format]:
+                        case_directory = (
+                            workspace.artifact_root
+                            / workload["key"]
+                            / sparse_format
+                            / f"block-{block_size}"
+                            / mapping
                         )
-                    )
-                    results.append(
-                        result_row(
-                            args,
-                            mapping,
-                            block_size,
-                            workload,
-                            timing,
-                            resources,
+                        timing, compile_command, profile_command = (
+                            common.run_case(
+                                args,
+                                source_text,
+                                case_directory,
+                                "spmv",
+                                (
+                                    mapping
+                                    if sparse_format == "csr"
+                                    else "thread-per-row"
+                                ),
+                                block_size,
+                                sparse_binaries.get(sparse_format),
+                                sparse_format=sparse_format,
+                                kernels_per_dispatch=(
+                                    1 if sparse_format == "csr" else 2
+                                ),
+                            )
                         )
-                    )
-                    commands.append(
-                        {
-                            "matrix": workload["matrix"],
-                            "distribution": workload["distribution"],
-                            "nnz_per_row": workload["nnz_per_row"],
-                            "block_size": block_size,
-                            "mapping": mapping,
-                            "compile": compile_command,
-                            "resources": resource_command,
-                            "profile": profile_command,
-                        }
-                    )
+                        resources, resource_command = (
+                            common.inspect_gpu_resources(
+                                args,
+                                case_directory / "compiled.mlir",
+                                case_directory / "kernel.hsaco",
+                                "spmv_kernel",
+                                args.wave_size,
+                                block_size,
+                                binary_index=(
+                                    0 if sparse_format == "csr" else 1
+                                ),
+                            )
+                        )
+                        results.append(
+                            result_row(
+                                args,
+                                mapping,
+                                block_size,
+                                workload,
+                                timing,
+                                resources,
+                                sparse_format=sparse_format,
+                                conversion_us=conversion_us.get(sparse_format),
+                            )
+                        )
+                        commands.append(
+                            {
+                                "matrix": workload["matrix"],
+                                "distribution": workload["distribution"],
+                                "nnz_per_row": workload["nnz_per_row"],
+                                "format": sparse_format,
+                                "block_size": block_size,
+                                "mapping": mapping,
+                                "compile": compile_command,
+                                "resources": resource_command,
+                                "profile": profile_command,
+                            }
+                        )
             if args.rocsparse:
                 timing, preprocess_us, profile_command = (
                     common.run_rocsparse_case(
@@ -600,8 +721,10 @@ def main(argv=None):
                         workload,
                         timing,
                         common.empty_gpu_resources(),
+                        sparse_format="csr",
                         implementation="rocsparse",
                         preprocess_us=preprocess_us,
+                        conversion_us=conversion_us.get("csr"),
                     )
                 )
                 commands.append(
@@ -610,6 +733,7 @@ def main(argv=None):
                         "distribution": workload["distribution"],
                         "nnz_per_row": workload["nnz_per_row"],
                         "implementation": "rocsparse",
+                        "format": "csr",
                         "algorithm": "default",
                         "profile": profile_command,
                     }
