@@ -1,5 +1,6 @@
 add_mlir_library(SparseWaveTransforms
   LinalgSparseToSparseWave.cpp
+  SparseGPUUtils.cpp
   SparseWaveToGPU.cpp
 
   DEPENDS

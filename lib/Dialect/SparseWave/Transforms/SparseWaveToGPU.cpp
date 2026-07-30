@@ -2,6 +2,8 @@
 
 #include "sparsewave/Dialect/SparseWave/IR/SparseWaveOps.h"
 
+#include "SparseGPUUtils.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -26,17 +28,6 @@ Value castToIndex(OpBuilder &builder, Location loc, Value value) {
                                         value);
   return arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
                                     value);
-}
-
-Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
-                         int64_t waveSize) {
-  for (int32_t offset = 1; offset < waveSize; offset <<= 1) {
-    Value shuffled = gpu::ShuffleOp::create(builder, loc, value, offset,
-                                            waveSize, gpu::ShuffleMode::XOR)
-                         .getShuffleResult();
-    value = arith::AddFOp::create(builder, loc, value, shuffled);
-  }
-  return value;
 }
 
 class ThreadPerRowSpMVPattern : public OpRewritePattern<SpMVOp> {
@@ -628,12 +619,8 @@ public:
           scf::YieldOp::create(builder, bodyLoc, tailTileReductions);
           builder.setInsertionPointAfter(tileReductions);
 
-          SmallVector<Value> waveSums;
-          waveSums.reserve(tileSize);
-          for (Value partialReduction : tileReductions.getResults()) {
-            waveSums.push_back(buildWaveReduction(builder, bodyLoc,
-                                                  partialReduction, waveSize));
-          }
+          SmallVector<Value> waveSums = buildWaveReductions(
+              builder, bodyLoc, tileReductions.getResults(), waveSize);
 
           Value laneIsZero = arith::CmpIOp::create(
               builder, bodyLoc, arith::CmpIPredicate::eq, lane, zeroIndex);
