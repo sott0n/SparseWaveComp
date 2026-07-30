@@ -34,25 +34,13 @@ public:
         arith::ConstantIndexOp::create(rewriter, loc, blockSize);
     Value rowCount =
         memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
-    Value requiredBlocks =
-        arith::CeilDivUIOp::create(rewriter, loc, rowCount, blockSizeValue);
-    Value gridSize =
-        arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
-
-    gpu::LaunchOp launch =
-        gpu::LaunchOp::create(rewriter, loc, gridSize, oneIndex, oneIndex,
-                              blockSizeValue, oneIndex, oneIndex);
-    rewriter.setInsertionPointToStart(&launch.getBody().front());
-
-    Value rowBase = arith::MulIOp::create(rewriter, loc, launch.getBlockIds().x,
-                                          launch.getBlockSize().x);
-    Value row =
-        arith::AddIOp::create(rewriter, loc, rowBase, launch.getThreadIds().x);
-    Value rowIsActive = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::ult, row, rowCount);
+    LinearThreadWorkDistribution distribution =
+        buildLinearThreadWorkDistribution(rewriter, loc, rowCount, oneIndex,
+                                          blockSizeValue);
+    Value row = distribution.workUnit;
 
     scf::IfOp::create(
-        rewriter, loc, rowIsActive,
+        rewriter, loc, distribution.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
           CSRRowBounds rowBounds = buildCSRRowBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
@@ -82,7 +70,7 @@ public:
         },
         {});
 
-    rewriter.setInsertionPointToEnd(&launch.getBody().front());
+    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
     gpu::TerminatorOp::create(rewriter, loc);
     rewriter.eraseOp(op);
     return success();
@@ -323,25 +311,13 @@ public:
         memref::DimOp::create(rewriter, loc, op.getOutput(), oneIndex);
     Value outputElementCount =
         arith::MulIOp::create(rewriter, loc, rowCount, columnCount);
-    Value requiredBlocks = arith::CeilDivUIOp::create(
-        rewriter, loc, outputElementCount, blockSizeValue);
-    Value gridSize =
-        arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
-
-    gpu::LaunchOp launch =
-        gpu::LaunchOp::create(rewriter, loc, gridSize, oneIndex, oneIndex,
-                              blockSizeValue, oneIndex, oneIndex);
-    rewriter.setInsertionPointToStart(&launch.getBody().front());
-
-    Value elementBase = arith::MulIOp::create(
-        rewriter, loc, launch.getBlockIds().x, launch.getBlockSize().x);
-    Value element = arith::AddIOp::create(rewriter, loc, elementBase,
-                                          launch.getThreadIds().x);
-    Value elementIsActive = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::ult, element, outputElementCount);
+    LinearThreadWorkDistribution distribution =
+        buildLinearThreadWorkDistribution(rewriter, loc, outputElementCount,
+                                          oneIndex, blockSizeValue);
+    Value element = distribution.workUnit;
 
     scf::IfOp::create(
-        rewriter, loc, elementIsActive,
+        rewriter, loc, distribution.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
           Value row =
               arith::DivUIOp::create(builder, bodyLoc, element, columnCount);
@@ -377,7 +353,7 @@ public:
         },
         {});
 
-    rewriter.setInsertionPointToEnd(&launch.getBody().front());
+    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
     gpu::TerminatorOp::create(rewriter, loc);
     rewriter.eraseOp(op);
     return success();

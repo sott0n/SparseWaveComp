@@ -11,6 +11,12 @@
 
 namespace mlir::sparsewave {
 
+struct LinearThreadWorkDistribution {
+  gpu::LaunchOp launch;
+  Value workUnit;
+  Value workUnitIsActive;
+};
+
 struct WaveWorkDistribution {
   gpu::LaunchOp launch;
   Value waveInBlock;
@@ -41,6 +47,11 @@ using CSRPositionBodyBuilder = llvm::function_ref<SmallVector<Value>(
     OpBuilder &, Location, CSRPosition, ValueRange)>;
 
 Value castToIndex(OpBuilder &builder, Location loc, Value value);
+
+LinearThreadWorkDistribution
+buildLinearThreadWorkDistribution(PatternRewriter &rewriter, Location loc,
+                                  Value workUnitCount, Value oneIndex,
+                                  Value blockSize);
 
 WaveWorkDistribution
 buildWaveWorkDistribution(PatternRewriter &rewriter, Location loc,

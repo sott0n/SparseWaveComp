@@ -16,6 +16,29 @@ Value castToIndex(OpBuilder &builder, Location loc, Value value) {
                                     value);
 }
 
+LinearThreadWorkDistribution
+buildLinearThreadWorkDistribution(PatternRewriter &rewriter, Location loc,
+                                  Value workUnitCount, Value oneIndex,
+                                  Value blockSize) {
+  Value requiredBlocks =
+      arith::CeilDivUIOp::create(rewriter, loc, workUnitCount, blockSize);
+  Value gridSize =
+      arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
+
+  gpu::LaunchOp launch =
+      gpu::LaunchOp::create(rewriter, loc, gridSize, oneIndex, oneIndex,
+                            blockSize, oneIndex, oneIndex);
+  rewriter.setInsertionPointToStart(&launch.getBody().front());
+
+  Value workUnitBase = arith::MulIOp::create(
+      rewriter, loc, launch.getBlockIds().x, launch.getBlockSize().x);
+  Value workUnit = arith::AddIOp::create(rewriter, loc, workUnitBase,
+                                         launch.getThreadIds().x);
+  Value workUnitIsActive = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::ult, workUnit, workUnitCount);
+  return {launch, workUnit, workUnitIsActive};
+}
+
 WaveWorkDistribution
 buildWaveWorkDistribution(PatternRewriter &rewriter, Location loc,
                           Value workUnitCount, Value oneIndex, Value blockSize,
