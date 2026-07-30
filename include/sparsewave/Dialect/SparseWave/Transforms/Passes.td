@@ -7,11 +7,11 @@ def ConvertLinalgSpMVToSparseWave
     : Pass<"convert-linalg-spmv-to-sparsewave", "::mlir::ModuleOp"> {
   let summary = "Recognize sparse Linalg SpMV operations";
   let description = [{
-    Rewrites a canonical Linalg matrix-vector contraction with a CSR-encoded
-    SparseTensor matrix and a zero-filled dense output to sparsewave.spmv.
-    SparseTensor storage extraction operations expose the CSR positions,
-    coordinates, and values buffers without defining a separate SparseWave
-    storage representation.
+    Rewrites a canonical Linalg matrix-vector contraction with a CSR- or
+    COO-encoded SparseTensor matrix and a zero-filled dense output to the
+    corresponding SparseWave bridge operation. SparseTensor storage extraction
+    operations expose the format buffers without defining a separate
+    SparseWave storage representation.
   }];
   let dependentDialects = [
     "bufferization::BufferizationDialect",
@@ -41,11 +41,12 @@ def ConvertSparseWaveToGPU
     : Pass<"convert-sparsewave-to-gpu", "::mlir::ModuleOp"> {
   let summary = "Map SparseWave operations to GPU launches";
   let description = [{
-    Lowers sparsewave.spmv and sparsewave.spmm to one-dimensional GPU
-    launches. The SpMV work mapping can assign one GPU thread, one GPU wave,
-    or one GPU block to each CSR matrix row. SpMM can assign one GPU thread to
-    each dense output element or one GPU wave to a CSR row and a tile of dense
-    output columns.
+    Lowers sparsewave.spmv, sparsewave.coo_spmv, and sparsewave.spmm to
+    one-dimensional GPU launches. CSR SpMV can assign one GPU thread, one GPU
+    wave, or one GPU block to each matrix row. COO SpMV assigns one thread to
+    each nonzero and atomically accumulates the output. SpMM can assign one GPU
+    thread to each dense output element or one GPU wave to a CSR row and a tile
+    of dense output columns.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",

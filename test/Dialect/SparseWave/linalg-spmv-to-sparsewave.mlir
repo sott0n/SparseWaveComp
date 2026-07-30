@@ -6,6 +6,12 @@
   crdWidth = 32
 }>
 
+#coo = #sparse_tensor.encoding<{
+  map = (d0, d1) -> (d0 : compressed(nonunique), d1 : singleton),
+  posWidth = 32,
+  crdWidth = 32
+}>
+
 #spmv = {
   indexing_maps = [
     affine_map<(i, j) -> (i, j)>,
@@ -63,6 +69,35 @@ func.func @named_csr_spmv(
   %result = linalg.matvec
       ins(%matrix, %vector : tensor<?x?xf32, #csr>, tensor<?xf32>)
       outs(%output : tensor<?xf32>) -> tensor<?xf32>
+  return %result : tensor<?xf32>
+}
+
+// CHECK-LABEL: func.func @coo_spmv(
+// CHECK-SAME: %[[COO_MATRIX:[^,]+]]: tensor<?x?xf32, #[[$COO:[a-zA-Z0-9_]+]]>, %[[COO_VECTOR:[^,]+]]: tensor<?xf32>
+// CHECK: %[[COO_EMPTY:.*]] = tensor.empty
+// CHECK: %[[ROWS:.*]] = sparse_tensor.coordinates %[[COO_MATRIX]] {level = 0 : index}
+// CHECK: %[[COLUMNS:.*]] = sparse_tensor.coordinates %[[COO_MATRIX]] {level = 1 : index}
+// CHECK: %[[COO_VALUES:.*]] = sparse_tensor.values %[[COO_MATRIX]]
+// CHECK: %[[COO_VECTOR_BUFFER:.*]] = bufferization.to_buffer %[[COO_VECTOR]] read_only
+// CHECK: %[[COO_OUTPUT_BUFFER:.*]] = bufferization.to_buffer %[[COO_EMPTY]]
+// CHECK: sparsewave.coo_spmv %[[ROWS]], %[[COLUMNS]], %[[COO_VALUES]], %[[COO_VECTOR_BUFFER]], %[[COO_OUTPUT_BUFFER]]
+// CHECK-NOT: linalg.generic
+func.func @coo_spmv(
+    %matrix: tensor<?x?xf32, #coo>,
+    %vector: tensor<?xf32>,
+    %rows: index) -> tensor<?xf32> {
+  %empty = tensor.empty(%rows) : tensor<?xf32>
+  %zero = arith.constant 0.0 : f32
+  %output = linalg.fill ins(%zero : f32) outs(%empty : tensor<?xf32>)
+      -> tensor<?xf32>
+  %result = linalg.generic #spmv
+      ins(%matrix, %vector : tensor<?x?xf32, #coo>, tensor<?xf32>)
+      outs(%output : tensor<?xf32>) {
+    ^bb0(%matrixValue: f32, %vectorValue: f32, %sum: f32):
+      %product = arith.mulf %matrixValue, %vectorValue : f32
+      %next = arith.addf %sum, %product : f32
+      linalg.yield %next : f32
+  } -> tensor<?xf32>
   return %result : tensor<?xf32>
 }
 

@@ -65,6 +65,32 @@ func.func @nonzero_counts_must_match(
 
 // -----
 
+func.func @coo_indices_must_match(
+    %rowIndices: memref<8xi32>, %columnIndices: memref<8xi64>,
+    %values: memref<8xf32>, %vector: memref<4xf32>,
+    %output: memref<4xf32>) {
+  // expected-error @+1 {{row and column indices must have the same element type}}
+  sparsewave.coo_spmv %rowIndices, %columnIndices, %values, %vector, %output
+      : memref<8xi32>, memref<8xi64>, memref<8xf32>,
+        memref<4xf32>, memref<4xf32>
+  return
+}
+
+// -----
+
+func.func @coo_nonzero_counts_must_match(
+    %rowIndices: memref<7xindex>, %columnIndices: memref<8xindex>,
+    %values: memref<8xf64>, %vector: memref<4xf64>,
+    %output: memref<4xf64>) {
+  // expected-error @+1 {{row indices, column indices, and values must have the same size}}
+  sparsewave.coo_spmv %rowIndices, %columnIndices, %values, %vector, %output
+      : memref<7xindex>, memref<8xindex>, memref<8xf64>,
+        memref<4xf64>, memref<4xf64>
+  return
+}
+
+// -----
+
 func.func @spmm_rhs_must_be_rank_two(
     %rowOffsets: memref<5xi32>, %columnIndices: memref<8xi32>,
     %values: memref<8xf32>, %rhs: memref<4xf32>,

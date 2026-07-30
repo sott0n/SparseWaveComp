@@ -34,6 +34,17 @@ struct CSRStorage {
   Value values;
 };
 
+struct COOStorage {
+  Value rowIndices;
+  Value columnIndices;
+  Value values;
+};
+
+enum class SparseMatrixFormat {
+  CSR,
+  COO,
+};
+
 bool hasCanonicalSpMVIndexingMaps(linalg::LinalgOp op) {
   SmallVector<AffineMap> maps = op.getIndexingMapsArray();
   if (maps.size() != 3)
@@ -71,6 +82,7 @@ linalg::FillOp getSingleUseZeroFill(Value value) {
 
 LogicalResult matchSparseContraction(linalg::LinalgOp op,
                                      int64_t denseInputRank, int64_t outputRank,
+                                     SparseMatrixFormat format,
                                      SparseContractionMatch &match,
                                      PatternRewriter &rewriter) {
   if (op.getNumDpsInputs() != 2 || op.getNumDpsInits() != 1 ||
@@ -96,10 +108,21 @@ LogicalResult matchSparseContraction(linalg::LinalgOp op,
 
   sparse_tensor::SparseTensorType sparseMatrix(match.matrixType);
   if (!sparseMatrix.hasEncoding() || !sparseMatrix.isIdentity() ||
-      sparseMatrix.getLvlRank() != 2 || !sparseMatrix.isDenseLvl(0) ||
-      !sparseMatrix.isCompressedLvl(1))
+      sparseMatrix.getLvlRank() != 2)
     return rewriter.notifyMatchFailure(
-        op, "expected an identity-mapped CSR SparseTensor matrix");
+        op, "expected an identity-mapped rank-2 SparseTensor matrix");
+  switch (format) {
+  case SparseMatrixFormat::CSR:
+    if (!sparseMatrix.isDenseLvl(0) || !sparseMatrix.isCompressedLvl(1))
+      return rewriter.notifyMatchFailure(op,
+                                         "expected a CSR SparseTensor matrix");
+    break;
+  case SparseMatrixFormat::COO:
+    if (!sparseMatrix.isCOOType())
+      return rewriter.notifyMatchFailure(op,
+                                         "expected a COO SparseTensor matrix");
+    break;
+  }
   if (sparse_tensor::getSparseTensorEncoding(match.denseInputType) ||
       sparse_tensor::getSparseTensorEncoding(match.outputType))
     return rewriter.notifyMatchFailure(
@@ -114,7 +137,8 @@ LogicalResult matchSparseContraction(linalg::LinalgOp op,
   if (!match.zeroFill)
     return rewriter.notifyMatchFailure(
         op, "expected a single-use, statically zero-filled output tensor");
-  if (sparseMatrix.getPosWidth() != sparseMatrix.getCrdWidth())
+  if (format == SparseMatrixFormat::CSR &&
+      sparseMatrix.getPosWidth() != sparseMatrix.getCrdWidth())
     return rewriter.notifyMatchFailure(
         op, "expected matching CSR position and coordinate types");
   return success();
@@ -124,6 +148,15 @@ CSRStorage extractCSRStorage(PatternRewriter &rewriter, Location loc,
                              Value matrix) {
   return {
       sparse_tensor::ToPositionsOp::create(rewriter, loc, matrix, 1),
+      sparse_tensor::ToCoordinatesOp::create(rewriter, loc, matrix, 1),
+      sparse_tensor::ToValuesOp::create(rewriter, loc, matrix),
+  };
+}
+
+COOStorage extractCOOStorage(PatternRewriter &rewriter, Location loc,
+                             Value matrix) {
+  return {
+      sparse_tensor::ToCoordinatesOp::create(rewriter, loc, matrix, 0),
       sparse_tensor::ToCoordinatesOp::create(rewriter, loc, matrix, 1),
       sparse_tensor::ToValuesOp::create(rewriter, loc, matrix),
   };
@@ -156,20 +189,42 @@ LogicalResult rewriteLinalgSpMV(linalg::LinalgOp op,
         op, "expected canonical matrix-vector indexing maps");
 
   SparseContractionMatch match;
-  if (failed(matchSparseContraction(op, /*denseInputRank=*/1,
-                                    /*outputRank=*/1, match, rewriter)))
+  if (succeeded(
+          matchSparseContraction(op, /*denseInputRank=*/1, /*outputRank=*/1,
+                                 SparseMatrixFormat::CSR, match, rewriter))) {
+    // CSR exposes row bounds and lowers to row-oriented work distribution and
+    // reduction strategies.
+    Location loc = op.getLoc();
+    CSRStorage csr = extractCSRStorage(rewriter, loc, match.matrix);
+    Value vectorBuffer =
+        bufferizeDenseTensor(rewriter, loc, match.denseInput,
+                             match.denseInputType, /*readOnly=*/true);
+    Value outputStorage = match.zeroFill.getDpsInitOperand(0)->get();
+    Value outputBuffer =
+        bufferizeDenseTensor(rewriter, loc, outputStorage, match.outputType,
+                             /*readOnly=*/false);
+    SpMVOp::create(rewriter, loc, csr.rowOffsets, csr.columnIndices, csr.values,
+                   vectorBuffer, outputBuffer);
+    replaceContraction(op, rewriter, match, outputBuffer);
+    return success();
+  }
+
+  if (failed(matchSparseContraction(op, /*denseInputRank=*/1, /*outputRank=*/1,
+                                    SparseMatrixFormat::COO, match, rewriter)))
     return failure();
 
+  // COO exposes one row/column pair per nonzero and lowers to independent
+  // products followed by atomic output accumulation.
   Location loc = op.getLoc();
-  CSRStorage csr = extractCSRStorage(rewriter, loc, match.matrix);
+  COOStorage coo = extractCOOStorage(rewriter, loc, match.matrix);
   Value vectorBuffer = bufferizeDenseTensor(
       rewriter, loc, match.denseInput, match.denseInputType, /*readOnly=*/true);
   Value outputStorage = match.zeroFill.getDpsInitOperand(0)->get();
   Value outputBuffer =
       bufferizeDenseTensor(rewriter, loc, outputStorage, match.outputType,
                            /*readOnly=*/false);
-  SpMVOp::create(rewriter, loc, csr.rowOffsets, csr.columnIndices, csr.values,
-                 vectorBuffer, outputBuffer);
+  COOSpMVOp::create(rewriter, loc, coo.rowIndices, coo.columnIndices,
+                    coo.values, vectorBuffer, outputBuffer);
   replaceContraction(op, rewriter, match, outputBuffer);
   return success();
 }
@@ -181,8 +236,8 @@ LogicalResult rewriteLinalgSpMM(linalg::LinalgOp op,
         op, "expected canonical matrix-matrix indexing maps");
 
   SparseContractionMatch match;
-  if (failed(matchSparseContraction(op, /*denseInputRank=*/2,
-                                    /*outputRank=*/2, match, rewriter)))
+  if (failed(matchSparseContraction(op, /*denseInputRank=*/2, /*outputRank=*/2,
+                                    SparseMatrixFormat::CSR, match, rewriter)))
     return failure();
 
   Location loc = op.getLoc();

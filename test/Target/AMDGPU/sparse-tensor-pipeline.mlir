@@ -8,6 +8,12 @@
   crdWidth = 32
 }>
 
+#coo = #sparse_tensor.encoding<{
+  map = (d0, d1) -> (d0 : compressed(nonunique), d1 : singleton),
+  posWidth = 32,
+  crdWidth = 32
+}>
+
 #spmv = {
   indexing_maps = [
     affine_map<(i, j) -> (i, j)>,
@@ -41,6 +47,30 @@ func.func @csr_spmv(
       -> tensor<?xf32>
   %result = linalg.generic #spmv
       ins(%matrix, %vector : tensor<?x?xf32, #csr>, tensor<?xf32>)
+      outs(%output : tensor<?xf32>) {
+    ^bb0(%matrixValue: f32, %vectorValue: f32, %sum: f32):
+      %product = arith.mulf %matrixValue, %vectorValue : f32
+      %next = arith.addf %sum, %product : f32
+      linalg.yield %next : f32
+  } -> tensor<?xf32>
+  return %result : tensor<?xf32>
+}
+
+// CHECK-LABEL: func.func @coo_spmv(
+// CHECK-COUNT-2: gpu.launch_func
+// CHECK-NOT: sparse_tensor
+// CHECK-NOT: linalg.
+// CHECK-NOT: sparsewave.
+func.func @coo_spmv(
+    %matrix: tensor<?x?xf32, #coo>,
+    %vector: tensor<?xf32>,
+    %rows: index) -> tensor<?xf32> {
+  %empty = tensor.empty(%rows) : tensor<?xf32>
+  %zero = arith.constant 0.0 : f32
+  %output = linalg.fill ins(%zero : f32) outs(%empty : tensor<?xf32>)
+      -> tensor<?xf32>
+  %result = linalg.generic #spmv
+      ins(%matrix, %vector : tensor<?x?xf32, #coo>, tensor<?xf32>)
       outs(%output : tensor<?xf32>) {
     ^bb0(%matrixValue: f32, %vectorValue: f32, %sum: f32):
       %product = arith.mulf %matrixValue, %vectorValue : f32

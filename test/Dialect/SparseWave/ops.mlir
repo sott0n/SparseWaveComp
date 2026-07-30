@@ -24,6 +24,18 @@ func.func @dynamic_spmv(
   return
 }
 
+// CHECK-LABEL: func.func @static_coo_spmv(
+func.func @static_coo_spmv(
+    %rowIndices: memref<8xi32>, %columnIndices: memref<8xi32>,
+    %values: memref<8xf32>, %vector: memref<4xf32>,
+    %output: memref<4xf32>) {
+  // CHECK: sparsewave.coo_spmv
+  sparsewave.coo_spmv %rowIndices, %columnIndices, %values, %vector, %output
+      : memref<8xi32>, memref<8xi32>, memref<8xf32>,
+        memref<4xf32>, memref<4xf32>
+  return
+}
+
 // CHECK-LABEL: func.func @static_spmm(
 func.func @static_spmm(
     %rowOffsets: memref<5xi32>, %columnIndices: memref<8xi32>,

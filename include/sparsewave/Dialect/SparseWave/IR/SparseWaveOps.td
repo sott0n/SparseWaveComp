@@ -41,6 +41,43 @@ def SparseWave_SpMVOp : SparseWave_Op<"spmv"> {
   let hasVerifier = 1;
 }
 
+def SparseWave_COOSpMVOp : SparseWave_Op<"coo_spmv"> {
+  let summary = "Multiply a COO matrix by a dense vector";
+  let description = [{
+    `sparsewave.coo_spmv` computes `output = matrix * vector`, where `matrix`
+    is represented in coordinate (COO) form by parallel row-index,
+    column-index, and nonzero-value arrays.
+
+    The output must be zero-initialized before accumulating products. The GPU
+    lowering performs this initialization and atomically accumulates one
+    product per nonzero entry.
+
+    Example:
+
+    ```mlir
+    sparsewave.coo_spmv %row_indices, %column_indices, %values, %vector, %output
+        : memref<8xi32>, memref<8xi32>, memref<8xf32>,
+          memref<4xf32>, memref<4xf32>
+    ```
+  }];
+
+  let arguments = (ins Arg<AnyMemRef, "COO row indices", [MemRead]>:$rowIndices,
+                       Arg<AnyMemRef, "COO column indices",
+                           [MemRead]>:$columnIndices,
+                       Arg<AnyMemRef, "COO nonzero values", [MemRead]>:$values,
+                       Arg<AnyMemRef, "dense input vector", [MemRead]>:$vector,
+                       Arg<AnyMemRef, "dense output vector",
+                           [MemRead, MemWrite]>:$output);
+
+  let assemblyFormat = [{
+    $rowIndices `,` $columnIndices `,` $values `,` $vector `,` $output
+    attr-dict `:` type($rowIndices) `,` type($columnIndices) `,`
+    type($values) `,` type($vector) `,` type($output)
+  }];
+
+  let hasVerifier = 1;
+}
+
 def SparseWave_SpMMOp : SparseWave_Op<"spmm"> {
   let summary = "Multiply a CSR matrix by a dense matrix";
   let description = [{

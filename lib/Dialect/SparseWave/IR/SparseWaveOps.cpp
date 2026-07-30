@@ -59,6 +59,39 @@ LogicalResult verifyCSRStorage(Operation *op, MemRefType rowOffsetsType,
   return success();
 }
 
+LogicalResult verifyCOOStorage(Operation *op, MemRefType rowIndicesType,
+                               MemRefType columnIndicesType,
+                               MemRefType valuesType) {
+  if (failed(verifyRank(op, rowIndicesType, 1, "row indices")) ||
+      failed(verifyRank(op, columnIndicesType, 1, "column indices")) ||
+      failed(verifyRank(op, valuesType, 1, "values")))
+    return failure();
+
+  Type indexType = rowIndicesType.getElementType();
+  if (!indexType.isIntOrIndex())
+    return op->emitOpError()
+           << "row indices must have integer or index elements, but got "
+           << indexType;
+  if (columnIndicesType.getElementType() != indexType)
+    return op->emitOpError()
+           << "row and column indices must have the same element type";
+
+  Type valueType = valuesType.getElementType();
+  if (!isa<FloatType>(valueType))
+    return op->emitOpError()
+           << "values must have floating-point elements, but got " << valueType;
+
+  int64_t rowIndicesSize = rowIndicesType.getDimSize(0);
+  int64_t columnIndicesSize = columnIndicesType.getDimSize(0);
+  int64_t valuesSize = valuesType.getDimSize(0);
+  if (!areCompatibleStaticDimensions(rowIndicesSize, columnIndicesSize) ||
+      !areCompatibleStaticDimensions(rowIndicesSize, valuesSize) ||
+      !areCompatibleStaticDimensions(columnIndicesSize, valuesSize))
+    return op->emitOpError()
+           << "row indices, column indices, and values must have the same size";
+  return success();
+}
+
 } // namespace
 
 LogicalResult SpMVOp::verify() {
@@ -72,6 +105,27 @@ LogicalResult SpMVOp::verify() {
       failed(verifyRank(*this, outputType, 1, "output")) ||
       failed(verifyCSRStorage(*this, rowOffsetsType, columnIndicesType,
                               valuesType, outputType, "output size")))
+    return failure();
+
+  Type valueType = valuesType.getElementType();
+  if (vectorType.getElementType() != valueType ||
+      outputType.getElementType() != valueType)
+    return emitOpError()
+           << "values, vector, and output must have the same element type";
+  return success();
+}
+
+LogicalResult COOSpMVOp::verify() {
+  MemRefType rowIndicesType = getRowIndices().getType();
+  MemRefType columnIndicesType = getColumnIndices().getType();
+  MemRefType valuesType = getValues().getType();
+  MemRefType vectorType = getVector().getType();
+  MemRefType outputType = getOutput().getType();
+
+  if (failed(verifyRank(*this, vectorType, 1, "vector")) ||
+      failed(verifyRank(*this, outputType, 1, "output")) ||
+      failed(verifyCOOStorage(*this, rowIndicesType, columnIndicesType,
+                              valuesType)))
     return failure();
 
   Type valueType = valuesType.getElementType();
