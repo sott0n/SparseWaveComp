@@ -20,16 +20,6 @@ namespace mlir::sparsewave {
 
 namespace {
 
-Value castToIndex(OpBuilder &builder, Location loc, Value value) {
-  if (value.getType().isIndex())
-    return value;
-  if (cast<IntegerType>(value.getType()).isUnsigned())
-    return arith::IndexCastUIOp::create(builder, loc, builder.getIndexType(),
-                                        value);
-  return arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
-                                    value);
-}
-
 class ThreadPerRowSpMVPattern : public OpRewritePattern<SpMVOp> {
 public:
   ThreadPerRowSpMVPattern(MLIRContext *context, int64_t blockSize)
@@ -64,21 +54,16 @@ public:
     scf::IfOp::create(
         rewriter, loc, rowIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          Value nextRow =
-              arith::AddIOp::create(builder, bodyLoc, row, oneIndex);
-          Value rowStartValue =
-              memref::LoadOp::create(builder, bodyLoc, op.getRowOffsets(), row);
-          Value rowEndValue = memref::LoadOp::create(
-              builder, bodyLoc, op.getRowOffsets(), nextRow);
-          Value rowStart = castToIndex(builder, bodyLoc, rowStartValue);
-          Value rowEnd = castToIndex(builder, bodyLoc, rowEndValue);
+          CSRRowBounds rowBounds = buildCSRRowBounds(
+              builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
 
           auto valueType =
               cast<MemRefType>(op.getValues().getType()).getElementType();
           Value zero = arith::ConstantOp::create(
               builder, bodyLoc, builder.getZeroAttr(valueType));
           auto reduction = scf::ForOp::create(
-              builder, bodyLoc, rowStart, rowEnd, oneIndex, ValueRange{zero},
+              builder, bodyLoc, rowBounds.start, rowBounds.end, oneIndex,
+              ValueRange{zero},
               [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
                   ValueRange iterArgs) {
                 Value columnValue = memref::LoadOp::create(
@@ -130,47 +115,27 @@ public:
         arith::ConstantIndexOp::create(rewriter, loc, blockSize / waveSize);
     Value rowCount =
         memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
-    Value requiredBlocks =
-        arith::CeilDivUIOp::create(rewriter, loc, rowCount, wavesPerBlockValue);
-    Value gridSize =
-        arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
-
-    gpu::LaunchOp launch =
-        gpu::LaunchOp::create(rewriter, loc, gridSize, oneIndex, oneIndex,
-                              blockSizeValue, oneIndex, oneIndex);
-    rewriter.setInsertionPointToStart(&launch.getBody().front());
-
-    Value waveInBlock = arith::DivUIOp::create(
-        rewriter, loc, launch.getThreadIds().x, waveSizeValue);
-    Value lane = arith::RemUIOp::create(rewriter, loc, launch.getThreadIds().x,
-                                        waveSizeValue);
-    Value rowBase = arith::MulIOp::create(rewriter, loc, launch.getBlockIds().x,
-                                          wavesPerBlockValue);
-    Value row = arith::AddIOp::create(rewriter, loc, rowBase, waveInBlock);
-    Value rowIsActive = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::ult, row, rowCount);
+    WaveWorkDistribution distribution = buildWaveWorkDistribution(
+        rewriter, loc, rowCount, oneIndex, blockSizeValue, waveSizeValue,
+        wavesPerBlockValue);
+    Value row = distribution.workUnit;
 
     scf::IfOp::create(
-        rewriter, loc, rowIsActive,
+        rewriter, loc, distribution.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          Value nextRow =
-              arith::AddIOp::create(builder, bodyLoc, row, oneIndex);
-          Value rowStartValue =
-              memref::LoadOp::create(builder, bodyLoc, op.getRowOffsets(), row);
-          Value rowEndValue = memref::LoadOp::create(
-              builder, bodyLoc, op.getRowOffsets(), nextRow);
-          Value rowStart = castToIndex(builder, bodyLoc, rowStartValue);
-          Value rowEnd = castToIndex(builder, bodyLoc, rowEndValue);
-          Value firstPosition =
-              arith::AddIOp::create(builder, bodyLoc, rowStart, lane);
+          CSRRowBounds rowBounds = buildCSRRowBounds(
+              builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
+          StridedPositionRange positions = buildStridedPositionRange(
+              builder, bodyLoc, rowBounds, distribution.lane,
+              distribution.positionStride);
 
           auto valueType =
               cast<MemRefType>(op.getValues().getType()).getElementType();
           Value zero = arith::ConstantOp::create(
               builder, bodyLoc, builder.getZeroAttr(valueType));
           auto partialReduction = scf::ForOp::create(
-              builder, bodyLoc, firstPosition, rowEnd, waveSizeValue,
-              ValueRange{zero},
+              builder, bodyLoc, positions.first, positions.end,
+              positions.stride, ValueRange{zero},
               [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
                   ValueRange iterArgs) {
                 Value columnValue = memref::LoadOp::create(
@@ -190,8 +155,9 @@ public:
           Value waveSum = buildWaveReduction(
               builder, bodyLoc, partialReduction.getResult(0), waveSize);
 
-          Value laneIsZero = arith::CmpIOp::create(
-              builder, bodyLoc, arith::CmpIPredicate::eq, lane, zeroIndex);
+          Value laneIsZero =
+              arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
+                                    distribution.lane, zeroIndex);
           scf::IfOp::create(builder, bodyLoc, laneIsZero,
                             [&](OpBuilder &storeBuilder, Location storeLoc) {
                               memref::StoreOp::create(storeBuilder, storeLoc,
@@ -203,7 +169,7 @@ public:
         },
         {});
 
-    rewriter.setInsertionPointToEnd(&launch.getBody().front());
+    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
     gpu::TerminatorOp::create(rewriter, loc);
     rewriter.eraseOp(op);
     return success();
@@ -261,22 +227,16 @@ public:
     scf::IfOp::create(
         rewriter, loc, rowIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          Value nextRow =
-              arith::AddIOp::create(builder, bodyLoc, row, oneIndex);
-          Value rowStartValue =
-              memref::LoadOp::create(builder, bodyLoc, op.getRowOffsets(), row);
-          Value rowEndValue = memref::LoadOp::create(
-              builder, bodyLoc, op.getRowOffsets(), nextRow);
-          Value rowStart = castToIndex(builder, bodyLoc, rowStartValue);
-          Value rowEnd = castToIndex(builder, bodyLoc, rowEndValue);
-          Value firstPosition =
-              arith::AddIOp::create(builder, bodyLoc, rowStart, thread);
+          CSRRowBounds rowBounds = buildCSRRowBounds(
+              builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
+          StridedPositionRange positions = buildStridedPositionRange(
+              builder, bodyLoc, rowBounds, thread, blockSizeValue);
           Value zero = arith::ConstantOp::create(
               builder, bodyLoc, builder.getZeroAttr(valueType));
 
           auto partialReduction = scf::ForOp::create(
-              builder, bodyLoc, firstPosition, rowEnd, blockSizeValue,
-              ValueRange{zero},
+              builder, bodyLoc, positions.first, positions.end,
+              positions.stride, ValueRange{zero},
               [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
                   ValueRange iterArgs) {
                 Value columnValue = memref::LoadOp::create(
@@ -400,21 +360,16 @@ public:
               arith::DivUIOp::create(builder, bodyLoc, element, columnCount);
           Value outputColumn =
               arith::RemUIOp::create(builder, bodyLoc, element, columnCount);
-          Value nextRow =
-              arith::AddIOp::create(builder, bodyLoc, row, oneIndex);
-          Value rowStartValue =
-              memref::LoadOp::create(builder, bodyLoc, op.getRowOffsets(), row);
-          Value rowEndValue = memref::LoadOp::create(
-              builder, bodyLoc, op.getRowOffsets(), nextRow);
-          Value rowStart = castToIndex(builder, bodyLoc, rowStartValue);
-          Value rowEnd = castToIndex(builder, bodyLoc, rowEndValue);
+          CSRRowBounds rowBounds = buildCSRRowBounds(
+              builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
 
           auto valueType =
               cast<MemRefType>(op.getValues().getType()).getElementType();
           Value zero = arith::ConstantOp::create(
               builder, bodyLoc, builder.getZeroAttr(valueType));
           auto reduction = scf::ForOp::create(
-              builder, bodyLoc, rowStart, rowEnd, oneIndex, ValueRange{zero},
+              builder, bodyLoc, rowBounds.start, rowBounds.end, oneIndex,
+              ValueRange{zero},
               [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
                   ValueRange iterArgs) {
                 Value reductionIndexValue = memref::LoadOp::create(
@@ -477,29 +432,13 @@ public:
         arith::CeilDivUIOp::create(rewriter, loc, columnCount, tileSizeValue);
     Value workUnitCount =
         arith::MulIOp::create(rewriter, loc, rowCount, tilesPerRow);
-    Value requiredBlocks = arith::CeilDivUIOp::create(
-        rewriter, loc, workUnitCount, wavesPerBlockValue);
-    Value gridSize =
-        arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
-
-    gpu::LaunchOp launch =
-        gpu::LaunchOp::create(rewriter, loc, gridSize, oneIndex, oneIndex,
-                              blockSizeValue, oneIndex, oneIndex);
-    rewriter.setInsertionPointToStart(&launch.getBody().front());
-
-    Value waveInBlock = arith::DivUIOp::create(
-        rewriter, loc, launch.getThreadIds().x, waveSizeValue);
-    Value lane = arith::RemUIOp::create(rewriter, loc, launch.getThreadIds().x,
-                                        waveSizeValue);
-    Value waveBase = arith::MulIOp::create(
-        rewriter, loc, launch.getBlockIds().x, wavesPerBlockValue);
-    Value workUnit =
-        arith::AddIOp::create(rewriter, loc, waveBase, waveInBlock);
-    Value workUnitIsActive = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::ult, workUnit, workUnitCount);
+    WaveWorkDistribution distribution = buildWaveWorkDistribution(
+        rewriter, loc, workUnitCount, oneIndex, blockSizeValue, waveSizeValue,
+        wavesPerBlockValue);
+    Value workUnit = distribution.workUnit;
 
     scf::IfOp::create(
-        rewriter, loc, workUnitIsActive,
+        rewriter, loc, distribution.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
           Value row =
               arith::DivUIOp::create(builder, bodyLoc, workUnit, tilesPerRow);
@@ -507,16 +446,11 @@ public:
               arith::RemUIOp::create(builder, bodyLoc, workUnit, tilesPerRow);
           Value firstOutputColumn =
               arith::MulIOp::create(builder, bodyLoc, tile, tileSizeValue);
-          Value nextRow =
-              arith::AddIOp::create(builder, bodyLoc, row, oneIndex);
-          Value rowStartValue =
-              memref::LoadOp::create(builder, bodyLoc, op.getRowOffsets(), row);
-          Value rowEndValue = memref::LoadOp::create(
-              builder, bodyLoc, op.getRowOffsets(), nextRow);
-          Value rowStart = castToIndex(builder, bodyLoc, rowStartValue);
-          Value rowEnd = castToIndex(builder, bodyLoc, rowEndValue);
-          Value firstPosition =
-              arith::AddIOp::create(builder, bodyLoc, rowStart, lane);
+          CSRRowBounds rowBounds = buildCSRRowBounds(
+              builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
+          StridedPositionRange positions = buildStridedPositionRange(
+              builder, bodyLoc, rowBounds, distribution.lane,
+              distribution.positionStride);
 
           auto valueType =
               cast<MemRefType>(op.getValues().getType()).getElementType();
@@ -547,8 +481,8 @@ public:
 
             SmallVector<Value> initialSums(tileSize, zero);
             auto partialReductions = scf::ForOp::create(
-                tileBuilder, tileLoc, firstPosition, rowEnd, waveSizeValue,
-                initialSums,
+                tileBuilder, tileLoc, positions.first, positions.end,
+                positions.stride, initialSums,
                 [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
                     ValueRange iterArgs) {
                   Value reductionIndexValue = memref::LoadOp::create(
@@ -622,8 +556,9 @@ public:
           SmallVector<Value> waveSums = buildWaveReductions(
               builder, bodyLoc, tileReductions.getResults(), waveSize);
 
-          Value laneIsZero = arith::CmpIOp::create(
-              builder, bodyLoc, arith::CmpIPredicate::eq, lane, zeroIndex);
+          Value laneIsZero =
+              arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
+                                    distribution.lane, zeroIndex);
           scf::IfOp::create(
               builder, bodyLoc, laneIsZero,
               [&](OpBuilder &laneBuilder, Location laneLoc) {
@@ -664,7 +599,7 @@ public:
         },
         {});
 
-    rewriter.setInsertionPointToEnd(&launch.getBody().front());
+    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
     gpu::TerminatorOp::create(rewriter, loc);
     rewriter.eraseOp(op);
     return success();
