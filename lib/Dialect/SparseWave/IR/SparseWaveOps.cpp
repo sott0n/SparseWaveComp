@@ -163,5 +163,41 @@ LogicalResult SpMMOp::verify() {
   return success();
 }
 
+LogicalResult SDDMMOp::verify() {
+  MemRefType rowOffsetsType = getRowOffsets().getType();
+  MemRefType columnIndicesType = getColumnIndices().getType();
+  MemRefType valuesType = getValues().getType();
+  MemRefType lhsType = getLhs().getType();
+  MemRefType rhsType = getRhs().getType();
+  MemRefType outputValuesType = getOutputValues().getType();
+
+  if (failed(verifyRank(*this, lhsType, 2, "left-hand side")) ||
+      failed(verifyRank(*this, rhsType, 2, "right-hand side")) ||
+      failed(verifyRank(*this, outputValuesType, 1, "output values")) ||
+      failed(verifyCSRStorage(*this, rowOffsetsType, columnIndicesType,
+                              valuesType, lhsType, "left-hand-side rows")))
+    return failure();
+
+  Type valueType = valuesType.getElementType();
+  if (lhsType.getElementType() != valueType ||
+      rhsType.getElementType() != valueType ||
+      outputValuesType.getElementType() != valueType)
+    return emitOpError()
+           << "values, dense operands, and output values must have the same "
+              "element type";
+  if (!areCompatibleStaticDimensions(lhsType.getDimSize(1),
+                                     rhsType.getDimSize(0)))
+    return emitOpError()
+           << "left-hand-side columns and right-hand-side rows must match";
+  if (!areCompatibleStaticDimensions(valuesType.getDimSize(0),
+                                     outputValuesType.getDimSize(0)))
+    return emitOpError()
+           << "values and output values must have the same size, but got "
+           << valuesType.getDimSize(0) << " and "
+           << outputValuesType.getDimSize(0);
+
+  return success();
+}
+
 #define GET_OP_CLASSES
 #include "sparsewave/Dialect/SparseWave/IR/SparseWaveOps.cpp.inc"

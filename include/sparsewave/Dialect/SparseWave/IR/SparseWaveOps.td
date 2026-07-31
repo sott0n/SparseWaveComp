@@ -113,4 +113,49 @@ def SparseWave_SpMMOp : SparseWave_Op<"spmm"> {
   let hasVerifier = 1;
 }
 
+def SparseWave_SDDMMOp : SparseWave_Op<"sddmm"> {
+  let summary = "Sample a dense matrix product using a CSR matrix";
+  let description = [{
+    `sparsewave.sddmm` computes a value-weighted sampled dense-dense matrix
+    multiplication. For every CSR entry at `(row, column)`, it writes
+
+    ```
+    output_values[position] =
+        values[position] * dot(lhs[row, :], rhs[:, column])
+    ```
+
+    Row offsets and column indices are preserved, so the output values have
+    the same sparse structure as the input CSR matrix.
+
+    Example:
+
+    ```mlir
+    sparsewave.sddmm %row_offsets, %column_indices, %values,
+        %lhs, %rhs, %output_values
+        : memref<5xi32>, memref<8xi32>, memref<8xf32>,
+          memref<4x3xf32>, memref<3x4xf32>, memref<8xf32>
+    ```
+  }];
+
+  let arguments = (ins Arg<AnyMemRef, "CSR row offsets", [MemRead]>:$rowOffsets,
+                       Arg<AnyMemRef, "CSR column indices",
+                           [MemRead]>:$columnIndices,
+                       Arg<AnyMemRef, "CSR nonzero values", [MemRead]>:$values,
+                       Arg<AnyMemRef, "dense left-hand-side matrix",
+                           [MemRead]>:$lhs,
+                       Arg<AnyMemRef, "dense right-hand-side matrix",
+                           [MemRead]>:$rhs,
+                       Arg<AnyMemRef, "CSR output values",
+                           [MemWrite]>:$outputValues);
+
+  let assemblyFormat = [{
+    $rowOffsets `,` $columnIndices `,` $values `,` $lhs `,` $rhs `,`
+    $outputValues attr-dict `:` type($rowOffsets) `,`
+    type($columnIndices) `,` type($values) `,` type($lhs) `,` type($rhs) `,`
+    type($outputValues)
+  }];
+
+  let hasVerifier = 1;
+}
+
 #endif // SPARSEWAVE_DIALECT_SPARSEWAVE_IR_SPARSEWAVEOPS_TD

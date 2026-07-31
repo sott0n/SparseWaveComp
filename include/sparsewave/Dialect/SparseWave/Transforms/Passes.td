@@ -41,12 +41,13 @@ def ConvertSparseWaveToGPU
     : Pass<"convert-sparsewave-to-gpu", "::mlir::ModuleOp"> {
   let summary = "Map SparseWave operations to GPU launches";
   let description = [{
-    Lowers sparsewave.spmv, sparsewave.coo_spmv, and sparsewave.spmm to
-    one-dimensional GPU launches. CSR SpMV can assign one GPU thread, one GPU
-    wave, or one GPU block to each matrix row. COO SpMV assigns one thread to
-    each nonzero and atomically accumulates the output. SpMM can assign one GPU
-    thread to each dense output element or one GPU wave to a CSR row and a tile
-    of dense output columns.
+    Lowers sparsewave.spmv, sparsewave.coo_spmv, sparsewave.spmm, and
+    sparsewave.sddmm to one-dimensional GPU launches. CSR SpMV can assign one
+    GPU thread, one GPU wave, or one GPU block to each matrix row. COO SpMV
+    assigns one thread to each nonzero and atomically accumulates the output.
+    SpMM can assign one GPU thread to each dense output element or one GPU wave
+    to a CSR row and a tile of dense output columns. SDDMM assigns one thread
+    to each CSR row and computes the sampled dot products sequentially.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",
@@ -66,7 +67,10 @@ def ConvertSparseWaveToGPU
            "Number of GPU threads in each SpMM block">,
     Option<"spmmTileSize", "spmm-tile-size", "int64_t",
            /*default=*/"4",
-           "Number of dense output columns in each SpMM wave tile">
+           "Number of dense output columns in each SpMM wave tile">,
+    Option<"sddmmBlockSize", "sddmm-block-size", "int64_t",
+           /*default=*/"256",
+           "Number of GPU threads in each SDDMM block">
   ];
   let dependentDialects = [
     "arith::ArithDialect",

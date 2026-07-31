@@ -435,6 +435,84 @@ private:
   int64_t blockSize;
 };
 
+class ThreadPerRowSDDMMPattern : public OpRewritePattern<SDDMMOp> {
+public:
+  ThreadPerRowSDDMMPattern(MLIRContext *context, int64_t blockSize)
+      : OpRewritePattern<SDDMMOp>(context), blockSize(blockSize) {}
+
+  LogicalResult matchAndRewrite(SDDMMOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value blockSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, blockSize);
+    Value rowCount =
+        memref::DimOp::create(rewriter, loc, op.getLhs(), zeroIndex);
+    Value reductionSize =
+        memref::DimOp::create(rewriter, loc, op.getLhs(), oneIndex);
+    LinearThreadWorkDistribution distribution =
+        buildLinearThreadWorkDistribution(rewriter, loc, rowCount, oneIndex,
+                                          blockSizeValue);
+    Value row = distribution.workUnit;
+
+    scf::IfOp::create(
+        rewriter, loc, distribution.workUnitIsActive,
+        [&](OpBuilder &builder, Location bodyLoc) {
+          CSRRowBounds rowBounds = buildCSRRowBounds(
+              builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
+          StridedPositionRange positions{rowBounds.start, rowBounds.end,
+                                         oneIndex};
+          auto valueType =
+              cast<MemRefType>(op.getValues().getType()).getElementType();
+          Value zero = arith::ConstantOp::create(
+              builder, bodyLoc, builder.getZeroAttr(valueType));
+
+          buildCSRPositionTraversal(
+              builder, bodyLoc, op.getColumnIndices(), op.getValues(),
+              positions, ValueRange{},
+              [&](OpBuilder &positionBuilder, Location positionLoc,
+                  CSRPosition position, ValueRange) {
+                auto dot = scf::ForOp::create(
+                    positionBuilder, positionLoc, zeroIndex, reductionSize,
+                    oneIndex, ValueRange{zero},
+                    [&](OpBuilder &reductionBuilder, Location reductionLoc,
+                        Value reductionIndex, ValueRange iterArgs) {
+                      Value lhsValue = memref::LoadOp::create(
+                          reductionBuilder, reductionLoc, op.getLhs(),
+                          ValueRange{row, reductionIndex});
+                      Value rhsValue = memref::LoadOp::create(
+                          reductionBuilder, reductionLoc, op.getRhs(),
+                          ValueRange{reductionIndex, position.column});
+                      Value product = arith::MulFOp::create(
+                          reductionBuilder, reductionLoc, lhsValue, rhsValue);
+                      Value sum =
+                          arith::AddFOp::create(reductionBuilder, reductionLoc,
+                                                iterArgs.front(), product);
+                      scf::YieldOp::create(reductionBuilder, reductionLoc, sum);
+                    });
+                Value weighted =
+                    arith::MulFOp::create(positionBuilder, positionLoc,
+                                          position.value, dot.getResult(0));
+                memref::StoreOp::create(positionBuilder, positionLoc, weighted,
+                                        op.getOutputValues(),
+                                        position.position);
+                return SmallVector<Value>{};
+              });
+          scf::YieldOp::create(builder, bodyLoc);
+        },
+        {});
+
+    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
+    gpu::TerminatorOp::create(rewriter, loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  int64_t blockSize;
+};
+
 class WavePerRowTileSpMMPattern : public OpRewritePattern<SpMMOp> {
 public:
   WavePerRowTileSpMMPattern(MLIRContext *context, int64_t blockSize,
@@ -680,6 +758,13 @@ public:
       signalPassFailure();
       return;
     }
+    if (sddmmBlockSize < 1 || sddmmBlockSize > 1024) {
+      getOperation().emitError()
+          << "SDDMM block size must be between 1 and 1024, but got "
+          << sddmmBlockSize.getValue();
+      signalPassFailure();
+      return;
+    }
     if (spmmMapping == "wave-per-row-tile" && waveSize != 32) {
       getOperation().emitError()
           << "wave-per-row-tile currently requires Wave32, but got wave size "
@@ -712,6 +797,7 @@ public:
 
     RewritePatternSet patterns(&getContext());
     patterns.add<ThreadPerNonzeroCOOSpMVPattern>(&getContext(), blockSize);
+    patterns.add<ThreadPerRowSDDMMPattern>(&getContext(), sddmmBlockSize);
     if (spmmMapping == "thread-per-output")
       patterns.add<ThreadPerOutputSpMMPattern>(&getContext(), spmmBlockSize);
     else

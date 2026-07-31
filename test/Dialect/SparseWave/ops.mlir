@@ -47,3 +47,16 @@ func.func @static_spmm(
         memref<4x3xf32>, memref<4x3xf32>
   return
 }
+
+// CHECK-LABEL: func.func @static_sddmm(
+func.func @static_sddmm(
+    %rowOffsets: memref<5xi32>, %columnIndices: memref<8xi32>,
+    %values: memref<8xf32>, %lhs: memref<4x3xf32>,
+    %rhs: memref<3x4xf32>, %outputValues: memref<8xf32>) {
+  // CHECK: sparsewave.sddmm
+  sparsewave.sddmm %rowOffsets, %columnIndices, %values, %lhs, %rhs,
+      %outputValues
+      : memref<5xi32>, memref<8xi32>, memref<8xf32>,
+        memref<4x3xf32>, memref<3x4xf32>, memref<8xf32>
+  return
+}
