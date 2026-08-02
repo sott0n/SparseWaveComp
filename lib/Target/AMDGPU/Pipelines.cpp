@@ -199,10 +199,12 @@ void mlir::sparsewave::buildAMDGPUBackendPipeline(
 
 void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
     OpPassManager &pm, const SparseWaveToAMDGPUPipelineOptions &options) {
-  // Bridge canonical CSR Linalg SpMV/SpMM operations while the SparseTensor
-  // encoding and the zero-filled output are still visible.
+  // Bridge canonical CSR Linalg SpMV/SpMM/SDDMM operations while the
+  // SparseTensor encoding and operation-specific output form are still
+  // visible.
   pm.addPass(createConvertLinalgSpMVToSparseWave());
   pm.addPass(createConvertLinalgSpMMToSparseWave());
+  pm.addPass(createConvertLinalgSDDMMToSparseWave());
 
   // Generalize named Linalg operations that were not consumed by the bridge,
   // then use the upstream SparseTensor pass to materialize sparse storage and

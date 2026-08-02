@@ -23,6 +23,16 @@
   iterator_types = ["parallel", "reduction"]
 }
 
+#sddmm = {
+  indexing_maps = [
+    affine_map<(i, j, k) -> (i, k)>,
+    affine_map<(i, j, k) -> (k, j)>,
+    affine_map<(i, j, k) -> (i, j)>,
+    affine_map<(i, j, k) -> (i, j)>
+  ],
+  iterator_types = ["parallel", "parallel", "reduction"]
+}
+
 // CHECK-NOT: sparse_tensor
 // CHECK-NOT: linalg.
 // CHECK-NOT: sparsewave.
@@ -78,4 +88,34 @@ func.func @coo_spmv(
       linalg.yield %next : f32
   } -> tensor<?xf32>
   return %result : tensor<?xf32>
+}
+
+// CHECK-LABEL: func.func @csr_sddmm(
+// CHECK: gpu.launch_func @csr_sddmm_kernel::@csr_sddmm_kernel
+// CHECK-NOT: sparse_tensor
+// CHECK-NOT: linalg.
+// CHECK-NOT: sparsewave.
+// CHECK-LABEL: gpu.module @csr_sddmm_kernel
+// CHECK: llvm.func @csr_sddmm_kernel(
+// CHECK-SAME: rocdl.kernel
+func.func @csr_sddmm(
+    %sample: tensor<?x?xf32, #csr>,
+    %lhs: tensor<?x?xf32>,
+    %rhs: tensor<?x?xf32>) -> tensor<?x?xf32, #csr> {
+  %zero = arith.constant 0.0 : f32
+  %output = linalg.fill ins(%zero : f32)
+      outs(%sample : tensor<?x?xf32, #csr>)
+      -> tensor<?x?xf32, #csr>
+  %result = linalg.generic #sddmm
+      ins(%lhs, %rhs, %sample
+          : tensor<?x?xf32>, tensor<?x?xf32>, tensor<?x?xf32, #csr>)
+      outs(%output : tensor<?x?xf32, #csr>) {
+    ^bb0(%lhsValue: f32, %rhsValue: f32, %sampleValue: f32,
+         %sum: f32):
+      %denseProduct = arith.mulf %lhsValue, %rhsValue : f32
+      %weightedProduct = arith.mulf %sampleValue, %denseProduct : f32
+      %next = arith.addf %sum, %weightedProduct : f32
+      linalg.yield %next : f32
+  } -> tensor<?x?xf32, #csr>
+  return %result : tensor<?x?xf32, #csr>
 }

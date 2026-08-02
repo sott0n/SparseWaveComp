@@ -37,6 +37,24 @@ def ConvertLinalgSpMMToSparseWave
   ];
 }
 
+def ConvertLinalgSDDMMToSparseWave
+    : Pass<"convert-linalg-sddmm-to-sparsewave", "::mlir::ModuleOp"> {
+  let summary = "Recognize sparse Linalg SDDMM operations";
+  let description = [{
+    Rewrites the canonical Linalg SDDMM form with dense left- and
+    right-hand-side inputs and a CSR SparseTensor sample to sparsewave.sddmm.
+    The sample also backs a zero-filled destination, which proves that the
+    result preserves its CSR structure while replacing its values with the
+    value-weighted sampled dense product.
+  }];
+  let dependentDialects = [
+    "bufferization::BufferizationDialect",
+    "linalg::LinalgDialect",
+    "sparse_tensor::SparseTensorDialect",
+    "sparsewave::SparseWaveDialect"
+  ];
+}
+
 def ConvertSparseWaveToGPU
     : Pass<"convert-sparsewave-to-gpu", "::mlir::ModuleOp"> {
   let summary = "Map SparseWave operations to GPU launches";

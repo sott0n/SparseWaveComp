@@ -14,6 +14,7 @@
 namespace mlir::sparsewave {
 #define GEN_PASS_DEF_CONVERTLINALGSPMVTOSPARSEWAVE
 #define GEN_PASS_DEF_CONVERTLINALGSPMMTOSPARSEWAVE
+#define GEN_PASS_DEF_CONVERTLINALGSDDMMTOSPARSEWAVE
 #include "sparsewave/Dialect/SparseWave/Transforms/Passes.h.inc"
 
 namespace {
@@ -38,6 +39,18 @@ struct COOStorage {
   Value rowIndices;
   Value columnIndices;
   Value values;
+};
+
+struct SDDMMMatch {
+  Value lhs;
+  Value rhs;
+  Value sample;
+  Value output;
+  RankedTensorType lhsType;
+  RankedTensorType rhsType;
+  RankedTensorType sampleType;
+  RankedTensorType outputType;
+  linalg::FillOp zeroFill;
 };
 
 enum class SparseMatrixFormat {
@@ -70,6 +83,65 @@ bool hasCanonicalSpMMIndexingMaps(linalg::LinalgOp op) {
   return maps[0] == AffineMap::get(3, 0, {row, reduction}, context) &&
          maps[1] == AffineMap::get(3, 0, {reduction, column}, context) &&
          maps[2] == AffineMap::get(3, 0, {row, column}, context);
+}
+
+bool hasCanonicalSDDMMIndexingMaps(linalg::LinalgOp op) {
+  SmallVector<AffineMap> maps = op.getIndexingMapsArray();
+  if (maps.size() != 4)
+    return false;
+
+  MLIRContext *context = op.getContext();
+  AffineExpr row = getAffineDimExpr(0, context);
+  AffineExpr column = getAffineDimExpr(1, context);
+  AffineExpr reduction = getAffineDimExpr(2, context);
+  return maps[0] == AffineMap::get(3, 0, {row, reduction}, context) &&
+         maps[1] == AffineMap::get(3, 0, {reduction, column}, context) &&
+         maps[2] == AffineMap::get(3, 0, {row, column}, context) &&
+         maps[3] == AffineMap::get(3, 0, {row, column}, context);
+}
+
+void collectMultiplyLeaves(Value value, SmallVectorImpl<Value> &leaves) {
+  if (auto multiply = value.getDefiningOp<arith::MulFOp>()) {
+    collectMultiplyLeaves(multiply.getLhs(), leaves);
+    collectMultiplyLeaves(multiply.getRhs(), leaves);
+    return;
+  }
+  leaves.push_back(value);
+}
+
+bool matchTripleProduct(Value value, Value lhs, Value rhs, Value sample) {
+  SmallVector<Value> leaves;
+  collectMultiplyLeaves(value, leaves);
+  if (leaves.size() != 3)
+    return false;
+
+  SmallVector<Value> expected{lhs, rhs, sample};
+  for (Value leaf : leaves) {
+    auto it = llvm::find(expected, leaf);
+    if (it == expected.end())
+      return false;
+    expected.erase(it);
+  }
+  return expected.empty();
+}
+
+bool hasCanonicalSDDMMBody(linalg::GenericOp op) {
+  Block &body = op.getRegion().front();
+  auto yield = dyn_cast<linalg::YieldOp>(body.getTerminator());
+  if (!yield || yield.getNumOperands() != 1 || body.getNumArguments() != 4)
+    return false;
+
+  auto add = yield.getOperand(0).getDefiningOp<arith::AddFOp>();
+  if (!add)
+    return false;
+  Value lhs = body.getArgument(0);
+  Value rhs = body.getArgument(1);
+  Value sample = body.getArgument(2);
+  Value output = body.getArgument(3);
+  return (add.getLhs() == output &&
+          matchTripleProduct(add.getRhs(), lhs, rhs, sample)) ||
+         (add.getRhs() == output &&
+          matchTripleProduct(add.getLhs(), lhs, rhs, sample));
 }
 
 linalg::FillOp getSingleUseZeroFill(Value value) {
@@ -180,6 +252,101 @@ void replaceContraction(linalg::LinalgOp op, PatternRewriter &rewriter,
       /*writable=*/true);
   rewriter.replaceOp(op, result);
   rewriter.eraseOp(match.zeroFill);
+}
+
+LogicalResult matchSDDMM(linalg::GenericOp op, SDDMMMatch &match,
+                         PatternRewriter &rewriter) {
+  if (op.getNumDpsInputs() != 3 || op.getNumDpsInits() != 1 ||
+      op->getNumResults() != 1)
+    return rewriter.notifyMatchFailure(
+        op, "expected three inputs, one output, and one result");
+  if (!hasCanonicalSDDMMIndexingMaps(op))
+    return rewriter.notifyMatchFailure(
+        op, "expected canonical SDDMM indexing maps");
+  SmallVector<utils::IteratorType> iteratorTypes = op.getIteratorTypesArray();
+  if (iteratorTypes.size() != 3 ||
+      iteratorTypes[0] != utils::IteratorType::parallel ||
+      iteratorTypes[1] != utils::IteratorType::parallel ||
+      iteratorTypes[2] != utils::IteratorType::reduction)
+    return rewriter.notifyMatchFailure(
+        op, "expected parallel, parallel, reduction iterators");
+  if (!hasCanonicalSDDMMBody(op))
+    return rewriter.notifyMatchFailure(
+        op, "expected a sampled multiply/add reduction");
+
+  match.lhs = op.getDpsInputOperand(0)->get();
+  match.rhs = op.getDpsInputOperand(1)->get();
+  match.sample = op.getDpsInputOperand(2)->get();
+  match.output = op.getDpsInitOperand(0)->get();
+  match.lhsType = dyn_cast<RankedTensorType>(match.lhs.getType());
+  match.rhsType = dyn_cast<RankedTensorType>(match.rhs.getType());
+  match.sampleType = dyn_cast<RankedTensorType>(match.sample.getType());
+  match.outputType = dyn_cast<RankedTensorType>(match.output.getType());
+  if (!match.lhsType || !match.rhsType || !match.sampleType ||
+      !match.outputType || match.lhsType.getRank() != 2 ||
+      match.rhsType.getRank() != 2 || match.sampleType.getRank() != 2 ||
+      match.outputType.getRank() != 2)
+    return rewriter.notifyMatchFailure(op, "expected rank-2 tensor operands");
+
+  sparse_tensor::SparseTensorType sparseSample(match.sampleType);
+  sparse_tensor::SparseTensorType sparseOutput(match.outputType);
+  if (!sparseSample.hasEncoding() || !sparseSample.isIdentity() ||
+      sparseSample.getLvlRank() != 2 || !sparseSample.isDenseLvl(0) ||
+      !sparseSample.isCompressedLvl(1))
+    return rewriter.notifyMatchFailure(
+        op, "expected an identity-mapped CSR SparseTensor sample");
+  if (!sparseOutput.hasEncoding() || !sparseOutput.isIdentity() ||
+      sparseOutput.getLvlRank() != 2 || !sparseOutput.isDenseLvl(0) ||
+      !sparseOutput.isCompressedLvl(1) ||
+      sparseOutput.getEncoding() != sparseSample.getEncoding())
+    return rewriter.notifyMatchFailure(
+        op, "expected a matching CSR SparseTensor output");
+  if (sparse_tensor::getSparseTensorEncoding(match.lhsType) ||
+      sparse_tensor::getSparseTensorEncoding(match.rhsType))
+    return rewriter.notifyMatchFailure(op, "expected dense input tensors");
+  if (sparseSample.getPosWidth() != sparseSample.getCrdWidth() ||
+      sparseOutput.getPosWidth() != sparseOutput.getCrdWidth())
+    return rewriter.notifyMatchFailure(
+        op, "expected matching CSR position and coordinate types");
+
+  Type elementType = match.sampleType.getElementType();
+  if (match.lhsType.getElementType() != elementType ||
+      match.rhsType.getElementType() != elementType ||
+      match.outputType.getElementType() != elementType ||
+      !isa<FloatType>(elementType))
+    return rewriter.notifyMatchFailure(
+        op, "expected matching floating-point element types");
+  match.zeroFill = getSingleUseZeroFill(match.output);
+  if (!match.zeroFill)
+    return rewriter.notifyMatchFailure(
+        op, "expected a single-use, statically zero-filled sparse output");
+  if (match.zeroFill.getDpsInitOperand(0)->get() != match.sample)
+    return rewriter.notifyMatchFailure(
+        op, "expected the zero-filled output to reuse the sample structure");
+  return success();
+}
+
+LogicalResult rewriteLinalgSDDMM(linalg::GenericOp op,
+                                 PatternRewriter &rewriter) {
+  SDDMMMatch match;
+  if (failed(matchSDDMM(op, match, rewriter)))
+    return failure();
+
+  Location loc = op.getLoc();
+  CSRStorage sample = extractCSRStorage(rewriter, loc, match.sample);
+  Value lhsBuffer = bufferizeDenseTensor(rewriter, loc, match.lhs,
+                                         match.lhsType, /*readOnly=*/true);
+  Value rhsBuffer = bufferizeDenseTensor(rewriter, loc, match.rhs,
+                                         match.rhsType, /*readOnly=*/true);
+
+  // The zero-filled destination is derived from the sample itself, proving
+  // that the input and result share one CSR structure. Each GPU work item
+  // reads a sample value before replacing that same position.
+  SDDMMOp::create(rewriter, loc, sample.rowOffsets, sample.columnIndices,
+                  sample.values, lhsBuffer, rhsBuffer, sample.values);
+  rewriter.replaceOpWithNewOp<sparse_tensor::LoadOp>(op, match.sample);
+  rewriter.eraseOp(match.zeroFill);
+  return success();
 }
 
 LogicalResult rewriteLinalgSpMV(linalg::LinalgOp op,
@@ -302,6 +469,29 @@ public:
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
   }
+};
+
+class ConvertLinalgSDDMMToSparseWave
+    : public impl::ConvertLinalgSDDMMToSparseWaveBase<
+          ConvertLinalgSDDMMToSparseWave> {
+public:
+  void runOnOperation() override {
+    RewritePatternSet patterns(&getContext());
+    patterns.add<LinalgSDDMMPattern>(&getContext());
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
+      signalPassFailure();
+  }
+
+private:
+  class LinalgSDDMMPattern : public OpRewritePattern<linalg::GenericOp> {
+  public:
+    using OpRewritePattern<linalg::GenericOp>::OpRewritePattern;
+
+    LogicalResult matchAndRewrite(linalg::GenericOp op,
+                                  PatternRewriter &rewriter) const override {
+      return rewriteLinalgSDDMM(op, rewriter);
+    }
+  };
 };
 
 } // namespace
