@@ -26,7 +26,7 @@ struct WaveWorkDistribution {
   Value positionStride;
 };
 
-struct CSRRowBounds {
+struct CompressedRowBounds {
   Value start;
   Value end;
 };
@@ -58,11 +58,12 @@ buildWaveWorkDistribution(PatternRewriter &rewriter, Location loc,
                           Value workUnitCount, Value oneIndex, Value blockSize,
                           Value waveSize, Value wavesPerBlock);
 
-CSRRowBounds buildCSRRowBounds(OpBuilder &builder, Location loc,
-                               Value rowOffsets, Value row, Value oneIndex);
+CompressedRowBounds buildCompressedRowBounds(OpBuilder &builder, Location loc,
+                                             Value rowOffsets, Value row,
+                                             Value oneIndex);
 
 StridedPositionRange buildStridedPositionRange(OpBuilder &builder, Location loc,
-                                               CSRRowBounds rowBounds,
+                                               CompressedRowBounds rowBounds,
                                                Value participantOffset,
                                                Value stride);
 

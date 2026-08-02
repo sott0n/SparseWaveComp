@@ -66,8 +66,9 @@ buildWaveWorkDistribution(PatternRewriter &rewriter, Location loc,
   return {launch, waveInBlock, lane, workUnit, workUnitIsActive, waveSize};
 }
 
-CSRRowBounds buildCSRRowBounds(OpBuilder &builder, Location loc,
-                               Value rowOffsets, Value row, Value oneIndex) {
+CompressedRowBounds buildCompressedRowBounds(OpBuilder &builder, Location loc,
+                                             Value rowOffsets, Value row,
+                                             Value oneIndex) {
   Value nextRow = arith::AddIOp::create(builder, loc, row, oneIndex);
   Value rowStartValue = memref::LoadOp::create(builder, loc, rowOffsets, row);
   Value rowEndValue = memref::LoadOp::create(builder, loc, rowOffsets, nextRow);
@@ -76,7 +77,7 @@ CSRRowBounds buildCSRRowBounds(OpBuilder &builder, Location loc,
 }
 
 StridedPositionRange buildStridedPositionRange(OpBuilder &builder, Location loc,
-                                               CSRRowBounds rowBounds,
+                                               CompressedRowBounds rowBounds,
                                                Value participantOffset,
                                                Value stride) {
   Value first =

@@ -114,7 +114,7 @@ public:
     scf::IfOp::create(
         rewriter, loc, distribution.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          CSRRowBounds rowBounds = buildCSRRowBounds(
+          CompressedRowBounds rowBounds = buildCompressedRowBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
 
           auto valueType =
@@ -180,7 +180,7 @@ public:
     scf::IfOp::create(
         rewriter, loc, distribution.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          CSRRowBounds rowBounds = buildCSRRowBounds(
+          CompressedRowBounds rowBounds = buildCompressedRowBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
           StridedPositionRange positions = buildStridedPositionRange(
               builder, bodyLoc, rowBounds, distribution.lane,
@@ -279,7 +279,7 @@ public:
     scf::IfOp::create(
         rewriter, loc, rowIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          CSRRowBounds rowBounds = buildCSRRowBounds(
+          CompressedRowBounds rowBounds = buildCompressedRowBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
           StridedPositionRange positions = buildStridedPositionRange(
               builder, bodyLoc, rowBounds, thread, blockSizeValue);
@@ -395,7 +395,7 @@ public:
               arith::DivUIOp::create(builder, bodyLoc, element, columnCount);
           Value outputColumn =
               arith::RemUIOp::create(builder, bodyLoc, element, columnCount);
-          CSRRowBounds rowBounds = buildCSRRowBounds(
+          CompressedRowBounds rowBounds = buildCompressedRowBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
 
           auto valueType =
@@ -435,6 +435,113 @@ private:
   int64_t blockSize;
 };
 
+class ThreadPerOutputBSRSpMMPattern : public OpRewritePattern<BSRSpMMOp> {
+public:
+  ThreadPerOutputBSRSpMMPattern(MLIRContext *context, int64_t gpuBlockSize)
+      : OpRewritePattern<BSRSpMMOp>(context), gpuBlockSize(gpuBlockSize) {}
+
+  LogicalResult matchAndRewrite(BSRSpMMOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value gpuBlockSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, gpuBlockSize);
+    Value bsrBlockSize = arith::ConstantIndexOp::create(
+        rewriter, loc, op.getBlockSizeAttr().getInt());
+    Value valuesPerBlock =
+        arith::MulIOp::create(rewriter, loc, bsrBlockSize, bsrBlockSize);
+    Value rowCount =
+        memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
+    Value columnCount =
+        memref::DimOp::create(rewriter, loc, op.getOutput(), oneIndex);
+    Value outputElementCount =
+        arith::MulIOp::create(rewriter, loc, rowCount, columnCount);
+    LinearThreadWorkDistribution distribution =
+        buildLinearThreadWorkDistribution(rewriter, loc, outputElementCount,
+                                          oneIndex, gpuBlockSizeValue);
+    Value element = distribution.workUnit;
+
+    scf::IfOp::create(
+        rewriter, loc, distribution.workUnitIsActive,
+        [&](OpBuilder &builder, Location bodyLoc) {
+          Value row =
+              arith::DivUIOp::create(builder, bodyLoc, element, columnCount);
+          Value outputColumn =
+              arith::RemUIOp::create(builder, bodyLoc, element, columnCount);
+          Value blockRow =
+              arith::DivUIOp::create(builder, bodyLoc, row, bsrBlockSize);
+          Value localRow =
+              arith::RemUIOp::create(builder, bodyLoc, row, bsrBlockSize);
+          CompressedRowBounds blockRowBounds = buildCompressedRowBounds(
+              builder, bodyLoc, op.getBlockRowOffsets(), blockRow, oneIndex);
+
+          auto valueType =
+              cast<MemRefType>(op.getBlockValues().getType()).getElementType();
+          Value zero = arith::ConstantOp::create(
+              builder, bodyLoc, builder.getZeroAttr(valueType));
+          auto blockTraversal = scf::ForOp::create(
+              builder, bodyLoc, blockRowBounds.start, blockRowBounds.end,
+              oneIndex, ValueRange{zero},
+              [&](OpBuilder &blockBuilder, Location blockLoc,
+                  Value blockPosition, ValueRange blockSums) {
+                Value blockColumnValue = memref::LoadOp::create(
+                    blockBuilder, blockLoc, op.getBlockColumnIndices(),
+                    blockPosition);
+                Value blockColumn =
+                    castToIndex(blockBuilder, blockLoc, blockColumnValue);
+                Value blockValueBase = arith::MulIOp::create(
+                    blockBuilder, blockLoc, blockPosition, valuesPerBlock);
+                Value localRowBase = arith::MulIOp::create(
+                    blockBuilder, blockLoc, localRow, bsrBlockSize);
+                blockValueBase = arith::AddIOp::create(
+                    blockBuilder, blockLoc, blockValueBase, localRowBase);
+                Value rhsRowBase = arith::MulIOp::create(
+                    blockBuilder, blockLoc, blockColumn, bsrBlockSize);
+
+                auto blockRowReduction = scf::ForOp::create(
+                    blockBuilder, blockLoc, zeroIndex, bsrBlockSize, oneIndex,
+                    blockSums,
+                    [&](OpBuilder &elementBuilder, Location elementLoc,
+                        Value localColumn, ValueRange iterArgs) {
+                      Value blockValuePosition =
+                          arith::AddIOp::create(elementBuilder, elementLoc,
+                                                blockValueBase, localColumn);
+                      Value blockValue = memref::LoadOp::create(
+                          elementBuilder, elementLoc, op.getBlockValues(),
+                          blockValuePosition);
+                      Value rhsRow = arith::AddIOp::create(
+                          elementBuilder, elementLoc, rhsRowBase, localColumn);
+                      Value rhsValue = memref::LoadOp::create(
+                          elementBuilder, elementLoc, op.getRhs(),
+                          ValueRange{rhsRow, outputColumn});
+                      Value product = arith::MulFOp::create(
+                          elementBuilder, elementLoc, blockValue, rhsValue);
+                      Value sum =
+                          arith::AddFOp::create(elementBuilder, elementLoc,
+                                                iterArgs.front(), product);
+                      scf::YieldOp::create(elementBuilder, elementLoc, sum);
+                    });
+                scf::YieldOp::create(blockBuilder, blockLoc,
+                                     blockRowReduction.getResult(0));
+              });
+          memref::StoreOp::create(builder, bodyLoc, blockTraversal.getResult(0),
+                                  op.getOutput(),
+                                  ValueRange{row, outputColumn});
+          scf::YieldOp::create(builder, bodyLoc);
+        },
+        {});
+
+    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
+    gpu::TerminatorOp::create(rewriter, loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  int64_t gpuBlockSize;
+};
+
 class ThreadPerRowSDDMMPattern : public OpRewritePattern<SDDMMOp> {
 public:
   ThreadPerRowSDDMMPattern(MLIRContext *context, int64_t blockSize)
@@ -459,7 +566,7 @@ public:
     scf::IfOp::create(
         rewriter, loc, distribution.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          CSRRowBounds rowBounds = buildCSRRowBounds(
+          CompressedRowBounds rowBounds = buildCompressedRowBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
           StridedPositionRange positions{rowBounds.start, rowBounds.end,
                                          oneIndex};
@@ -555,7 +662,7 @@ public:
               arith::RemUIOp::create(builder, bodyLoc, workUnit, tilesPerRow);
           Value firstOutputColumn =
               arith::MulIOp::create(builder, bodyLoc, tile, tileSizeValue);
-          CSRRowBounds rowBounds = buildCSRRowBounds(
+          CompressedRowBounds rowBounds = buildCompressedRowBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
           StridedPositionRange positions = buildStridedPositionRange(
               builder, bodyLoc, rowBounds, distribution.lane,
@@ -798,6 +905,7 @@ public:
     RewritePatternSet patterns(&getContext());
     patterns.add<ThreadPerNonzeroCOOSpMVPattern>(&getContext(), blockSize);
     patterns.add<ThreadPerRowSDDMMPattern>(&getContext(), sddmmBlockSize);
+    patterns.add<ThreadPerOutputBSRSpMMPattern>(&getContext(), spmmBlockSize);
     if (spmmMapping == "thread-per-output")
       patterns.add<ThreadPerOutputSpMMPattern>(&getContext(), spmmBlockSize);
     else

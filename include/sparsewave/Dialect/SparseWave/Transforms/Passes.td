@@ -59,13 +59,15 @@ def ConvertSparseWaveToGPU
     : Pass<"convert-sparsewave-to-gpu", "::mlir::ModuleOp"> {
   let summary = "Map SparseWave operations to GPU launches";
   let description = [{
-    Lowers sparsewave.spmv, sparsewave.coo_spmv, sparsewave.spmm, and
-    sparsewave.sddmm to one-dimensional GPU launches. CSR SpMV can assign one
-    GPU thread, one GPU wave, or one GPU block to each matrix row. COO SpMV
-    assigns one thread to each nonzero and atomically accumulates the output.
-    SpMM can assign one GPU thread to each dense output element or one GPU wave
-    to a CSR row and a tile of dense output columns. SDDMM assigns one thread
-    to each CSR row and computes the sampled dot products sequentially.
+    Lowers sparsewave.spmv, sparsewave.coo_spmv, sparsewave.spmm,
+    sparsewave.bsr_spmm, and sparsewave.sddmm to one-dimensional GPU launches.
+    CSR SpMV can assign one GPU thread, one GPU wave, or one GPU block to each
+    matrix row. COO SpMV assigns one thread to each nonzero and atomically
+    accumulates the output. CSR SpMM can assign one GPU thread to each dense
+    output element or one GPU wave to a CSR row and a tile of dense output
+    columns. BSR SpMM initially assigns one GPU thread to each dense output
+    element. SDDMM assigns one thread to each CSR row and computes the sampled
+    dot products sequentially.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",
