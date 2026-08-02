@@ -3,6 +3,7 @@
 
 #include "sparsewave/Dialect/SparseWave/IR/SparseWaveDialect.h"
 
+#include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpDefinition.h"

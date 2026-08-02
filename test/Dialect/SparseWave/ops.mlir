@@ -48,6 +48,34 @@ func.func @static_spmm(
   return
 }
 
+// CHECK-LABEL: func.func @static_bsr_spmm(
+func.func @static_bsr_spmm(
+    %blockRowOffsets: memref<3xi32>, %blockColumnIndices: memref<3xi32>,
+    %blockValues: memref<12xf32>, %rhs: memref<4x3xf32>,
+    %output: memref<4x3xf32>) {
+  // CHECK: sparsewave.bsr_spmm
+  // CHECK-SAME: block_size = 2
+  sparsewave.bsr_spmm %blockRowOffsets, %blockColumnIndices, %blockValues,
+      %rhs, %output block_size = 2
+      : memref<3xi32>, memref<3xi32>, memref<12xf32>,
+        memref<4x3xf32>, memref<4x3xf32>
+  return
+}
+
+// CHECK-LABEL: func.func @dynamic_bsr_spmm(
+func.func @dynamic_bsr_spmm(
+    %blockRowOffsets: memref<?xindex>, %blockColumnIndices: memref<?xindex>,
+    %blockValues: memref<?xf64>, %rhs: memref<?x?xf64>,
+    %output: memref<?x?xf64>) {
+  // CHECK: sparsewave.bsr_spmm
+  // CHECK-SAME: block_size = 4
+  sparsewave.bsr_spmm %blockRowOffsets, %blockColumnIndices, %blockValues,
+      %rhs, %output block_size = 4
+      : memref<?xindex>, memref<?xindex>, memref<?xf64>,
+        memref<?x?xf64>, memref<?x?xf64>
+  return
+}
+
 // CHECK-LABEL: func.func @static_sddmm(
 func.func @static_sddmm(
     %rowOffsets: memref<5xi32>, %columnIndices: memref<8xi32>,

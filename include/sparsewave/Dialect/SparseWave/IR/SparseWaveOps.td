@@ -113,6 +113,51 @@ def SparseWave_SpMMOp : SparseWave_Op<"spmm"> {
   let hasVerifier = 1;
 }
 
+def SparseWave_BSRSpMMOp : SparseWave_Op<"bsr_spmm"> {
+  let summary = "Multiply a BSR matrix by a dense matrix";
+  let description = [{
+    `sparsewave.bsr_spmm` computes `output = sparse_matrix * dense_matrix`.
+    The sparse left-hand side is represented in block sparse row (BSR) form
+    using square blocks.
+
+    `blockRowOffsets` and `blockColumnIndices` address blocks rather than
+    scalar entries. `blockValues` is a flat row-major buffer whose logical
+    shape is `[nnzb][block_size][block_size]`, where `nnzb` is the number of
+    stored blocks. Matrix row and column counts must be divisible by
+    `block_size` in this initial BSR contract.
+
+    Example:
+
+    ```mlir
+    sparsewave.bsr_spmm %block_row_offsets, %block_column_indices,
+        %block_values, %rhs, %output block_size = 2
+        : memref<3xi32>, memref<3xi32>, memref<12xf32>,
+          memref<4x3xf32>, memref<4x3xf32>
+    ```
+  }];
+
+  let arguments = (ins Arg<AnyMemRef, "BSR block-row offsets",
+                           [MemRead]>:$blockRowOffsets,
+                       Arg<AnyMemRef, "BSR block-column indices",
+                           [MemRead]>:$blockColumnIndices,
+                       Arg<AnyMemRef, "packed BSR block values",
+                           [MemRead]>:$blockValues,
+                       Arg<AnyMemRef, "dense right-hand-side matrix",
+                           [MemRead]>:$rhs,
+                       Arg<AnyMemRef, "dense output matrix",
+                           [MemWrite]>:$output,
+                       I64Attr:$blockSize);
+
+  let assemblyFormat = [{
+    $blockRowOffsets `,` $blockColumnIndices `,` $blockValues `,` $rhs `,`
+    $output `block_size` `=` $blockSize attr-dict `:`
+    type($blockRowOffsets) `,` type($blockColumnIndices) `,`
+    type($blockValues) `,` type($rhs) `,` type($output)
+  }];
+
+  let hasVerifier = 1;
+}
+
 def SparseWave_SDDMMOp : SparseWave_Op<"sddmm"> {
   let summary = "Sample a dense matrix product using a CSR matrix";
   let description = [{

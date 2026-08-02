@@ -114,3 +114,73 @@ func.func @spmm_columns_must_match(
         memref<4x2xf32>, memref<4x3xf32>
   return
 }
+
+// -----
+
+func.func @bsr_block_size_must_be_positive(
+    %blockRowOffsets: memref<3xi32>, %blockColumnIndices: memref<3xi32>,
+    %blockValues: memref<12xf32>, %rhs: memref<4x3xf32>,
+    %output: memref<4x3xf32>) {
+  // expected-error @+1 {{block size must be positive, but got 0}}
+  sparsewave.bsr_spmm %blockRowOffsets, %blockColumnIndices, %blockValues,
+      %rhs, %output block_size = 0
+      : memref<3xi32>, memref<3xi32>, memref<12xf32>,
+        memref<4x3xf32>, memref<4x3xf32>
+  return
+}
+
+// -----
+
+func.func @bsr_block_rows_must_match_output(
+    %blockRowOffsets: memref<4xi32>, %blockColumnIndices: memref<3xi32>,
+    %blockValues: memref<12xf32>, %rhs: memref<4x3xf32>,
+    %output: memref<4x3xf32>) {
+  // expected-error @+1 {{block-row offsets size must equal the number of block rows plus one, but got 4 and 2}}
+  sparsewave.bsr_spmm %blockRowOffsets, %blockColumnIndices, %blockValues,
+      %rhs, %output block_size = 2
+      : memref<4xi32>, memref<3xi32>, memref<12xf32>,
+        memref<4x3xf32>, memref<4x3xf32>
+  return
+}
+
+// -----
+
+func.func @bsr_values_must_match_block_count(
+    %blockRowOffsets: memref<3xi32>, %blockColumnIndices: memref<3xi32>,
+    %blockValues: memref<11xf32>, %rhs: memref<4x3xf32>,
+    %output: memref<4x3xf32>) {
+  // expected-error @+1 {{block values size must equal the number of blocks times block_size squared, but got 11 and 3 blocks}}
+  sparsewave.bsr_spmm %blockRowOffsets, %blockColumnIndices, %blockValues,
+      %rhs, %output block_size = 2
+      : memref<3xi32>, memref<3xi32>, memref<11xf32>,
+        memref<4x3xf32>, memref<4x3xf32>
+  return
+}
+
+// -----
+
+func.func @bsr_dimensions_must_be_block_aligned(
+    %blockRowOffsets: memref<3xi32>, %blockColumnIndices: memref<3xi32>,
+    %blockValues: memref<27xf32>, %rhs: memref<6x3xf32>,
+    %output: memref<4x3xf32>) {
+  // expected-error @+1 {{output rows must be divisible by block size, but got 4 and 3}}
+  sparsewave.bsr_spmm %blockRowOffsets, %blockColumnIndices, %blockValues,
+      %rhs, %output block_size = 3
+      : memref<3xi32>, memref<3xi32>, memref<27xf32>,
+        memref<6x3xf32>, memref<4x3xf32>
+  return
+}
+
+// -----
+
+func.func @bsr_rhs_rows_must_be_block_aligned(
+    %blockRowOffsets: memref<3xi32>, %blockColumnIndices: memref<3xi32>,
+    %blockValues: memref<12xf32>, %rhs: memref<5x3xf32>,
+    %output: memref<4x3xf32>) {
+  // expected-error @+1 {{right-hand-side rows must be divisible by block size, but got 5 and 2}}
+  sparsewave.bsr_spmm %blockRowOffsets, %blockColumnIndices, %blockValues,
+      %rhs, %output block_size = 2
+      : memref<3xi32>, memref<3xi32>, memref<12xf32>,
+        memref<5x3xf32>, memref<4x3xf32>
+  return
+}

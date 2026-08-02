@@ -1,6 +1,7 @@
 #include "sparsewave/Dialect/SparseWave/IR/SparseWaveOps.h"
 
 #include "mlir/IR/Diagnostics.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace mlir;
 using namespace mlir::sparsewave;
@@ -92,6 +93,71 @@ LogicalResult verifyCOOStorage(Operation *op, MemRefType rowIndicesType,
   return success();
 }
 
+LogicalResult verifyBSRStorage(Operation *op, MemRefType blockRowOffsetsType,
+                               MemRefType blockColumnIndicesType,
+                               MemRefType blockValuesType,
+                               MemRefType outputType, int64_t blockSize) {
+  if (failed(verifyRank(op, blockRowOffsetsType, 1, "block-row offsets")) ||
+      failed(
+          verifyRank(op, blockColumnIndicesType, 1, "block-column indices")) ||
+      failed(verifyRank(op, blockValuesType, 1, "block values")))
+    return failure();
+
+  Type indexType = blockRowOffsetsType.getElementType();
+  if (!indexType.isIntOrIndex())
+    return op->emitOpError()
+           << "block-row offsets must have integer or index elements, but got "
+           << indexType;
+  if (blockColumnIndicesType.getElementType() != indexType)
+    return op->emitOpError()
+           << "block-row offsets and block-column indices must have the same "
+              "element type";
+
+  Type valueType = blockValuesType.getElementType();
+  if (!isa<FloatType>(valueType))
+    return op->emitOpError()
+           << "block values must have floating-point elements, but got "
+           << valueType;
+  if (blockSize <= 0)
+    return op->emitOpError()
+           << "block size must be positive, but got " << blockSize;
+
+  int64_t outputRows = outputType.getDimSize(0);
+  if (!ShapedType::isDynamic(outputRows)) {
+    if (outputRows % blockSize != 0)
+      return op->emitOpError()
+             << "output rows must be divisible by block size, but got "
+             << outputRows << " and " << blockSize;
+
+    int64_t blockRowOffsetsSize = blockRowOffsetsType.getDimSize(0);
+    int64_t expectedOffsetsSize = outputRows / blockSize + 1;
+    if (!ShapedType::isDynamic(blockRowOffsetsSize) &&
+        blockRowOffsetsSize != expectedOffsetsSize)
+      return op->emitOpError()
+             << "block-row offsets size must equal the number of block rows "
+                "plus one, but got "
+             << blockRowOffsetsSize << " and " << outputRows / blockSize;
+  }
+
+  int64_t blockCount = blockColumnIndicesType.getDimSize(0);
+  int64_t blockValuesSize = blockValuesType.getDimSize(0);
+  if (!ShapedType::isDynamic(blockCount) &&
+      !ShapedType::isDynamic(blockValuesSize)) {
+    int64_t valuesPerBlock;
+    int64_t expectedValuesSize;
+    if (llvm::MulOverflow(blockSize, blockSize, valuesPerBlock) ||
+        llvm::MulOverflow(blockCount, valuesPerBlock, expectedValuesSize))
+      return op->emitOpError()
+             << "block size and block count exceed the supported index range";
+    if (blockValuesSize != expectedValuesSize)
+      return op->emitOpError()
+             << "block values size must equal the number of blocks times "
+                "block_size squared, but got "
+             << blockValuesSize << " and " << blockCount << " blocks";
+  }
+  return success();
+}
+
 } // namespace
 
 LogicalResult SpMVOp::verify() {
@@ -160,6 +226,40 @@ LogicalResult SpMMOp::verify() {
     return emitOpError()
            << "right-hand side and output must have the same number of columns";
 
+  return success();
+}
+
+LogicalResult BSRSpMMOp::verify() {
+  MemRefType blockRowOffsetsType = getBlockRowOffsets().getType();
+  MemRefType blockColumnIndicesType = getBlockColumnIndices().getType();
+  MemRefType blockValuesType = getBlockValues().getType();
+  MemRefType rhsType = getRhs().getType();
+  MemRefType outputType = getOutput().getType();
+  int64_t blockSize = getBlockSizeAttr().getInt();
+
+  if (failed(verifyRank(*this, rhsType, 2, "right-hand side")) ||
+      failed(verifyRank(*this, outputType, 2, "output")) ||
+      failed(verifyBSRStorage(*this, blockRowOffsetsType,
+                              blockColumnIndicesType, blockValuesType,
+                              outputType, blockSize)))
+    return failure();
+
+  Type valueType = blockValuesType.getElementType();
+  if (rhsType.getElementType() != valueType ||
+      outputType.getElementType() != valueType)
+    return emitOpError()
+           << "block values, right-hand side, and output must have the same "
+              "element type";
+  if (!areCompatibleStaticDimensions(rhsType.getDimSize(1),
+                                     outputType.getDimSize(1)))
+    return emitOpError()
+           << "right-hand side and output must have the same number of columns";
+
+  int64_t rhsRows = rhsType.getDimSize(0);
+  if (!ShapedType::isDynamic(rhsRows) && rhsRows % blockSize != 0)
+    return emitOpError()
+           << "right-hand-side rows must be divisible by block size, but got "
+           << rhsRows << " and " << blockSize;
   return success();
 }
 
