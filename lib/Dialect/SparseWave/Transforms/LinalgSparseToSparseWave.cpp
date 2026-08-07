@@ -27,6 +27,7 @@ struct SparseContractionMatch {
   RankedTensorType denseInputType;
   RankedTensorType outputType;
   linalg::FillOp zeroFill;
+  int64_t blockSize = 0;
 };
 
 struct CSRStorage {
@@ -39,6 +40,12 @@ struct COOStorage {
   Value rowIndices;
   Value columnIndices;
   Value values;
+};
+
+struct BSRStorage {
+  Value blockRowOffsets;
+  Value blockColumnIndices;
+  Value blockValues;
 };
 
 struct SDDMMMatch {
@@ -56,7 +63,36 @@ struct SDDMMMatch {
 enum class SparseMatrixFormat {
   CSR,
   COO,
+  BSR,
 };
+
+bool matchCanonicalSquareBSR(sparse_tensor::SparseTensorType sparseMatrix,
+                             int64_t &blockSize) {
+  if (sparseMatrix.getDimRank() != 2 || sparseMatrix.getLvlRank() != 4 ||
+      !sparseMatrix.isDenseLvl(0) || !sparseMatrix.isCompressedLvl(1) ||
+      !sparseMatrix.isOrderedLvl(1) || !sparseMatrix.isUniqueLvl(1) ||
+      !sparseMatrix.isDenseLvl(2) || !sparseMatrix.isDenseLvl(3))
+    return false;
+
+  AffineMap dimToLvl = sparseMatrix.getDimToLvl();
+  if (!sparse_tensor::isBlockSparsity(dimToLvl))
+    return false;
+  SmallVector<unsigned> blockSizes = sparse_tensor::getBlockSize(dimToLvl);
+  if (blockSizes.size() != 2 || blockSizes[0] <= 1 ||
+      blockSizes[0] != blockSizes[1])
+    return false;
+
+  blockSize = blockSizes[0];
+  MLIRContext *context = sparseMatrix.getElementType().getContext();
+  AffineExpr row = getAffineDimExpr(0, context);
+  AffineExpr column = getAffineDimExpr(1, context);
+  AffineMap expected =
+      AffineMap::get(2, 0,
+                     {row.floorDiv(blockSize), column.floorDiv(blockSize),
+                      row % blockSize, column % blockSize},
+                     context);
+  return dimToLvl == expected;
+}
 
 bool hasCanonicalSpMVIndexingMaps(linalg::LinalgOp op) {
   SmallVector<AffineMap> maps = op.getIndexingMapsArray();
@@ -179,20 +215,25 @@ LogicalResult matchSparseContraction(linalg::LinalgOp op,
         op, "unexpected sparse contraction operand ranks");
 
   sparse_tensor::SparseTensorType sparseMatrix(match.matrixType);
-  if (!sparseMatrix.hasEncoding() || !sparseMatrix.isIdentity() ||
-      sparseMatrix.getLvlRank() != 2)
-    return rewriter.notifyMatchFailure(
-        op, "expected an identity-mapped rank-2 SparseTensor matrix");
+  if (!sparseMatrix.hasEncoding())
+    return rewriter.notifyMatchFailure(op, "expected a SparseTensor matrix");
   switch (format) {
   case SparseMatrixFormat::CSR:
-    if (!sparseMatrix.isDenseLvl(0) || !sparseMatrix.isCompressedLvl(1))
+    if (!sparseMatrix.isIdentity() || sparseMatrix.getLvlRank() != 2 ||
+        !sparseMatrix.isDenseLvl(0) || !sparseMatrix.isCompressedLvl(1))
       return rewriter.notifyMatchFailure(op,
                                          "expected a CSR SparseTensor matrix");
     break;
   case SparseMatrixFormat::COO:
-    if (!sparseMatrix.isCOOType())
+    if (!sparseMatrix.isIdentity() || sparseMatrix.getLvlRank() != 2 ||
+        !sparseMatrix.isCOOType())
       return rewriter.notifyMatchFailure(op,
                                          "expected a COO SparseTensor matrix");
+    break;
+  case SparseMatrixFormat::BSR:
+    if (!matchCanonicalSquareBSR(sparseMatrix, match.blockSize))
+      return rewriter.notifyMatchFailure(
+          op, "expected a canonical square BSR SparseTensor matrix");
     break;
   }
   if (sparse_tensor::getSparseTensorEncoding(match.denseInputType) ||
@@ -209,10 +250,11 @@ LogicalResult matchSparseContraction(linalg::LinalgOp op,
   if (!match.zeroFill)
     return rewriter.notifyMatchFailure(
         op, "expected a single-use, statically zero-filled output tensor");
-  if (format == SparseMatrixFormat::CSR &&
+  if ((format == SparseMatrixFormat::CSR ||
+       format == SparseMatrixFormat::BSR) &&
       sparseMatrix.getPosWidth() != sparseMatrix.getCrdWidth())
     return rewriter.notifyMatchFailure(
-        op, "expected matching CSR position and coordinate types");
+        op, "expected matching sparse position and coordinate types");
   return success();
 }
 
@@ -229,6 +271,15 @@ COOStorage extractCOOStorage(PatternRewriter &rewriter, Location loc,
                              Value matrix) {
   return {
       sparse_tensor::ToCoordinatesOp::create(rewriter, loc, matrix, 0),
+      sparse_tensor::ToCoordinatesOp::create(rewriter, loc, matrix, 1),
+      sparse_tensor::ToValuesOp::create(rewriter, loc, matrix),
+  };
+}
+
+BSRStorage extractBSRStorage(PatternRewriter &rewriter, Location loc,
+                             Value matrix) {
+  return {
+      sparse_tensor::ToPositionsOp::create(rewriter, loc, matrix, 1),
       sparse_tensor::ToCoordinatesOp::create(rewriter, loc, matrix, 1),
       sparse_tensor::ToValuesOp::create(rewriter, loc, matrix),
   };
@@ -403,20 +454,41 @@ LogicalResult rewriteLinalgSpMM(linalg::LinalgOp op,
         op, "expected canonical matrix-matrix indexing maps");
 
   SparseContractionMatch match;
+  if (succeeded(
+          matchSparseContraction(op, /*denseInputRank=*/2, /*outputRank=*/2,
+                                 SparseMatrixFormat::CSR, match, rewriter))) {
+    // CSR exposes scalar row bounds and one value per compressed coordinate.
+    Location loc = op.getLoc();
+    CSRStorage csr = extractCSRStorage(rewriter, loc, match.matrix);
+    Value rhsBuffer =
+        bufferizeDenseTensor(rewriter, loc, match.denseInput,
+                             match.denseInputType, /*readOnly=*/true);
+    Value outputStorage = match.zeroFill.getDpsInitOperand(0)->get();
+    Value outputBuffer =
+        bufferizeDenseTensor(rewriter, loc, outputStorage, match.outputType,
+                             /*readOnly=*/false);
+    SpMMOp::create(rewriter, loc, csr.rowOffsets, csr.columnIndices, csr.values,
+                   rhsBuffer, outputBuffer);
+    replaceContraction(op, rewriter, match, outputBuffer);
+    return success();
+  }
+
   if (failed(matchSparseContraction(op, /*denseInputRank=*/2, /*outputRank=*/2,
-                                    SparseMatrixFormat::CSR, match, rewriter)))
+                                    SparseMatrixFormat::BSR, match, rewriter)))
     return failure();
 
+  // Canonical BSR exposes block-row bounds and block columns at level 1. Its
+  // dense local-row/local-column levels flatten values in row-major order.
   Location loc = op.getLoc();
-  CSRStorage csr = extractCSRStorage(rewriter, loc, match.matrix);
+  BSRStorage bsr = extractBSRStorage(rewriter, loc, match.matrix);
   Value rhsBuffer = bufferizeDenseTensor(
       rewriter, loc, match.denseInput, match.denseInputType, /*readOnly=*/true);
   Value outputStorage = match.zeroFill.getDpsInitOperand(0)->get();
   Value outputBuffer =
       bufferizeDenseTensor(rewriter, loc, outputStorage, match.outputType,
                            /*readOnly=*/false);
-  SpMMOp::create(rewriter, loc, csr.rowOffsets, csr.columnIndices, csr.values,
-                 rhsBuffer, outputBuffer);
+  BSRSpMMOp::create(rewriter, loc, bsr.blockRowOffsets, bsr.blockColumnIndices,
+                    bsr.blockValues, rhsBuffer, outputBuffer, match.blockSize);
   replaceContraction(op, rewriter, match, outputBuffer);
   return success();
 }

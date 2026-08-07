@@ -6,6 +6,28 @@
   crdWidth = 32
 }>
 
+#bsr = #sparse_tensor.encoding<{
+  map = (d0, d1) -> (
+    d0 floordiv 2 : dense,
+    d1 floordiv 2 : compressed,
+    d0 mod 2 : dense,
+    d1 mod 2 : dense
+  ),
+  posWidth = 32,
+  crdWidth = 32
+}>
+
+#rectangular_bsr = #sparse_tensor.encoding<{
+  map = (d0, d1) -> (
+    d0 floordiv 2 : dense,
+    d1 floordiv 4 : compressed,
+    d0 mod 2 : dense,
+    d1 mod 4 : dense
+  ),
+  posWidth = 32,
+  crdWidth = 32
+}>
+
 #spmm = {
   indexing_maps = [
     affine_map<(i, j, k) -> (i, k)>,
@@ -59,6 +81,45 @@ func.func @named_csr_spmm(
       outs(%outputStorage : tensor<?x?xf32>) -> tensor<?x?xf32>
   %result = linalg.matmul
       ins(%matrix, %rhs : tensor<?x?xf32, #csr>, tensor<?x?xf32>)
+      outs(%output : tensor<?x?xf32>) -> tensor<?x?xf32>
+  return %result : tensor<?x?xf32>
+}
+
+// CHECK-LABEL: func.func @named_bsr_spmm(
+// CHECK-SAME: %[[MATRIX:[^,]+]]: tensor<?x?xf32, #[[$BSR:[a-zA-Z0-9_]+]]>, %[[RHS:[^,]+]]: tensor<?x?xf32>
+// CHECK: %[[POSITIONS:.*]] = sparse_tensor.positions %[[MATRIX]] {level = 1 : index}
+// CHECK: %[[COORDINATES:.*]] = sparse_tensor.coordinates %[[MATRIX]] {level = 1 : index}
+// CHECK: %[[VALUES:.*]] = sparse_tensor.values %[[MATRIX]]
+// CHECK: %[[RHS_BUFFER:.*]] = bufferization.to_buffer %[[RHS]] read_only
+// CHECK: %[[OUTPUT_BUFFER:.*]] = bufferization.to_buffer %{{.*}}
+// CHECK: sparsewave.bsr_spmm %[[POSITIONS]], %[[COORDINATES]], %[[VALUES]], %[[RHS_BUFFER]], %[[OUTPUT_BUFFER]] block_size = 2
+// CHECK-NOT: linalg.matmul
+func.func @named_bsr_spmm(
+    %matrix: tensor<?x?xf32, #bsr>,
+    %rhs: tensor<?x?xf32>,
+    %outputStorage: tensor<?x?xf32>) -> tensor<?x?xf32> {
+  %zero = arith.constant 0.0 : f32
+  %output = linalg.fill ins(%zero : f32)
+      outs(%outputStorage : tensor<?x?xf32>) -> tensor<?x?xf32>
+  %result = linalg.matmul
+      ins(%matrix, %rhs : tensor<?x?xf32, #bsr>, tensor<?x?xf32>)
+      outs(%output : tensor<?x?xf32>) -> tensor<?x?xf32>
+  return %result : tensor<?x?xf32>
+}
+
+// Rectangular blocks do not satisfy sparsewave.bsr_spmm's initial square-block
+// contract and remain available to upstream SparseTensor lowering.
+// CHECK-LABEL: func.func @rectangular_bsr_is_not_rewritten(
+// CHECK: linalg.matmul
+func.func @rectangular_bsr_is_not_rewritten(
+    %matrix: tensor<?x?xf32, #rectangular_bsr>,
+    %rhs: tensor<?x?xf32>,
+    %outputStorage: tensor<?x?xf32>) -> tensor<?x?xf32> {
+  %zero = arith.constant 0.0 : f32
+  %output = linalg.fill ins(%zero : f32)
+      outs(%outputStorage : tensor<?x?xf32>) -> tensor<?x?xf32>
+  %result = linalg.matmul
+      ins(%matrix, %rhs : tensor<?x?xf32, #rectangular_bsr>, tensor<?x?xf32>)
       outs(%output : tensor<?x?xf32>) -> tensor<?x?xf32>
   return %result : tensor<?x?xf32>
 }

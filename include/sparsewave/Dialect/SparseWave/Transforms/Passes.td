@@ -25,9 +25,9 @@ def ConvertLinalgSpMMToSparseWave
     : Pass<"convert-linalg-spmm-to-sparsewave", "::mlir::ModuleOp"> {
   let summary = "Recognize sparse Linalg SpMM operations";
   let description = [{
-    Rewrites a canonical Linalg matrix-matrix contraction with a CSR-encoded
-    SparseTensor left-hand side and a zero-filled dense output to
-    sparsewave.spmm.
+    Rewrites a canonical Linalg matrix-matrix contraction with a CSR- or
+    canonical square BSR-encoded SparseTensor left-hand side and a zero-filled
+    dense output to sparsewave.spmm or sparsewave.bsr_spmm, respectively.
   }];
   let dependentDialects = [
     "bufferization::BufferizationDialect",
