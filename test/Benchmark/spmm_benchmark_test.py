@@ -1,5 +1,6 @@
 # RUN: %python %s %S/../../benchmark/run_spmm_benchmark.py %t sparsewave-opt
 
+import argparse
 import importlib.util
 import json
 from pathlib import Path
@@ -63,6 +64,61 @@ class SpMMBenchmarkTest(unittest.TestCase):
             text=True,
         )
 
+    def test_matrix_market_converts_to_padded_bsr(self):
+        bsr = BENCHMARK.common.convert_to_bsr(self.matrix, block_size=2)
+        self.assertEqual(bsr["rows"], 2)
+        self.assertEqual(bsr["columns"], 4)
+        self.assertEqual(bsr["block_row_offsets"], [0, 2])
+        self.assertEqual(bsr["block_column_indices"], [0, 1])
+        self.assertEqual(
+            bsr["block_values"],
+            [1.0, 0.0, 0.0, 3.0, 2.0, 0.0, 0.0, 0.0],
+        )
+        self.assertEqual(bsr["nnzb"], 2)
+        self.assertEqual(bsr["block_density"], 1.0)
+        self.assertEqual(bsr["internal_zero_fraction"], 0.625)
+        self.assertEqual(bsr["storage_overhead"], 8.0 / 3.0)
+
+        binary_path = TEMPORARY_ROOT / "spmm.bsr"
+        BENCHMARK.common.write_bsr_binary(binary_path, bsr)
+        self.assertEqual(
+            binary_path.read_bytes()[:8], BENCHMARK.common.BSR_BINARY_MAGIC
+        )
+
+    def test_bsr_conversion_coalesces_duplicate_coordinates(self):
+        matrix = dict(self.matrix)
+        matrix["nnz"] = 4
+        matrix["row_indices"] = [0, 0, 0, 1]
+        matrix["column_indices"] = [0, 0, 2, 1]
+        matrix["values"] = [1.0, 4.0, 2.0, 3.0]
+        bsr = BENCHMARK.common.convert_to_bsr(matrix, block_size=2)
+        self.assertEqual(bsr["block_values"][0], 5.0)
+        self.assertEqual(bsr["storage_overhead"], 8.0 / 3.0)
+
+    def test_rendered_bsr_input_lowers(self):
+        bsr = BENCHMARK.common.convert_to_bsr(self.matrix, block_size=2)
+        rendered = BENCHMARK.render_bsr_mlir(
+            SCRIPT.parent / "bsr_spmm.mlir.in",
+            bsr,
+            rhs_columns=4,
+            dispatches=3,
+        )
+        self.assertNotIn("@BSR_BLOCK_SIZE@", rendered)
+        self.assertIn("block_size = 2", rendered)
+        self.assertIn("@loadBSRSpMMBenchmarkInputs", rendered)
+        source = TEMPORARY_ROOT / "bsr-spmm.mlir"
+        source.write_text(rendered, encoding="utf-8")
+        subprocess.run(
+            [
+                SPARSEWAVE_OPT,
+                str(source),
+                "--convert-sparsewave-to-gpu=spmm-block-size=64",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def test_result_counts_every_sparse_dense_product(self):
         args = types.SimpleNamespace(
             chip="gfx1101",
@@ -95,6 +151,8 @@ class SpMMBenchmarkTest(unittest.TestCase):
             },
         )
         self.assertEqual(result["rhs_cols"], 8)
+        self.assertEqual(result["format"], "csr")
+        self.assertIsNone(result["storage_block_size"])
         self.assertIsNone(result["tile_size"])
         self.assertEqual(result["gproducts_per_sec"], 0.012)
         self.assertEqual(result["gflops"], 0.024)
@@ -181,6 +239,8 @@ amdhsa.kernels:
             block_sizes=[64, 1024],
             wave_size=32,
             tile_sizes=[1, 4, 32],
+            bsr_block_sizes=[2, 4, 8],
+            formats=["csr", "bsr"],
             matrix_data=self.matrix,
         )
         BENCHMARK.validate_paths(args)
@@ -191,6 +251,16 @@ amdhsa.kernels:
         args.tile_sizes = [33]
         with self.assertRaisesRegex(ValueError, "must not exceed 32"):
             BENCHMARK.validate_paths(args)
+
+        args.formats = ["bsr"]
+        args.wave_size = 64
+        args.tile_sizes = [33]
+        BENCHMARK.validate_paths(args)
+
+    def test_format_options_are_validated(self):
+        self.assertEqual(BENCHMARK.parse_formats("csr,bsr"), ["csr", "bsr"])
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "unknown"):
+            BENCHMARK.parse_formats("ell")
 
 
 if __name__ == "__main__":

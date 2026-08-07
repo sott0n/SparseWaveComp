@@ -20,6 +20,7 @@ TRACE_COLUMNS = {
 }
 CSR_BINARY_MAGIC = b"SWCSR001"
 COO_BINARY_MAGIC = b"SWCOO001"
+BSR_BINARY_MAGIC = b"SWBSR001"
 
 
 def positive_int(value):
@@ -233,6 +234,148 @@ def write_coo_binary(path, matrix):
         )
         stream.write(
             struct.pack(f"<{len(matrix['values'])}f", *matrix["values"])
+        )
+
+
+def convert_to_bsr(matrix, block_size):
+    if block_size <= 0:
+        raise ValueError("BSR block size must be positive")
+    padded_rows = math.ceil(matrix["rows"] / block_size) * block_size
+    padded_columns = math.ceil(matrix["columns"] / block_size) * block_size
+    blocks = {}
+    occupied_coordinates = set()
+    for row, column, value in zip(
+        matrix["row_indices"],
+        matrix["column_indices"],
+        matrix["values"],
+    ):
+        block_coordinate = (row // block_size, column // block_size)
+        block = blocks.setdefault(
+            block_coordinate, [0.0] * (block_size * block_size)
+        )
+        local_position = (
+            (row % block_size) * block_size + column % block_size
+        )
+        block[local_position] += value
+        occupied_coordinates.add((row, column))
+
+    block_row_count = padded_rows // block_size
+    block_column_count = padded_columns // block_size
+    block_row_offsets = [0]
+    block_column_indices = []
+    block_values = []
+    ordered_blocks = sorted(blocks.items())
+    next_block = 0
+    for block_row in range(block_row_count):
+        while (
+            next_block < len(ordered_blocks)
+            and ordered_blocks[next_block][0][0] == block_row
+        ):
+            (_, block_column), values = ordered_blocks[next_block]
+            block_column_indices.append(block_column)
+            block_values.extend(values)
+            next_block += 1
+        block_row_offsets.append(len(block_column_indices))
+
+    nnzb = len(block_column_indices)
+    stored_scalar_slots = nnzb * block_size * block_size
+    occupied_scalar_slots = len(occupied_coordinates)
+    return {
+        "rows": padded_rows,
+        "columns": padded_columns,
+        "original_rows": matrix["rows"],
+        "original_columns": matrix["columns"],
+        "nnz": matrix["nnz"],
+        "block_size": block_size,
+        "nnzb": nnzb,
+        "block_row_offsets": block_row_offsets,
+        "block_column_indices": block_column_indices,
+        "block_values": block_values,
+        "input_row_indices": matrix["row_indices"],
+        "input_column_indices": matrix["column_indices"],
+        "input_values": matrix["values"],
+        "block_density": (
+            nnzb / (block_row_count * block_column_count)
+            if block_row_count and block_column_count
+            else 0.0
+        ),
+        "internal_zero_fraction": (
+            1.0 - occupied_scalar_slots / stored_scalar_slots
+            if stored_scalar_slots
+            else 0.0
+        ),
+        "storage_overhead": (
+            stored_scalar_slots / occupied_scalar_slots
+            if occupied_scalar_slots
+            else 0.0
+        ),
+    }
+
+
+def write_bsr_binary(path, matrix):
+    maximum_i32 = (1 << 31) - 1
+    if (
+        matrix["rows"] > maximum_i32
+        or matrix["columns"] > maximum_i32
+        or matrix["nnzb"] > maximum_i32
+        or matrix["original_rows"] > maximum_i32
+        or matrix["original_columns"] > maximum_i32
+        or matrix["nnz"] > maximum_i32
+    ):
+        raise ValueError("BSR dimensions and NNZ blocks must fit in i32")
+    with path.open("wb") as stream:
+        stream.write(BSR_BINARY_MAGIC)
+        stream.write(
+            struct.pack(
+                "<QQQQQQQ",
+                matrix["rows"],
+                matrix["columns"],
+                matrix["nnzb"],
+                matrix["block_size"],
+                matrix["original_rows"],
+                matrix["original_columns"],
+                matrix["nnz"],
+            )
+        )
+        stream.write(
+            struct.pack(
+                f"<{len(matrix['block_row_offsets'])}i",
+                *matrix["block_row_offsets"],
+            )
+        )
+        stream.write(
+            struct.pack(
+                f"<{len(matrix['block_column_indices'])}i",
+                *matrix["block_column_indices"],
+            )
+        )
+        try:
+            packed_block_values = struct.pack(
+                f"<{len(matrix['block_values'])}f",
+                *matrix["block_values"],
+            )
+        except (OverflowError, struct.error) as error:
+            raise ValueError(
+                "coalesced BSR values must fit in f32"
+            ) from error
+        stream.write(packed_block_values)
+        stream.write(
+            struct.pack(
+                f"<{len(matrix['input_row_indices'])}i",
+                *matrix["input_row_indices"],
+            )
+        )
+        stream.write(
+            struct.pack(
+                f"<{len(matrix['input_column_indices'])}i",
+                *matrix["input_column_indices"],
+            )
+        )
+        stream.write(
+            struct.pack(
+                f"<{len(matrix['input_values'])}f",
+                *matrix["input_values"],
+            )
         )
 
 
@@ -585,6 +728,7 @@ def run_case(
     pipeline_options=(),
     sparse_format="csr",
     kernels_per_dispatch=1,
+    kernel_name=None,
 ):
     case_directory.mkdir(parents=True)
     source = case_directory / "input.mlir"
@@ -614,7 +758,7 @@ def run_case(
         args.gpu_name = discover_gpu_name(trace_directory, args.chip)
     timing = parse_kernel_trace(
         trace,
-        f"{operation}_kernel",
+        kernel_name or f"{operation}_kernel",
         args.warmup,
         args.iterations,
         kernels_per_dispatch,
@@ -971,6 +1115,19 @@ REPORT_COLUMNS = {
         "distribution", "distribution", 12, alignment="<"
     ),
     "format": TableColumn("format", "format", 6, alignment="<"),
+    "storage_block_size": TableColumn(
+        "BSR block", "storage_block_size", 9, "d"
+    ),
+    "nnzb": TableColumn("NNZB", "nnzb", 8, "d"),
+    "block_density": TableColumn(
+        "block density", "block_density", 13, ".3f"
+    ),
+    "internal_zero_fraction": TableColumn(
+        "internal zeros", "internal_zero_fraction", 14, ".3f"
+    ),
+    "storage_overhead": TableColumn(
+        "slot/coord", "storage_overhead", 10, ".2f", "x"
+    ),
     "nnz_per_row": TableColumn("NNZ/row", "nnz_per_row", 7, "d"),
     "rhs_cols": TableColumn("RHS cols", "rhs_cols", 8, "d"),
     "block_size": TableColumn("block", "block_size", 5, "d"),

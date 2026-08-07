@@ -14,6 +14,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <vector>
 
 #ifdef _WIN32
 #define SPARSEWAVE_BENCHMARK_EXPORT __declspec(dllexport)
@@ -25,6 +26,7 @@ namespace {
 
 constexpr char csrMagic[] = "SWCSR001";
 constexpr char cooMagic[] = "SWCOO001";
+constexpr char bsrMagic[] = "SWBSR001";
 
 [[noreturn]] void fail(const std::string &message) {
   std::cerr << "SparseWave benchmark input error: " << message << '\n';
@@ -55,6 +57,28 @@ struct SparseDimensions {
   uint64_t columns;
   uint64_t nnz;
 };
+
+struct BSRDimensions : SparseDimensions {
+  uint64_t blockSize;
+  uint64_t originalRows;
+  uint64_t originalColumns;
+  uint64_t originalNnz;
+  std::vector<int32_t> inputRows;
+  std::vector<int32_t> inputColumns;
+  std::vector<float> inputValues;
+};
+
+template <typename T>
+std::vector<T> readVector(std::ifstream &stream, uint64_t size,
+                          const char *name) {
+  if (size > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+    fail(std::string(name) + " exceeds the runner limits");
+  std::vector<T> values(size);
+  stream.read(reinterpret_cast<char *>(values.data()), size * sizeof(T));
+  if (!stream)
+    fail(std::string("could not read ") + name);
+  return values;
+}
 
 SparseDimensions readSparseHeader(std::ifstream &stream, const char *magic,
                                   const char *format) {
@@ -114,6 +138,50 @@ SparseDimensions loadCOOInputs(StridedMemRefType<int32_t, 1> *rowIndices,
             "column indices");
   readArray(stream, values, static_cast<int64_t>(dimensions.nnz), "values");
   return dimensions;
+}
+
+BSRDimensions loadBSRInputs(StridedMemRefType<int32_t, 1> *blockRowOffsets,
+                            StridedMemRefType<int32_t, 1> *blockColumnIndices,
+                            StridedMemRefType<float, 1> *blockValues) {
+  const char *path = std::getenv("SPARSEWAVE_BENCHMARK_BSR");
+  if (!path)
+    fail("SPARSEWAVE_BENCHMARK_BSR is not set");
+
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream)
+    fail(std::string("could not open ") + path);
+
+  SparseDimensions sparse = readSparseHeader(stream, bsrMagic, "BSR");
+  uint64_t blockSize = readU64(stream, "block size");
+  uint64_t originalRows = readU64(stream, "original row count");
+  uint64_t originalColumns = readU64(stream, "original column count");
+  uint64_t originalNnz = readU64(stream, "original NNZ count");
+  if (blockSize == 0 || sparse.rows % blockSize != 0 ||
+      sparse.columns % blockSize != 0)
+    fail("BSR dimensions must be divisible by a positive block size");
+  if (originalRows > sparse.rows || originalColumns > sparse.columns)
+    fail("original BSR dimensions exceed the padded dimensions");
+  if (blockSize > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+      sparse.nnz > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) /
+                       blockSize / blockSize)
+    fail("BSR block values exceed the runner limits");
+
+  readArray(stream, blockRowOffsets,
+            static_cast<int64_t>(sparse.rows / blockSize + 1),
+            "block-row offsets");
+  readArray(stream, blockColumnIndices, static_cast<int64_t>(sparse.nnz),
+            "block-column indices");
+  readArray(stream, blockValues,
+            static_cast<int64_t>(sparse.nnz * blockSize * blockSize),
+            "block values");
+  return {sparse,
+          blockSize,
+          originalRows,
+          originalColumns,
+          originalNnz,
+          readVector<int32_t>(stream, originalNnz, "input row indices"),
+          readVector<int32_t>(stream, originalNnz, "input column indices"),
+          readVector<float>(stream, originalNnz, "input values")};
 }
 
 void initializeVector(StridedMemRefType<float, 1> *vector,
@@ -217,5 +285,42 @@ _mlir_ciface_loadSpMMBenchmarkInputs(
       }
       element(expected, row, column) = sum;
     }
+  }
+}
+
+extern "C" SPARSEWAVE_BENCHMARK_EXPORT void
+_mlir_ciface_loadBSRSpMMBenchmarkInputs(
+    StridedMemRefType<int32_t, 1> *blockRowOffsets,
+    StridedMemRefType<int32_t, 1> *blockColumnIndices,
+    StridedMemRefType<float, 1> *blockValues, StridedMemRefType<float, 2> *rhs,
+    StridedMemRefType<float, 2> *expected) {
+  BSRDimensions dimensions =
+      loadBSRInputs(blockRowOffsets, blockColumnIndices, blockValues);
+  if (rhs->sizes[0] != static_cast<int64_t>(dimensions.columns) ||
+      rhs->sizes[1] < 1 || rhs->strides[1] != 1 ||
+      rhs->strides[0] != rhs->sizes[1])
+    fail("RHS memref has an unexpected layout");
+  if (expected->sizes[0] != static_cast<int64_t>(dimensions.rows) ||
+      expected->sizes[1] != rhs->sizes[1] || expected->strides[1] != 1 ||
+      expected->strides[0] != expected->sizes[1])
+    fail("expected-output memref has an unexpected layout");
+
+  for (uint64_t reduction = 0; reduction < dimensions.columns; ++reduction)
+    for (int64_t column = 0; column < rhs->sizes[1]; ++column)
+      element(rhs, reduction, column) =
+          1.0f + static_cast<float>((reduction + column) % 7) * 0.125f;
+
+  std::fill_n(expected->data + expected->offset,
+              dimensions.rows * rhs->sizes[1], 0.0f);
+  for (uint64_t position = 0; position < dimensions.originalNnz; ++position) {
+    int32_t row = dimensions.inputRows[position];
+    int32_t reduction = dimensions.inputColumns[position];
+    if (row < 0 || static_cast<uint64_t>(row) >= dimensions.originalRows ||
+        reduction < 0 ||
+        static_cast<uint64_t>(reduction) >= dimensions.originalColumns)
+      fail("original BSR input coordinate is out of bounds");
+    for (int64_t column = 0; column < rhs->sizes[1]; ++column)
+      element(expected, row, column) +=
+          dimensions.inputValues[position] * element(rhs, reduction, column);
   }
 }

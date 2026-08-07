@@ -1,0 +1,139 @@
+func.func @bsr_spmm(
+    %blockRowOffsets: memref<?xi32>,
+    %blockColumnIndices: memref<?xi32>,
+    %blockValues: memref<?xf32>,
+    %rhs: memref<?x?xf32>,
+    %output: memref<?x?xf32>) {
+  sparsewave.bsr_spmm %blockRowOffsets, %blockColumnIndices, %blockValues,
+      %rhs, %output block_size = @BSR_BLOCK_SIZE@
+      : memref<?xi32>, memref<?xi32>, memref<?xf32>,
+        memref<?x?xf32>, memref<?x?xf32>
+  return
+}
+
+func.func @main() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %cRows = arith.constant @ROWS@ : index
+  %cBlockRowsPlusOne = arith.constant @BLOCK_ROWS_PLUS_ONE@ : index
+  %cInputColumns = arith.constant @INPUT_COLUMNS@ : index
+  %cRhsColumns = arith.constant @RHS_COLUMNS@ : index
+  %cNnzb = arith.constant @NNZB@ : index
+  %cBlockValues = arith.constant @BLOCK_VALUE_COUNT@ : index
+  %cDispatches = arith.constant @DISPATCHES@ : index
+  %c0I64 = arith.constant 0 : i64
+  %c1I64 = arith.constant 1 : i64
+  %c0F32 = arith.constant 0.0 : f32
+  %c1F32 = arith.constant 1.0 : f32
+  %cToleranceF32 = arith.constant 1.0e-4 : f32
+
+  %hostBlockRowOffsets =
+      memref.alloc(%cBlockRowsPlusOne) : memref<?xi32>
+  %hostBlockColumnIndices = memref.alloc(%cNnzb) : memref<?xi32>
+  %hostBlockValues = memref.alloc(%cBlockValues) : memref<?xf32>
+  %hostRhs =
+      memref.alloc(%cInputColumns, %cRhsColumns) : memref<?x?xf32>
+  %hostOutput = memref.alloc(%cRows, %cRhsColumns) : memref<?x?xf32>
+  %hostExpected = memref.alloc(%cRows, %cRhsColumns) : memref<?x?xf32>
+  %errorOutput = memref.alloc() : memref<1xi64>
+
+  func.call @loadBSRSpMMBenchmarkInputs(
+      %hostBlockRowOffsets, %hostBlockColumnIndices, %hostBlockValues,
+      %hostRhs, %hostExpected)
+      : (memref<?xi32>, memref<?xi32>, memref<?xf32>,
+         memref<?x?xf32>, memref<?x?xf32>) -> ()
+
+  %start = gpu.wait async
+  %deviceBlockRowOffsets, %alloc0 =
+      gpu.alloc async [%start] (%cBlockRowsPlusOne) : memref<?xi32>
+  %deviceBlockColumnIndices, %alloc1 =
+      gpu.alloc async [%alloc0] (%cNnzb) : memref<?xi32>
+  %deviceBlockValues, %alloc2 =
+      gpu.alloc async [%alloc1] (%cBlockValues) : memref<?xf32>
+  %deviceRhs, %alloc3 =
+      gpu.alloc async [%alloc2] (%cInputColumns, %cRhsColumns)
+      : memref<?x?xf32>
+  %deviceOutput, %alloc4 =
+      gpu.alloc async [%alloc3] (%cRows, %cRhsColumns) : memref<?x?xf32>
+
+  %copy0 = gpu.memcpy async [%alloc4]
+      %deviceBlockRowOffsets, %hostBlockRowOffsets
+      : memref<?xi32>, memref<?xi32>
+  %copy1 = gpu.memcpy async [%copy0]
+      %deviceBlockColumnIndices, %hostBlockColumnIndices
+      : memref<?xi32>, memref<?xi32>
+  %copy2 = gpu.memcpy async [%copy1] %deviceBlockValues, %hostBlockValues
+      : memref<?xf32>, memref<?xf32>
+  %copy3 = gpu.memcpy async [%copy2] %deviceRhs, %hostRhs
+      : memref<?x?xf32>, memref<?x?xf32>
+  gpu.wait [%copy3]
+
+  scf.for %iteration = %c0 to %cDispatches step %c1 {
+    func.call @bsr_spmm(
+        %deviceBlockRowOffsets, %deviceBlockColumnIndices,
+        %deviceBlockValues, %deviceRhs, %deviceOutput)
+        : (memref<?xi32>, memref<?xi32>, memref<?xf32>,
+           memref<?x?xf32>, memref<?x?xf32>) -> ()
+  }
+
+  %outputStart = gpu.wait async
+  %outputCopy = gpu.memcpy async [%outputStart] %hostOutput, %deviceOutput
+      : memref<?x?xf32>, memref<?x?xf32>
+  gpu.wait [%outputCopy]
+
+  %errors = scf.for %row = %c0 to %cRows step %c1
+      iter_args(%rowCount = %c0I64) -> i64 {
+    %nextRowCount = scf.for %column = %c0 to %cRhsColumns step %c1
+        iter_args(%count = %rowCount) -> i64 {
+      %expected =
+          memref.load %hostExpected[%row, %column] : memref<?x?xf32>
+      %actual = memref.load %hostOutput[%row, %column] : memref<?x?xf32>
+      %difference = arith.subf %actual, %expected : f32
+      %differenceIsNegative =
+          arith.cmpf olt, %difference, %c0F32 : f32
+      %negativeDifference = arith.negf %difference : f32
+      %absoluteDifference = arith.select %differenceIsNegative,
+          %negativeDifference, %difference : f32
+      %expectedIsNegative = arith.cmpf olt, %expected, %c0F32 : f32
+      %negativeExpected = arith.negf %expected : f32
+      %absoluteExpected = arith.select %expectedIsNegative,
+          %negativeExpected, %expected : f32
+      %expectedIsLarge = arith.cmpf ogt, %absoluteExpected, %c1F32 : f32
+      %scale = arith.select %expectedIsLarge,
+          %absoluteExpected, %c1F32 : f32
+      %tolerance = arith.mulf %scale, %cToleranceF32 : f32
+      %outsideTolerance =
+          arith.cmpf ogt, %absoluteDifference, %tolerance : f32
+      %unordered = arith.cmpf uno, %actual, %expected : f32
+      %mismatch = arith.ori %outsideTolerance, %unordered : i1
+      %increment = arith.select %mismatch, %c1I64, %c0I64 : i64
+      %next = arith.addi %count, %increment : i64
+      scf.yield %next : i64
+    }
+    scf.yield %nextRowCount : i64
+  }
+  memref.store %errors, %errorOutput[%c0] : memref<1xi64>
+  %errorOutputUnranked =
+      memref.cast %errorOutput : memref<1xi64> to memref<*xi64>
+  func.call @printMemrefI64(%errorOutputUnranked) : (memref<*xi64>) -> ()
+
+  gpu.dealloc %deviceBlockRowOffsets : memref<?xi32>
+  gpu.dealloc %deviceBlockColumnIndices : memref<?xi32>
+  gpu.dealloc %deviceBlockValues : memref<?xf32>
+  gpu.dealloc %deviceRhs : memref<?x?xf32>
+  gpu.dealloc %deviceOutput : memref<?x?xf32>
+  memref.dealloc %hostBlockRowOffsets : memref<?xi32>
+  memref.dealloc %hostBlockColumnIndices : memref<?xi32>
+  memref.dealloc %hostBlockValues : memref<?xf32>
+  memref.dealloc %hostRhs : memref<?x?xf32>
+  memref.dealloc %hostOutput : memref<?x?xf32>
+  memref.dealloc %hostExpected : memref<?x?xf32>
+  memref.dealloc %errorOutput : memref<1xi64>
+  return
+}
+
+func.func private @printMemrefI64(memref<*xi64>)
+func.func private @loadBSRSpMMBenchmarkInputs(
+    memref<?xi32>, memref<?xi32>, memref<?xf32>,
+    memref<?x?xf32>, memref<?x?xf32>)
+    attributes {llvm.emit_c_interface}

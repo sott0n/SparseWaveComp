@@ -1,10 +1,27 @@
 # SparseWave benchmarks
 
 SparseWave's benchmark suite validates generated sparse kernels on AMD GPUs,
-measures steady-state execution, can compare equivalent rocSPARSE operations,
-and reports resources from the generated HSACO. The SpMV runner can execute
-the same Matrix Market or synthetic workload as CSR and COO with
-`--formats=csr,coo`; CSR remains the rocSPARSE comparison format.
+measures steady-state execution, and reports resources from the generated
+HSACO. Each runner can evaluate the same sparse workload across its supported
+storage formats and GPU mappings while keeping input generation, correctness
+validation, and measurement consistent. Equivalent rocSPARSE operations can
+be included as CSR baselines.
+
+## Supported formats
+
+| Runner | Format | Format selection and parameters | GPU mappings |
+| --- | --- | --- | --- |
+| SpMV | CSR | `--formats=csr` | `thread-per-row`, `wave-per-row`, `block-per-row` |
+| SpMV | COO | `--formats=coo` | `thread-per-nonzero` |
+| SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths | `thread-per-output`, `wave-per-row-tile` |
+| SpMM | BSR | `--formats=bsr`; `--bsr-block-sizes` selects square storage block sizes | `thread-per-output` |
+
+Multiple formats can be evaluated in one invocation, for example
+`--formats=csr,coo` for SpMV or `--formats=csr,bsr` for SpMM. The common
+`--block-sizes` option controls the GPU workgroup size; it is distinct from
+the BSR storage block size. `--wave-size` selects the AMDGPU wavefront size,
+subject to the mappings currently supported by each runner. CSR is used for
+rocSPARSE comparisons when `--rocsparse` is present.
 
 Matrix Market entries are sorted deterministically without coalescing duplicate
 coordinates. Temporary CSR and COO binaries therefore preserve the same
@@ -12,6 +29,27 @@ mathematical input, including repeated coordinates. `results.csv` records the
 format and its host conversion/serialization time separately from GPU kernel
 time. COO timing includes both the output-initialization and atomic-compute
 kernels by summing their GPU durations for each SpMV dispatch.
+
+BSR conversion groups entries into row-major dense blocks and coalesces
+duplicate coordinates by addition. Matrix dimensions that are not divisible
+by the selected block size are extended with zero rows and columns. The BSR
+binary also retains the original Matrix Market coordinates, so CPU correctness
+validation is independent from the converted blocks. Reports include the
+number and density of nonzero blocks, the fraction of unused scalar slots
+inside stored blocks, and the ratio of stored scalar slots to occupied input
+coordinates.
+
+For example, a small CSR/BSR comparison can be run with:
+
+```sh
+python3 benchmark/run_spmm_benchmark.py \
+  --matrix test/Benchmark/Inputs/tiny.mtx \
+  --formats=csr,bsr \
+  --bsr-block-sizes=2,4,8 \
+  --rhs-columns=4 \
+  --block-size=64 \
+  --tile-size=4
+```
 
 Each recorded result contains its workload definition, measurement method,
 environment, reproduction commands, performance data, and interpretation:
