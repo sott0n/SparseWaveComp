@@ -46,6 +46,12 @@
 // RUN: not sparsewave-opt %s \
 // RUN:   --convert-sparsewave-to-gpu='sddmm-block-size=1025' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-SDDMM-BLOCK-SIZE
+// RUN: not sparsewave-opt %s \
+// RUN:   --convert-sparsewave-to-gpu='elementwise-block-size=0' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-ELEMENTWISE-BLOCK-SIZE
+// RUN: not sparsewave-opt %s \
+// RUN:   --convert-sparsewave-to-gpu='elementwise-block-size=1025' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-ELEMENTWISE-BLOCK-SIZE
 
 // INVALID-MAPPING: unsupported SpMV mapping strategy 'unknown';
 // INVALID-MAPPING-SAME: expected 'thread-per-row', 'wave-per-row', or 'block-per-row'
@@ -61,6 +67,7 @@
 // INVALID-SPMM-WAVE-SIZE: wave-per-row-tile currently requires Wave32, but got wave size 64
 // INVALID-SPMM-WAVE-BLOCK-SIZE: wave-per-row-tile requires the SpMM block size to be a multiple of 32, but got 48
 // INVALID-SDDMM-BLOCK-SIZE: SDDMM block size must be between 1 and 1024
+// INVALID-ELEMENTWISE-BLOCK-SIZE: elementwise block size must be between 1 and 1024
 
 module {
 }

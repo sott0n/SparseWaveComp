@@ -43,8 +43,24 @@ struct CSRPosition {
   Value value;
 };
 
+enum class CSRCoiterationKind {
+  Union,
+  Intersection,
+};
+
+struct CSRCoiterationEntry {
+  Value column;
+  Value lhsPosition;
+  Value rhsPosition;
+  Value lhsPresent;
+  Value rhsPresent;
+};
+
 using CSRPositionBodyBuilder = llvm::function_ref<SmallVector<Value>(
     OpBuilder &, Location, CSRPosition, ValueRange)>;
+
+using CSRCoiterationBodyBuilder = llvm::function_ref<SmallVector<Value>(
+    OpBuilder &, Location, CSRCoiterationEntry, ValueRange)>;
 
 Value castToIndex(OpBuilder &builder, Location loc, Value value);
 
@@ -72,6 +88,13 @@ SmallVector<Value> buildCSRPositionTraversal(OpBuilder &builder, Location loc,
                                              StridedPositionRange positions,
                                              ValueRange initialValues,
                                              CSRPositionBodyBuilder buildBody);
+
+SmallVector<Value>
+buildCSRCoiteration(OpBuilder &builder, Location loc, Value lhsColumnIndices,
+                    CompressedRowBounds lhsBounds, Value rhsColumnIndices,
+                    CompressedRowBounds rhsBounds, CSRCoiterationKind kind,
+                    Value oneIndex, ValueRange initialValues,
+                    CSRCoiterationBodyBuilder buildBody);
 
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
                          int64_t waveSize);

@@ -133,6 +133,11 @@ struct SparseWaveToAMDGPUPipelineOptions
       *this, "sddmm-block-size",
       llvm::cl::desc("Number of GPU threads in each SDDMM block."),
       llvm::cl::init(256)};
+
+  PassOptions::Option<int64_t> elementwiseBlockSize{
+      *this, "elementwise-block-size",
+      llvm::cl::desc("Number of GPU threads in each sparse elementwise block."),
+      llvm::cl::init(256)};
 };
 
 void buildAMDGPUBackendPipeline(OpPassManager &pm,

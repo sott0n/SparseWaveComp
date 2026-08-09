@@ -20,6 +20,15 @@ namespace mlir::sparsewave {
 
 namespace {
 
+Value castIndexToType(OpBuilder &builder, Location loc, Value value,
+                      Type targetType) {
+  if (targetType.isIndex())
+    return value;
+  if (cast<IntegerType>(targetType).isUnsigned())
+    return arith::IndexCastUIOp::create(builder, loc, targetType, value);
+  return arith::IndexCastOp::create(builder, loc, targetType, value);
+}
+
 class ThreadPerNonzeroCOOSpMVPattern : public OpRewritePattern<COOSpMVOp> {
 public:
   ThreadPerNonzeroCOOSpMVPattern(MLIRContext *context, int64_t blockSize)
@@ -620,6 +629,183 @@ private:
   int64_t blockSize;
 };
 
+class ThreadPerRowCSRElementwisePattern
+    : public OpRewritePattern<CSRElementwiseOp> {
+public:
+  ThreadPerRowCSRElementwisePattern(MLIRContext *context, int64_t blockSize)
+      : OpRewritePattern<CSRElementwiseOp>(context), blockSize(blockSize) {}
+
+  LogicalResult matchAndRewrite(CSRElementwiseOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value blockSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, blockSize);
+    Value rowOffsetCount = memref::DimOp::create(
+        rewriter, loc, op.getOutputRowOffsets(), zeroIndex);
+    Value rowCount =
+        arith::SubIOp::create(rewriter, loc, rowOffsetCount, oneIndex);
+    CSRCoiterationKind coiterationKind = op.getKind() == "add"
+                                             ? CSRCoiterationKind::Union
+                                             : CSRCoiterationKind::Intersection;
+
+    // Symbolic phase: count output coordinates independently for each row.
+    // Counts are temporarily stored at outputRowOffsets[row + 1].
+    LinearThreadWorkDistribution symbolic = buildLinearThreadWorkDistribution(
+        rewriter, loc, rowCount, oneIndex, blockSizeValue);
+    Value row = symbolic.workUnit;
+    scf::IfOp::create(
+        rewriter, loc, symbolic.workUnitIsActive,
+        [&](OpBuilder &builder, Location bodyLoc) {
+          CompressedRowBounds lhsBounds = buildCompressedRowBounds(
+              builder, bodyLoc, op.getLhsRowOffsets(), row, oneIndex);
+          CompressedRowBounds rhsBounds = buildCompressedRowBounds(
+              builder, bodyLoc, op.getRhsRowOffsets(), row, oneIndex);
+          SmallVector<Value> result = buildCSRCoiteration(
+              builder, bodyLoc, op.getLhsColumnIndices(), lhsBounds,
+              op.getRhsColumnIndices(), rhsBounds, coiterationKind, oneIndex,
+              ValueRange{zeroIndex},
+              [&](OpBuilder &entryBuilder, Location entryLoc,
+                  CSRCoiterationEntry, ValueRange iterArgs) {
+                Value nextCount = arith::AddIOp::create(
+                    entryBuilder, entryLoc, iterArgs.front(), oneIndex);
+                return SmallVector<Value>{nextCount};
+              });
+          Value nextRow =
+              arith::AddIOp::create(builder, bodyLoc, row, oneIndex);
+          Type offsetType = cast<MemRefType>(op.getOutputRowOffsets().getType())
+                                .getElementType();
+          Value count =
+              castIndexToType(builder, bodyLoc, result.front(), offsetType);
+          memref::StoreOp::create(builder, bodyLoc, count,
+                                  op.getOutputRowOffsets(), nextRow);
+          scf::YieldOp::create(builder, bodyLoc);
+        });
+    rewriter.setInsertionPointToEnd(&symbolic.launch.getBody().front());
+    gpu::TerminatorOp::create(rewriter, loc);
+
+    // Prefix phase: convert row counts into CSR offsets and publish total NNZ.
+    // This correctness baseline deliberately isolates a sequential scan so it
+    // can later be replaced by a parallel scan without changing coiteration.
+    rewriter.setInsertionPointAfter(symbolic.launch);
+    gpu::LaunchOp prefix =
+        gpu::LaunchOp::create(rewriter, loc, oneIndex, oneIndex, oneIndex,
+                              oneIndex, oneIndex, oneIndex);
+    rewriter.setInsertionPointToStart(&prefix.getBody().front());
+    Type offsetType =
+        cast<MemRefType>(op.getOutputRowOffsets().getType()).getElementType();
+    Value zeroOffset = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getZeroAttr(offsetType));
+    memref::StoreOp::create(rewriter, loc, zeroOffset, op.getOutputRowOffsets(),
+                            zeroIndex);
+    auto scan = scf::ForOp::create(
+        rewriter, loc, zeroIndex, rowCount, oneIndex, ValueRange{zeroOffset},
+        [&](OpBuilder &builder, Location bodyLoc, Value scanRow,
+            ValueRange iterArgs) {
+          Value nextRow =
+              arith::AddIOp::create(builder, bodyLoc, scanRow, oneIndex);
+          Value rowNnz = memref::LoadOp::create(
+              builder, bodyLoc, op.getOutputRowOffsets(), nextRow);
+          Value total =
+              arith::AddIOp::create(builder, bodyLoc, iterArgs.front(), rowNnz);
+          memref::StoreOp::create(builder, bodyLoc, total,
+                                  op.getOutputRowOffsets(), nextRow);
+          scf::YieldOp::create(builder, bodyLoc, total);
+        });
+    memref::StoreOp::create(rewriter, loc, scan.getResult(0), op.getOutputNnz(),
+                            zeroIndex);
+    gpu::TerminatorOp::create(rewriter, loc);
+
+    // Numeric phase: replay the same coiteration and assemble values into the
+    // positions assigned by the prefix phase.
+    rewriter.setInsertionPointAfter(prefix);
+    LinearThreadWorkDistribution numeric = buildLinearThreadWorkDistribution(
+        rewriter, loc, rowCount, oneIndex, blockSizeValue);
+    row = numeric.workUnit;
+    scf::IfOp::create(
+        rewriter, loc, numeric.workUnitIsActive,
+        [&](OpBuilder &builder, Location bodyLoc) {
+          CompressedRowBounds lhsBounds = buildCompressedRowBounds(
+              builder, bodyLoc, op.getLhsRowOffsets(), row, oneIndex);
+          CompressedRowBounds rhsBounds = buildCompressedRowBounds(
+              builder, bodyLoc, op.getRhsRowOffsets(), row, oneIndex);
+          Value outputStartValue = memref::LoadOp::create(
+              builder, bodyLoc, op.getOutputRowOffsets(), row);
+          Value outputStart = castToIndex(builder, bodyLoc, outputStartValue);
+          auto valueType =
+              cast<MemRefType>(op.getOutputValues().getType()).getElementType();
+          Value zeroValue = arith::ConstantOp::create(
+              builder, bodyLoc, builder.getZeroAttr(valueType));
+
+          buildCSRCoiteration(
+              builder, bodyLoc, op.getLhsColumnIndices(), lhsBounds,
+              op.getRhsColumnIndices(), rhsBounds, coiterationKind, oneIndex,
+              ValueRange{outputStart},
+              [&](OpBuilder &entryBuilder, Location entryLoc,
+                  CSRCoiterationEntry entry, ValueRange iterArgs) {
+                Value outputPosition = iterArgs.front();
+                Value outputValue;
+                if (coiterationKind == CSRCoiterationKind::Union) {
+                  auto lhsValue = scf::IfOp::create(
+                      entryBuilder, entryLoc, entry.lhsPresent,
+                      [&](OpBuilder &thenBuilder, Location thenLoc) {
+                        Value value = memref::LoadOp::create(
+                            thenBuilder, thenLoc, op.getLhsValues(),
+                            entry.lhsPosition);
+                        scf::YieldOp::create(thenBuilder, thenLoc, value);
+                      },
+                      [&](OpBuilder &elseBuilder, Location elseLoc) {
+                        scf::YieldOp::create(elseBuilder, elseLoc, zeroValue);
+                      });
+                  auto rhsValue = scf::IfOp::create(
+                      entryBuilder, entryLoc, entry.rhsPresent,
+                      [&](OpBuilder &thenBuilder, Location thenLoc) {
+                        Value value = memref::LoadOp::create(
+                            thenBuilder, thenLoc, op.getRhsValues(),
+                            entry.rhsPosition);
+                        scf::YieldOp::create(thenBuilder, thenLoc, value);
+                      },
+                      [&](OpBuilder &elseBuilder, Location elseLoc) {
+                        scf::YieldOp::create(elseBuilder, elseLoc, zeroValue);
+                      });
+                  outputValue = arith::AddFOp::create(entryBuilder, entryLoc,
+                                                      lhsValue.getResult(0),
+                                                      rhsValue.getResult(0));
+                } else {
+                  Value lhsValue = memref::LoadOp::create(
+                      entryBuilder, entryLoc, op.getLhsValues(),
+                      entry.lhsPosition);
+                  Value rhsValue = memref::LoadOp::create(
+                      entryBuilder, entryLoc, op.getRhsValues(),
+                      entry.rhsPosition);
+                  outputValue = arith::MulFOp::create(entryBuilder, entryLoc,
+                                                      lhsValue, rhsValue);
+                }
+
+                Value outputColumn = castIndexToType(entryBuilder, entryLoc,
+                                                     entry.column, offsetType);
+                memref::StoreOp::create(entryBuilder, entryLoc, outputColumn,
+                                        op.getOutputColumnIndices(),
+                                        outputPosition);
+                memref::StoreOp::create(entryBuilder, entryLoc, outputValue,
+                                        op.getOutputValues(), outputPosition);
+                Value nextOutputPosition = arith::AddIOp::create(
+                    entryBuilder, entryLoc, outputPosition, oneIndex);
+                return SmallVector<Value>{nextOutputPosition};
+              });
+          scf::YieldOp::create(builder, bodyLoc);
+        });
+    rewriter.setInsertionPointToEnd(&numeric.launch.getBody().front());
+    gpu::TerminatorOp::create(rewriter, loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  int64_t blockSize;
+};
+
 class WavePerRowTileSpMMPattern : public OpRewritePattern<SpMMOp> {
 public:
   WavePerRowTileSpMMPattern(MLIRContext *context, int64_t blockSize,
@@ -872,6 +1058,13 @@ public:
       signalPassFailure();
       return;
     }
+    if (elementwiseBlockSize < 1 || elementwiseBlockSize > 1024) {
+      getOperation().emitError()
+          << "elementwise block size must be between 1 and 1024, but got "
+          << elementwiseBlockSize.getValue();
+      signalPassFailure();
+      return;
+    }
     if (spmmMapping == "wave-per-row-tile" && waveSize != 32) {
       getOperation().emitError()
           << "wave-per-row-tile currently requires Wave32, but got wave size "
@@ -905,6 +1098,8 @@ public:
     RewritePatternSet patterns(&getContext());
     patterns.add<ThreadPerNonzeroCOOSpMVPattern>(&getContext(), blockSize);
     patterns.add<ThreadPerRowSDDMMPattern>(&getContext(), sddmmBlockSize);
+    patterns.add<ThreadPerRowCSRElementwisePattern>(&getContext(),
+                                                    elementwiseBlockSize);
     patterns.add<ThreadPerOutputBSRSpMMPattern>(&getContext(), spmmBlockSize);
     if (spmmMapping == "thread-per-output")
       patterns.add<ThreadPerOutputSpMMPattern>(&getContext(), spmmBlockSize);

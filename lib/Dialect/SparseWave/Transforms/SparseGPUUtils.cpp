@@ -108,6 +108,125 @@ SmallVector<Value> buildCSRPositionTraversal(OpBuilder &builder, Location loc,
   return SmallVector<Value>(loop.getResults());
 }
 
+SmallVector<Value>
+buildCSRCoiteration(OpBuilder &builder, Location loc, Value lhsColumnIndices,
+                    CompressedRowBounds lhsBounds, Value rhsColumnIndices,
+                    CompressedRowBounds rhsBounds, CSRCoiterationKind kind,
+                    Value oneIndex, ValueRange initialValues,
+                    CSRCoiterationBodyBuilder buildBody) {
+  SmallVector<Value> initialState{lhsBounds.start, rhsBounds.start};
+  llvm::append_range(initialState, initialValues);
+  TypeRange stateTypes = ValueRange(initialState).getTypes();
+  auto loop = scf::WhileOp::create(builder, loc, stateTypes, initialState);
+
+  OpBuilder::InsertionGuard guard(builder);
+  SmallVector<Location> argumentLocations(stateTypes.size(), loc);
+  Block *before =
+      builder.createBlock(&loop.getBefore(), {}, stateTypes, argumentLocations);
+  builder.setInsertionPointToStart(before);
+  Value lhsPosition = before->getArgument(0);
+  Value rhsPosition = before->getArgument(1);
+  Value lhsActive = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::ult, lhsPosition, lhsBounds.end);
+  Value rhsActive = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::ult, rhsPosition, rhsBounds.end);
+  Value condition;
+  if (kind == CSRCoiterationKind::Union)
+    condition = arith::OrIOp::create(builder, loc, lhsActive, rhsActive);
+  else
+    condition = arith::AndIOp::create(builder, loc, lhsActive, rhsActive);
+  scf::ConditionOp::create(builder, loc, condition, before->getArguments());
+
+  Block *after =
+      builder.createBlock(&loop.getAfter(), {}, stateTypes, argumentLocations);
+  builder.setInsertionPointToStart(after);
+  lhsPosition = after->getArgument(0);
+  rhsPosition = after->getArgument(1);
+  ValueRange iterArgs = after->getArguments().drop_front(2);
+  lhsActive = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ult,
+                                    lhsPosition, lhsBounds.end);
+  rhsActive = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ult,
+                                    rhsPosition, rhsBounds.end);
+
+  // A union iteration may have exhausted one input. Select the active input as
+  // the fallback so neither branch performs an out-of-bounds column load.
+  auto lhsColumnSelection = scf::IfOp::create(
+      builder, loc, lhsActive,
+      [&](OpBuilder &thenBuilder, Location thenLoc) {
+        Value columnValue = memref::LoadOp::create(
+            thenBuilder, thenLoc, lhsColumnIndices, lhsPosition);
+        Value column = castToIndex(thenBuilder, thenLoc, columnValue);
+        scf::YieldOp::create(thenBuilder, thenLoc, column);
+      },
+      [&](OpBuilder &elseBuilder, Location elseLoc) {
+        Value columnValue = memref::LoadOp::create(
+            elseBuilder, elseLoc, rhsColumnIndices, rhsPosition);
+        Value column = castToIndex(elseBuilder, elseLoc, columnValue);
+        scf::YieldOp::create(elseBuilder, elseLoc, column);
+      });
+  auto rhsColumnSelection = scf::IfOp::create(
+      builder, loc, rhsActive,
+      [&](OpBuilder &thenBuilder, Location thenLoc) {
+        Value columnValue = memref::LoadOp::create(
+            thenBuilder, thenLoc, rhsColumnIndices, rhsPosition);
+        Value column = castToIndex(thenBuilder, thenLoc, columnValue);
+        scf::YieldOp::create(thenBuilder, thenLoc, column);
+      },
+      [&](OpBuilder &elseBuilder, Location elseLoc) {
+        Value columnValue = memref::LoadOp::create(
+            elseBuilder, elseLoc, lhsColumnIndices, lhsPosition);
+        Value column = castToIndex(elseBuilder, elseLoc, columnValue);
+        scf::YieldOp::create(elseBuilder, elseLoc, column);
+      });
+  Value lhsColumn = lhsColumnSelection.getResult(0);
+  Value rhsColumn = rhsColumnSelection.getResult(0);
+
+  Value trueValue = arith::ConstantIntOp::create(builder, loc, 1, 1);
+  Value lhsOnly = arith::XOrIOp::create(builder, loc, rhsActive, trueValue);
+  Value rhsOnly = arith::XOrIOp::create(builder, loc, lhsActive, trueValue);
+  Value lhsPrecedes = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::ule, lhsColumn, rhsColumn);
+  Value rhsPrecedes = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::ule, rhsColumn, lhsColumn);
+  Value takeLhs = arith::AndIOp::create(
+      builder, loc, lhsActive,
+      arith::OrIOp::create(builder, loc, lhsOnly, lhsPrecedes));
+  Value takeRhs = arith::AndIOp::create(
+      builder, loc, rhsActive,
+      arith::OrIOp::create(builder, loc, rhsOnly, rhsPrecedes));
+  Value column =
+      arith::SelectOp::create(builder, loc, takeLhs, lhsColumn, rhsColumn);
+
+  Value nextLhsPosition = arith::SelectOp::create(
+      builder, loc, takeLhs,
+      arith::AddIOp::create(builder, loc, lhsPosition, oneIndex), lhsPosition);
+  Value nextRhsPosition = arith::SelectOp::create(
+      builder, loc, takeRhs,
+      arith::AddIOp::create(builder, loc, rhsPosition, oneIndex), rhsPosition);
+  Value emit = kind == CSRCoiterationKind::Union
+                   ? trueValue
+                   : arith::AndIOp::create(builder, loc, takeLhs, takeRhs);
+
+  auto update = scf::IfOp::create(
+      builder, loc, emit,
+      [&](OpBuilder &thenBuilder, Location thenLoc) {
+        SmallVector<Value> nextValues =
+            buildBody(thenBuilder, thenLoc,
+                      CSRCoiterationEntry{column, lhsPosition, rhsPosition,
+                                          takeLhs, takeRhs},
+                      iterArgs);
+        scf::YieldOp::create(thenBuilder, thenLoc, nextValues);
+      },
+      [&](OpBuilder &elseBuilder, Location elseLoc) {
+        scf::YieldOp::create(elseBuilder, elseLoc, iterArgs);
+      });
+  SmallVector<Value> nextState{nextLhsPosition, nextRhsPosition};
+  llvm::append_range(nextState, update.getResults());
+  scf::YieldOp::create(builder, loc, nextState);
+
+  return SmallVector<Value>(loop.getResults().drop_front(2));
+}
+
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
                          int64_t waveSize) {
   for (int32_t offset = 1; offset < waveSize; offset <<= 1) {

@@ -231,7 +231,7 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   pm.addNestedPass<func::FuncOp>(createSCFToControlFlowPass());
   pm.addPass(memref::createExpandStridedMetadataPass());
 
-  // Map SparseWave contractions to GPU work. Each operation has an independent
+  // Map SparseWave operations to GPU work. Each operation has an independent
   // block size because its GPU work unit differs.
   ConvertSparseWaveToGPUOptions sparseWaveOptions;
   sparseWaveOptions.mapping = options.spmvMapping;
@@ -242,6 +242,7 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   sparseWaveOptions.spmmBlockSize = options.spmmBlockSize;
   sparseWaveOptions.spmmTileSize = options.spmmTileSize;
   sparseWaveOptions.sddmmBlockSize = options.sddmmBlockSize;
+  sparseWaveOptions.elementwiseBlockSize = options.elementwiseBlockSize;
   pm.addPass(createConvertSparseWaveToGPU(sparseWaveOptions));
   pm.addPass(createGpuKernelOutliningPass());
   buildAMDGPUBackendPipeline(pm, options);
