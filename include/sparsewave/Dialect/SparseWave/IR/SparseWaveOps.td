@@ -203,4 +203,65 @@ def SparseWave_SDDMMOp : SparseWave_Op<"sddmm"> {
   let hasVerifier = 1;
 }
 
+def SparseWave_CSRElementwiseOp : SparseWave_Op<"csr_elementwise"> {
+  let summary = "Apply an elementwise operation to two CSR matrices";
+  let description = [{
+    `sparsewave.csr_elementwise` coiterates two CSR matrices with sorted,
+    unique column indices in each row and assembles a CSR result.
+
+    `kind = "add"` traverses the union of the input coordinates. A coordinate
+    present in both inputs receives the sum of both values, while a coordinate
+    present in only one input preserves that value. `kind = "multiply"`
+    traverses the intersection and emits the product at coordinates present in
+    both inputs. Structural entries are retained even when the computed value
+    is zero.
+
+    The caller preallocates the three output buffers. For addition, the column
+    and value capacity must be at least the sum of both input NNZ counts. For
+    multiplication, it must be at least the smaller input NNZ count. The
+    operation writes the actual result NNZ to the one-element `outputNnz`
+    buffer, and the final row offset equals this value. Output buffers must not
+    alias either input.
+
+    Example:
+
+    ```mlir
+    sparsewave.csr_elementwise
+        %lhs_offsets, %lhs_columns, %lhs_values,
+        %rhs_offsets, %rhs_columns, %rhs_values,
+        %out_offsets, %out_columns, %out_values, %out_nnz kind = "add"
+        : memref<5xi32>, memref<8xi32>, memref<8xf32>,
+          memref<5xi32>, memref<7xi32>, memref<7xf32>,
+          memref<5xi32>, memref<15xi32>, memref<15xf32>, memref<1xi32>
+    ```
+  }];
+
+  let arguments = (ins
+      Arg<AnyMemRef, "left CSR row offsets", [MemRead]>:$lhsRowOffsets,
+      Arg<AnyMemRef, "left CSR column indices", [MemRead]>:$lhsColumnIndices,
+      Arg<AnyMemRef, "left CSR nonzero values", [MemRead]>:$lhsValues,
+      Arg<AnyMemRef, "right CSR row offsets", [MemRead]>:$rhsRowOffsets,
+      Arg<AnyMemRef, "right CSR column indices", [MemRead]>:$rhsColumnIndices,
+      Arg<AnyMemRef, "right CSR nonzero values", [MemRead]>:$rhsValues,
+      Arg<AnyMemRef, "output CSR row offsets", [MemWrite]>:$outputRowOffsets,
+      Arg<AnyMemRef, "output CSR column indices",
+          [MemWrite]>:$outputColumnIndices,
+      Arg<AnyMemRef, "output CSR values", [MemWrite]>:$outputValues,
+      Arg<AnyMemRef, "actual output NNZ", [MemWrite]>:$outputNnz,
+      StrAttr:$kind);
+
+  let assemblyFormat = [{
+    $lhsRowOffsets `,` $lhsColumnIndices `,` $lhsValues `,`
+    $rhsRowOffsets `,` $rhsColumnIndices `,` $rhsValues `,`
+    $outputRowOffsets `,` $outputColumnIndices `,` $outputValues `,` $outputNnz
+    `kind` `=` $kind attr-dict `:`
+    type($lhsRowOffsets) `,` type($lhsColumnIndices) `,` type($lhsValues) `,`
+    type($rhsRowOffsets) `,` type($rhsColumnIndices) `,` type($rhsValues) `,`
+    type($outputRowOffsets) `,` type($outputColumnIndices) `,`
+    type($outputValues) `,` type($outputNnz)
+  }];
+
+  let hasVerifier = 1;
+}
+
 #endif // SPARSEWAVE_DIALECT_SPARSEWAVE_IR_SPARSEWAVEOPS_TD

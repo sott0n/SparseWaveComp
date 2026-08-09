@@ -3,6 +3,8 @@
 #include "mlir/IR/Diagnostics.h"
 #include "llvm/Support/MathExtras.h"
 
+#include <algorithm>
+
 using namespace mlir;
 using namespace mlir::sparsewave;
 
@@ -20,10 +22,9 @@ bool areCompatibleStaticDimensions(int64_t lhs, int64_t rhs) {
   return ShapedType::isDynamic(lhs) || ShapedType::isDynamic(rhs) || lhs == rhs;
 }
 
-LogicalResult verifyCSRStorage(Operation *op, MemRefType rowOffsetsType,
-                               MemRefType columnIndicesType,
-                               MemRefType valuesType, MemRefType outputType,
-                               StringRef outputDimensionName) {
+LogicalResult verifyCSRComponents(Operation *op, MemRefType rowOffsetsType,
+                                  MemRefType columnIndicesType,
+                                  MemRefType valuesType) {
   if (failed(verifyRank(op, rowOffsetsType, 1, "row offsets")) ||
       failed(verifyRank(op, columnIndicesType, 1, "column indices")) ||
       failed(verifyRank(op, valuesType, 1, "values")))
@@ -43,6 +44,23 @@ LogicalResult verifyCSRStorage(Operation *op, MemRefType rowOffsetsType,
     return op->emitOpError()
            << "values must have floating-point elements, but got " << valueType;
 
+  int64_t columnIndicesSize = columnIndicesType.getDimSize(0);
+  int64_t valuesSize = valuesType.getDimSize(0);
+  if (!areCompatibleStaticDimensions(columnIndicesSize, valuesSize))
+    return op->emitOpError()
+           << "column indices and values must have the same size, but got "
+           << columnIndicesSize << " and " << valuesSize;
+  return success();
+}
+
+LogicalResult verifyCSRStorage(Operation *op, MemRefType rowOffsetsType,
+                               MemRefType columnIndicesType,
+                               MemRefType valuesType, MemRefType outputType,
+                               StringRef outputDimensionName) {
+  if (failed(verifyCSRComponents(op, rowOffsetsType, columnIndicesType,
+                                 valuesType)))
+    return failure();
+
   int64_t rowOffsetsSize = rowOffsetsType.getDimSize(0);
   int64_t outputRows = outputType.getDimSize(0);
   if (!ShapedType::isDynamic(rowOffsetsSize) &&
@@ -50,13 +68,6 @@ LogicalResult verifyCSRStorage(Operation *op, MemRefType rowOffsetsType,
     return op->emitOpError()
            << "row offsets size must equal " << outputDimensionName
            << " plus one, but got " << rowOffsetsSize << " and " << outputRows;
-
-  int64_t columnIndicesSize = columnIndicesType.getDimSize(0);
-  int64_t valuesSize = valuesType.getDimSize(0);
-  if (!areCompatibleStaticDimensions(columnIndicesSize, valuesSize))
-    return op->emitOpError()
-           << "column indices and values must have the same size, but got "
-           << columnIndicesSize << " and " << valuesSize;
   return success();
 }
 
@@ -295,6 +306,94 @@ LogicalResult SDDMMOp::verify() {
            << "values and output values must have the same size, but got "
            << valuesType.getDimSize(0) << " and "
            << outputValuesType.getDimSize(0);
+
+  return success();
+}
+
+LogicalResult CSRElementwiseOp::verify() {
+  MemRefType lhsRowOffsetsType = getLhsRowOffsets().getType();
+  MemRefType lhsColumnIndicesType = getLhsColumnIndices().getType();
+  MemRefType lhsValuesType = getLhsValues().getType();
+  MemRefType rhsRowOffsetsType = getRhsRowOffsets().getType();
+  MemRefType rhsColumnIndicesType = getRhsColumnIndices().getType();
+  MemRefType rhsValuesType = getRhsValues().getType();
+  MemRefType outputRowOffsetsType = getOutputRowOffsets().getType();
+  MemRefType outputColumnIndicesType = getOutputColumnIndices().getType();
+  MemRefType outputValuesType = getOutputValues().getType();
+  MemRefType outputNnzType = getOutputNnz().getType();
+
+  if (getKind() != "add" && getKind() != "multiply")
+    return emitOpError() << "kind must be 'add' or 'multiply', but got '"
+                         << getKind() << "'";
+
+  if (failed(verifyCSRComponents(*this, lhsRowOffsetsType, lhsColumnIndicesType,
+                                 lhsValuesType)) ||
+      failed(verifyCSRComponents(*this, rhsRowOffsetsType, rhsColumnIndicesType,
+                                 rhsValuesType)) ||
+      failed(
+          verifyRank(*this, outputRowOffsetsType, 1, "output row offsets")) ||
+      failed(verifyRank(*this, outputColumnIndicesType, 1,
+                        "output column indices")) ||
+      failed(verifyRank(*this, outputValuesType, 1, "output values")) ||
+      failed(verifyRank(*this, outputNnzType, 1, "output NNZ")))
+    return failure();
+
+  if (!areCompatibleStaticDimensions(lhsRowOffsetsType.getDimSize(0),
+                                     rhsRowOffsetsType.getDimSize(0)) ||
+      !areCompatibleStaticDimensions(lhsRowOffsetsType.getDimSize(0),
+                                     outputRowOffsetsType.getDimSize(0)) ||
+      !areCompatibleStaticDimensions(rhsRowOffsetsType.getDimSize(0),
+                                     outputRowOffsetsType.getDimSize(0)))
+    return emitOpError()
+           << "left, right, and output row offsets must have the same size";
+
+  Type indexType = lhsRowOffsetsType.getElementType();
+  if (rhsRowOffsetsType.getElementType() != indexType ||
+      outputRowOffsetsType.getElementType() != indexType ||
+      outputColumnIndicesType.getElementType() != indexType ||
+      outputNnzType.getElementType() != indexType)
+    return emitOpError()
+           << "all row offsets, column indices, and output NNZ must have the "
+              "same element type";
+
+  Type valueType = lhsValuesType.getElementType();
+  if (rhsValuesType.getElementType() != valueType ||
+      outputValuesType.getElementType() != valueType)
+    return emitOpError()
+           << "left, right, and output values must have the same element type";
+
+  if (!areCompatibleStaticDimensions(outputColumnIndicesType.getDimSize(0),
+                                     outputValuesType.getDimSize(0)))
+    return emitOpError()
+           << "output column indices and values must have the same capacity, "
+              "but got "
+           << outputColumnIndicesType.getDimSize(0) << " and "
+           << outputValuesType.getDimSize(0);
+
+  int64_t lhsNnzCapacity = lhsColumnIndicesType.getDimSize(0);
+  int64_t rhsNnzCapacity = rhsColumnIndicesType.getDimSize(0);
+  int64_t outputCapacity = outputColumnIndicesType.getDimSize(0);
+  if (!ShapedType::isDynamic(lhsNnzCapacity) &&
+      !ShapedType::isDynamic(rhsNnzCapacity) &&
+      !ShapedType::isDynamic(outputCapacity)) {
+    int64_t requiredCapacity;
+    if (getKind() == "add") {
+      if (llvm::AddOverflow(lhsNnzCapacity, rhsNnzCapacity, requiredCapacity))
+        return emitOpError()
+               << "input capacities exceed the supported index range";
+    } else {
+      requiredCapacity = std::min(lhsNnzCapacity, rhsNnzCapacity);
+    }
+    if (outputCapacity < requiredCapacity)
+      return emitOpError() << "output capacity for '" << getKind()
+                           << "' must be at least " << requiredCapacity
+                           << ", but got " << outputCapacity;
+  }
+
+  int64_t outputNnzSize = outputNnzType.getDimSize(0);
+  if (!ShapedType::isDynamic(outputNnzSize) && outputNnzSize != 1)
+    return emitOpError() << "output NNZ must contain one element, but got "
+                         << outputNnzSize;
 
   return success();
 }
