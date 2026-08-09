@@ -1,6 +1,8 @@
 #include "sparsewave/Dialect/SparseWave/IR/SparseWaveOps.h"
 
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/Matchers.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
@@ -8,7 +10,41 @@
 using namespace mlir;
 using namespace mlir::sparsewave;
 
+FailureOr<PositionMapping>
+mlir::sparsewave::symbolizePositionMapping(llvm::StringRef value) {
+  std::optional<PositionMapping> mapping =
+      llvm::StringSwitch<std::optional<PositionMapping>>(value)
+          .Case("thread", PositionMapping::Thread)
+          .Case("wave", PositionMapping::Wave)
+          .Case("block", PositionMapping::Block)
+          .Default(std::nullopt);
+  if (!mapping)
+    return failure();
+  return *mapping;
+}
+
+llvm::StringRef
+mlir::sparsewave::stringifyPositionMapping(PositionMapping mapping) {
+  switch (mapping) {
+  case PositionMapping::Thread:
+    return "thread";
+  case PositionMapping::Wave:
+    return "wave";
+  case PositionMapping::Block:
+    return "block";
+  }
+  llvm_unreachable("unknown position mapping");
+}
+
 namespace {
+
+std::optional<int64_t> matchConstantIndex(Value value) {
+  APInt constant;
+  if (!matchPattern(value, m_ConstantInt(&constant)) ||
+      !constant.isSignedIntN(64))
+    return std::nullopt;
+  return constant.getSExtValue();
+}
 
 LogicalResult verifyRank(Operation *op, MemRefType type, int64_t rank,
                          StringRef name) {
@@ -394,6 +430,78 @@ LogicalResult CSRElementwiseOp::verify() {
   if (!ShapedType::isDynamic(outputNnzSize) && outputNnzSize != 1)
     return emitOpError() << "output NNZ must contain one element, but got "
                          << outputNnzSize;
+
+  return success();
+}
+
+LogicalResult PositionSpaceOp::verify() {
+  if (failed(symbolizePositionMapping(getMapping())))
+    return emitOpError()
+           << "mapping must be 'thread', 'wave', or 'block', but got '"
+           << getMapping() << "'";
+
+  std::optional<int64_t> lower = matchConstantIndex(getLower());
+  std::optional<int64_t> upper = matchConstantIndex(getUpper());
+  if (lower && *lower < 0)
+    return emitOpError() << "lower bound must be nonnegative, but got "
+                         << *lower;
+  if (upper && *upper < 0)
+    return emitOpError() << "upper bound must be nonnegative, but got "
+                         << *upper;
+  if (lower && upper && *lower > *upper)
+    return emitOpError() << "lower bound must not exceed upper bound, but got "
+                         << *lower << " and " << *upper;
+
+  std::optional<int64_t> workerCount = matchConstantIndex(getWorkerCount());
+  if (workerCount && *workerCount <= 0)
+    return emitOpError() << "worker count must be positive, but got "
+                         << *workerCount;
+
+  std::optional<int64_t> workerId = matchConstantIndex(getWorkerId());
+  if (workerId && *workerId < 0)
+    return emitOpError() << "worker ID must be nonnegative, but got "
+                         << *workerId;
+  if (workerId && workerCount && *workerCount > 0 && *workerId >= *workerCount)
+    return emitOpError() << "worker ID must be smaller than worker count, but "
+                            "got "
+                         << *workerId << " and " << *workerCount;
+
+  return success();
+}
+
+LogicalResult CSRCoordinatesOp::verify() {
+  MemRefType rowOffsetsType = getRowOffsets().getType();
+  MemRefType columnIndicesType = getColumnIndices().getType();
+
+  if (failed(verifyRank(*this, rowOffsetsType, 1, "row offsets")) ||
+      failed(verifyRank(*this, columnIndicesType, 1, "column indices")))
+    return failure();
+
+  Type indexType = rowOffsetsType.getElementType();
+  if (!indexType.isIntOrIndex())
+    return emitOpError()
+           << "row offsets must have integer or index elements, but got "
+           << indexType;
+  if (columnIndicesType.getElementType() != indexType)
+    return emitOpError()
+           << "row offsets and column indices must have the same element type";
+
+  int64_t rowOffsetsSize = rowOffsetsType.getDimSize(0);
+  if (!ShapedType::isDynamic(rowOffsetsSize) && rowOffsetsSize < 2)
+    return emitOpError()
+           << "row offsets must contain at least two elements, but got "
+           << rowOffsetsSize;
+
+  std::optional<int64_t> position = matchConstantIndex(getPosition());
+  if (position && *position < 0)
+    return emitOpError() << "position must be nonnegative, but got "
+                         << *position;
+  int64_t columnIndicesSize = columnIndicesType.getDimSize(0);
+  if (position && !ShapedType::isDynamic(columnIndicesSize) &&
+      *position >= columnIndicesSize)
+    return emitOpError()
+           << "position must be smaller than the column-indices size, but got "
+           << *position << " and " << columnIndicesSize;
 
   return success();
 }

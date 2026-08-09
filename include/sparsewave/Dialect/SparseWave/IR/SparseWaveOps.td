@@ -264,4 +264,84 @@ def SparseWave_CSRElementwiseOp : SparseWave_Op<"csr_elementwise"> {
   let hasVerifier = 1;
 }
 
+def SparseWave_PositionSpaceOp : SparseWave_Op<"position_space", [Pure]> {
+  let summary = "Partition a linear sparse position space among workers";
+  let description = [{
+    `sparsewave.position_space` represents a one-dimensional half-open range of
+    stored sparse positions and assigns one balanced contiguous partition to a
+    logical worker. The operation returns that worker's `[begin, end)` range.
+
+    `worker_id` is in `[0, worker_count)`. Partitions cover `[lower, upper)`
+    without overlap and differ in size by at most one position. The `mapping`
+    attribute records whether a worker will later map to a GPU thread, wave, or
+    block; this operation does not encode an AMD-specific hardware ID.
+
+    For `span = upper - lower`, `base = span / worker_count`, and
+    `remainder = span % worker_count`, the returned bounds are:
+
+    ```text
+    begin = lower + worker_id * base + min(worker_id, remainder)
+    end = begin + base + (worker_id < remainder ? 1 : 0)
+    ```
+
+    Example:
+
+    ```mlir
+    %begin, %end = sparsewave.position_space %lower to %upper
+        partition %worker_id of %worker_count mapping = "wave" : index
+    ```
+  }];
+
+  let arguments = (ins Index:$lower, Index:$upper, Index:$workerId,
+                       Index:$workerCount, StrAttr:$mapping);
+  let results = (outs Index:$begin, Index:$end);
+
+  let assemblyFormat = [{
+    $lower `to` $upper `partition` $workerId `of` $workerCount
+    `mapping` `=` $mapping attr-dict `:` type($lower)
+  }];
+
+  let extraClassDeclaration = [{
+    FailureOr<PositionMapping> getMappingKind() {
+      return symbolizePositionMapping(getMapping());
+    }
+  }];
+
+  let hasVerifier = 1;
+}
+
+def SparseWave_CSRCoordinatesOp : SparseWave_Op<"csr_coordinates"> {
+  let summary = "Recover CSR coordinates from a stored position";
+  let description = [{
+    `sparsewave.csr_coordinates` maps a stored position in the flattened CSR
+    column/value arrays back to its logical `(row, column)` coordinates. The
+    position must be in the half-open range represented by the CSR storage.
+
+    This operation separates coordinate recovery from an operator such as
+    SpMV or SpMM, allowing position-space schedules to reuse the same CSR
+    traversal mechanism.
+
+    Example:
+
+    ```mlir
+    %row, %column = sparsewave.csr_coordinates
+        %row_offsets, %column_indices at %position
+        : memref<?xi32>, memref<?xi32>
+    ```
+  }];
+
+  let arguments = (ins
+      Arg<AnyMemRef, "CSR row offsets", [MemRead]>:$rowOffsets,
+      Arg<AnyMemRef, "CSR column indices", [MemRead]>:$columnIndices,
+      Index:$position);
+  let results = (outs Index:$row, Index:$column);
+
+  let assemblyFormat = [{
+    $rowOffsets `,` $columnIndices `at` $position attr-dict `:`
+    type($rowOffsets) `,` type($columnIndices)
+  }];
+
+  let hasVerifier = 1;
+}
+
 #endif // SPARSEWAVE_DIALECT_SPARSEWAVE_IR_SPARSEWAVEOPS_TD
