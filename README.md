@@ -14,12 +14,15 @@ row count, and nonzero count whenever those properties are statically known.
 
 The `convert-sparsewave-to-gpu` pass maps `sparsewave.spmv` to a
 one-dimensional `gpu.launch`. The `mapping` option accepts `thread-per-row`,
-`wave-per-row`, and `block-per-row`. Wave-per-row assigns one Wave32 to each
-CSR row and reduces lane partial sums with shuffle instructions. Block-per-row
-assigns an entire block to each row, reduces within each wave, then combines
-the wave sums through workgroup memory and a barrier. The `block-size` option
-controls the number of threads per block, defaults to 256, and must be between
-1 and 1024.
+`thread-per-position`, `wave-per-row`, and `block-per-row`.
+Thread-per-position partitions the flattened CSR nonzero positions across GPU
+threads, recovers each position's row and column, and atomically accumulates
+the output. It is the correctness baseline for position-space scheduling.
+Wave-per-row assigns one Wave32 to each CSR row and reduces lane partial sums
+with shuffle instructions. Block-per-row assigns an entire block to each row,
+reduces within each wave, then combines the wave sums through workgroup memory
+and a barrier. The `block-size` option controls the number of threads per
+block, defaults to 256, and must be between 1 and 1024.
 
 The same pass maps `sparsewave.spmm` with an independent strategy and block
 size. `thread-per-output` assigns one GPU thread to each dense output element.

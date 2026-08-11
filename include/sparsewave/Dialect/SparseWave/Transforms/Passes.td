@@ -80,8 +80,10 @@ def ConvertSparseWaveToGPU
     sparsewave.bsr_spmm, sparsewave.sddmm, and
     sparsewave.csr_elementwise to one-dimensional GPU launches.
     CSR SpMV can assign one GPU thread, one GPU wave, or one GPU block to each
-    matrix row. COO SpMV assigns one thread to each nonzero and atomically
-    accumulates the output. CSR SpMM can assign one GPU thread to each dense
+    matrix row. It can also partition the stored-position space across threads,
+    recover CSR coordinates, and atomically accumulate the output. COO SpMV
+    assigns one thread to each nonzero and atomically accumulates the output.
+    CSR SpMM can assign one GPU thread to each dense
     output element or one GPU wave to a CSR row and a tile of dense output
     columns. BSR SpMM initially assigns one GPU thread to each dense output
     element. SDDMM assigns one thread to each CSR row and computes the sampled
@@ -118,7 +120,8 @@ def ConvertSparseWaveToGPU
     "arith::ArithDialect",
     "gpu::GPUDialect",
     "memref::MemRefDialect",
-    "scf::SCFDialect"
+    "scf::SCFDialect",
+    "sparsewave::SparseWaveDialect"
   ];
 }
 

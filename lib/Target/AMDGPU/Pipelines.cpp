@@ -244,6 +244,10 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   sparseWaveOptions.sddmmBlockSize = options.sddmmBlockSize;
   sparseWaveOptions.elementwiseBlockSize = options.elementwiseBlockSize;
   pm.addPass(createConvertSparseWaveToGPU(sparseWaveOptions));
+
+  // Materialize target-independent sparse position partitions and coordinate
+  // recovery after GPU worker identities have been assigned.
+  pm.addPass(createLowerSparseWavePositionSpace());
   pm.addPass(createGpuKernelOutliningPass());
   buildAMDGPUBackendPipeline(pm, options);
 }

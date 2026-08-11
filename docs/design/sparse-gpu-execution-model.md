@@ -187,6 +187,7 @@ The current mappings can be described by composing the components:
 | Kernel | Work unit | Distribution | Traversal | Accumulator | Reduction |
 | --- | --- | --- | --- | --- | --- |
 | SpMV thread-per-row | CSR row | one thread | sequential positions | scalar | sequential |
+| SpMV thread-per-position | stored CSR position | one thread | position-space partition + coordinate recovery | scalar product | atomic add |
 | SpMV wave-per-row | CSR row | one wave | lane-strided positions | scalar | wave shuffle |
 | SpMV block-per-row | CSR row | one block | thread-strided positions | scalar | wave shuffle + LDS |
 | SpMM thread-per-output | output element | one thread | sequential row positions | scalar | sequential |

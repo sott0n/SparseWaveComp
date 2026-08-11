@@ -55,6 +55,22 @@ class SpMVBenchmarkTest(unittest.TestCase):
                     text=True,
                 )
 
+    def test_position_mapping_selects_compute_kernel(self):
+        self.assertEqual(
+            BENCHMARK.sparsewave_kernel_layout("csr", "thread-per-row"),
+            (1, 0),
+        )
+        self.assertEqual(
+            BENCHMARK.sparsewave_kernel_layout(
+                "csr", "thread-per-position"
+            ),
+            (2, 1),
+        )
+        self.assertEqual(
+            BENCHMARK.sparsewave_kernel_layout("coo", "thread-per-nonzero"),
+            (2, 1),
+        )
+
     def test_rendered_synthetic_coo_input_lowers(self):
         template = SCRIPT.parent / "spmv.mlir.in"
         rendered = BENCHMARK.render_mlir(

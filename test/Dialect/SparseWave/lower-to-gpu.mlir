@@ -8,6 +8,12 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --convert-sparsewave-to-gpu='mapping=block-per-row block-size=128 wave-size=32' \
 // RUN:   | FileCheck %s --check-prefix=BLOCK
+// RUN: sparsewave-opt %s \
+// RUN:   --convert-sparsewave-to-gpu='mapping=thread-per-position block-size=128' \
+// RUN:   | FileCheck %s --check-prefix=POS
+// RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(convert-sparsewave-to-gpu{mapping=thread-per-position block-size=128},lower-sparsewave-position-space)' \
+// RUN:   | FileCheck %s --check-prefix=POS-LOWER
 
 // CHECK-LABEL: func.func @spmv(
 // CHECK: %[[ZERO:.*]] = arith.constant 0.000000e+00 : f32
@@ -99,6 +105,35 @@
 // BLOCK-COUNT-5: gpu.shuffle xor
 // BLOCK: memref.store %{{.*}}, %{{.*}}[%[[ROW]]]
 // BLOCK-NOT: sparsewave.spmv
+
+// POS-LABEL: func.func @spmv(
+// POS: %[[ZERO:.*]] = arith.constant 0 : index
+// POS: %[[ONE:.*]] = arith.constant 1 : index
+// POS: %[[BLOCK_SIZE:.*]] = arith.constant 128 : index
+// POS: %[[OUTPUT_SIZE:.*]] = memref.dim %{{.*}}, %[[ZERO]]
+// POS-NEXT: %[[NNZ:.*]] = memref.dim %{{.*}}, %[[ZERO]]
+// POS: gpu.launch
+// POS: memref.store
+// POS: gpu.terminator
+// POS: gpu.launch
+// POS: %[[WORKER_BASE:.*]] = arith.muli %{{.*}}, %{{.*}}
+// POS-NEXT: %[[WORKER:.*]] = arith.addi %[[WORKER_BASE]], %{{.*}}
+// POS: %[[WORKER_COUNT:.*]] = arith.muli %{{.*}}, %{{.*}}
+// POS: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space %[[ZERO]] to %[[NNZ]] partition %[[WORKER]] of %[[WORKER_COUNT]] mapping = "thread"
+// POS: scf.for %[[POSITION_VALUE:.*]] = %[[BEGIN]] to %[[END]] step %[[ONE]]
+// POS: %[[ROW:.*]], %[[COLUMN:.*]] = sparsewave.csr_coordinates %{{.*}}, %{{.*}} at %[[POSITION_VALUE]]
+// POS: %[[SPARSE_VALUE:.*]] = memref.load %{{.*}}[%[[POSITION_VALUE]]]
+// POS: %[[VECTOR_VALUE:.*]] = memref.load %{{.*}}[%[[COLUMN]]]
+// POS: %[[PRODUCT:.*]] = arith.mulf %[[SPARSE_VALUE]], %[[VECTOR_VALUE]]
+// POS: memref.atomic_rmw addf %[[PRODUCT]], %{{.*}}[%[[ROW]]
+// POS-NOT: sparsewave.spmv
+
+// POS-LOWER-LABEL: func.func @spmv(
+// POS-LOWER-NOT: sparsewave.position_space
+// POS-LOWER-NOT: sparsewave.csr_coordinates
+// POS-LOWER: scf.while
+// POS-LOWER: memref.atomic_rmw addf
+// POS-LOWER-NOT: sparsewave.spmv
 
 func.func @spmv(
     %rowOffsets: memref<?xi32>,

@@ -9,7 +9,12 @@ import time
 
 import benchmark_utils as common
 
-MAPPINGS = ("thread-per-row", "wave-per-row", "block-per-row")
+MAPPINGS = (
+    "thread-per-row",
+    "thread-per-position",
+    "wave-per-row",
+    "block-per-row",
+)
 FORMATS = ("csr", "coo")
 FORMAT_MAPPINGS = {
     "csr": MAPPINGS,
@@ -126,6 +131,12 @@ read_matrix_market = common.read_matrix_market
 write_csr_binary = common.write_csr_binary
 write_coo_binary = common.write_coo_binary
 parse_kernel_trace = common.parse_kernel_trace
+
+
+def sparsewave_kernel_layout(sparse_format, mapping):
+    if sparse_format == "coo" or mapping == "thread-per-position":
+        return 2, 1
+    return 1, 0
 
 
 def parse_distributions(value):
@@ -637,6 +648,9 @@ def main(argv=None):
                 )
                 for block_size in args.block_sizes:
                     for mapping in FORMAT_MAPPINGS[sparse_format]:
+                        kernels_per_dispatch, compute_binary_index = (
+                            sparsewave_kernel_layout(sparse_format, mapping)
+                        )
                         case_directory = (
                             workspace.artifact_root
                             / workload["key"]
@@ -658,9 +672,7 @@ def main(argv=None):
                                 block_size,
                                 sparse_binaries.get(sparse_format),
                                 sparse_format=sparse_format,
-                                kernels_per_dispatch=(
-                                    1 if sparse_format == "csr" else 2
-                                ),
+                                kernels_per_dispatch=kernels_per_dispatch,
                             )
                         )
                         resources, resource_command = (
@@ -671,9 +683,7 @@ def main(argv=None):
                                 "spmv_kernel",
                                 args.wave_size,
                                 block_size,
-                                binary_index=(
-                                    0 if sparse_format == "csr" else 1
-                                ),
+                                binary_index=compute_binary_index,
                             )
                         )
                         results.append(

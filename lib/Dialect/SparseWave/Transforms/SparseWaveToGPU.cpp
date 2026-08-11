@@ -29,6 +29,25 @@ Value castIndexToType(OpBuilder &builder, Location loc, Value value,
   return arith::IndexCastOp::create(builder, loc, targetType, value);
 }
 
+gpu::LaunchOp buildOutputInitialization(PatternRewriter &rewriter, Location loc,
+                                        Value output, Value outputSize,
+                                        Value zero, Value oneIndex,
+                                        Value blockSize) {
+  LinearThreadWorkDistribution initialization =
+      buildLinearThreadWorkDistribution(rewriter, loc, outputSize, oneIndex,
+                                        blockSize);
+  scf::IfOp::create(rewriter, loc, initialization.workUnitIsActive,
+                    [&](OpBuilder &builder, Location bodyLoc) {
+                      memref::StoreOp::create(builder, bodyLoc, zero, output,
+                                              initialization.workUnit);
+                      scf::YieldOp::create(builder, bodyLoc);
+                    },
+                    {});
+  rewriter.setInsertionPointToEnd(&initialization.launch.getBody().front());
+  gpu::TerminatorOp::create(rewriter, loc);
+  return initialization.launch;
+}
+
 class ThreadPerNonzeroCOOSpMVPattern : public OpRewritePattern<COOSpMVOp> {
 public:
   ThreadPerNonzeroCOOSpMVPattern(MLIRContext *context, int64_t blockSize)
@@ -50,21 +69,11 @@ public:
     Value zero = arith::ConstantOp::create(rewriter, loc,
                                            rewriter.getZeroAttr(valueType));
 
-    LinearThreadWorkDistribution initialization =
-        buildLinearThreadWorkDistribution(rewriter, loc, outputSize, oneIndex,
-                                          blockSizeValue);
-    scf::IfOp::create(rewriter, loc, initialization.workUnitIsActive,
-                      [&](OpBuilder &builder, Location bodyLoc) {
-                        memref::StoreOp::create(builder, bodyLoc, zero,
-                                                op.getOutput(),
-                                                initialization.workUnit);
-                        scf::YieldOp::create(builder, bodyLoc);
-                      },
-                      {});
-    rewriter.setInsertionPointToEnd(&initialization.launch.getBody().front());
-    gpu::TerminatorOp::create(rewriter, loc);
+    gpu::LaunchOp initialization =
+        buildOutputInitialization(rewriter, loc, op.getOutput(), outputSize,
+                                  zero, oneIndex, blockSizeValue);
 
-    rewriter.setInsertionPointAfter(initialization.launch);
+    rewriter.setInsertionPointAfter(initialization);
     LinearThreadWorkDistribution distribution =
         buildLinearThreadWorkDistribution(rewriter, loc, nonzeroCount, oneIndex,
                                           blockSizeValue);
@@ -90,6 +99,71 @@ public:
           scf::YieldOp::create(builder, bodyLoc);
         },
         {});
+
+    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
+    gpu::TerminatorOp::create(rewriter, loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  int64_t blockSize;
+};
+
+class ThreadPerPositionCSRSpMVPattern : public OpRewritePattern<SpMVOp> {
+public:
+  ThreadPerPositionCSRSpMVPattern(MLIRContext *context, int64_t blockSize)
+      : OpRewritePattern<SpMVOp>(context), blockSize(blockSize) {}
+
+  LogicalResult matchAndRewrite(SpMVOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value blockSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, blockSize);
+    Value outputSize =
+        memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
+    Value nonzeroCount =
+        memref::DimOp::create(rewriter, loc, op.getValues(), zeroIndex);
+    auto valueType =
+        cast<MemRefType>(op.getValues().getType()).getElementType();
+    Value zero = arith::ConstantOp::create(rewriter, loc,
+                                           rewriter.getZeroAttr(valueType));
+
+    gpu::LaunchOp initialization =
+        buildOutputInitialization(rewriter, loc, op.getOutput(), outputSize,
+                                  zero, oneIndex, blockSizeValue);
+
+    rewriter.setInsertionPointAfter(initialization);
+    LinearThreadWorkDistribution distribution =
+        buildLinearThreadWorkDistribution(rewriter, loc, nonzeroCount, oneIndex,
+                                          blockSizeValue);
+    Value workerCount = arith::MulIOp::create(
+        rewriter, loc, distribution.launch.getGridSize().x,
+        distribution.launch.getBlockSize().x);
+    auto partition = PositionSpaceOp::create(
+        rewriter, loc, rewriter.getIndexType(), rewriter.getIndexType(),
+        zeroIndex, nonzeroCount, distribution.workUnit, workerCount, "thread");
+
+    scf::ForOp::create(
+        rewriter, loc, partition.getBegin(), partition.getEnd(), oneIndex,
+        ValueRange{},
+        [&](OpBuilder &builder, Location bodyLoc, Value position, ValueRange) {
+          auto coordinates = CSRCoordinatesOp::create(
+              builder, bodyLoc, builder.getIndexType(), builder.getIndexType(),
+              op.getRowOffsets(), op.getColumnIndices(), position);
+          Value sparseValue = memref::LoadOp::create(builder, bodyLoc,
+                                                     op.getValues(), position);
+          Value vectorValue = memref::LoadOp::create(
+              builder, bodyLoc, op.getVector(), coordinates.getColumn());
+          Value product =
+              arith::MulFOp::create(builder, bodyLoc, sparseValue, vectorValue);
+          memref::AtomicRMWOp::create(
+              builder, bodyLoc, arith::AtomicRMWKind::addf, product,
+              op.getOutput(), ValueRange{coordinates.getRow()});
+          scf::YieldOp::create(builder, bodyLoc);
+        });
 
     rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
     gpu::TerminatorOp::create(rewriter, loc);
@@ -1013,12 +1087,12 @@ public:
       ConvertSparseWaveToGPU>::ConvertSparseWaveToGPUBase;
 
   void runOnOperation() override {
-    if (mapping != "thread-per-row" && mapping != "wave-per-row" &&
-        mapping != "block-per-row") {
+    if (mapping != "thread-per-row" && mapping != "thread-per-position" &&
+        mapping != "wave-per-row" && mapping != "block-per-row") {
       getOperation().emitError()
           << "unsupported SpMV mapping strategy '" << mapping
-          << "'; expected 'thread-per-row', 'wave-per-row', or "
-             "'block-per-row'";
+          << "'; expected 'thread-per-row', 'thread-per-position', "
+             "'wave-per-row', or 'block-per-row'";
       signalPassFailure();
       return;
     }
@@ -1080,14 +1154,16 @@ public:
       signalPassFailure();
       return;
     }
-    if (mapping != "thread-per-row" && waveSize != 32) {
+    bool usesWaveCooperation =
+        mapping == "wave-per-row" || mapping == "block-per-row";
+    if (usesWaveCooperation && waveSize != 32) {
       getOperation().emitError()
           << mapping << " currently requires Wave32, but got wave size "
           << waveSize.getValue();
       signalPassFailure();
       return;
     }
-    if (mapping != "thread-per-row" && blockSize % waveSize != 0) {
+    if (usesWaveCooperation && blockSize % waveSize != 0) {
       getOperation().emitError()
           << mapping << " requires the SpMV block size to be a multiple of "
           << waveSize.getValue() << ", but got " << blockSize.getValue();
@@ -1108,6 +1184,8 @@ public:
                                               waveSize, spmmTileSize);
     if (mapping == "thread-per-row")
       patterns.add<ThreadPerRowSpMVPattern>(&getContext(), blockSize);
+    else if (mapping == "thread-per-position")
+      patterns.add<ThreadPerPositionCSRSpMVPattern>(&getContext(), blockSize);
     else if (mapping == "wave-per-row")
       patterns.add<WavePerRowSpMVPattern>(&getContext(), blockSize, waveSize);
     else

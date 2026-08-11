@@ -7,6 +7,13 @@
 // RUN:     --entry-point-result=void \
 // RUN:   | FileCheck %s
 // RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmv-mapping=thread-per-position spmv-block-size=128})' \
+// RUN:   | mlir-runner \
+// RUN:     --shared-libs=%mlir_rocm_runtime \
+// RUN:     --shared-libs=%mlir_runner_utils \
+// RUN:     --entry-point-result=void \
+// RUN:   | FileCheck %s
+// RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmv-mapping=wave-per-row spmv-block-size=128})' \
 // RUN:   | mlir-runner \
 // RUN:     --shared-libs=%mlir_rocm_runtime \
@@ -35,11 +42,12 @@ func.func @spmv(
 
 // Matrix:
 // [1 0 2 0]
+// [0 0 0 0]
 // [0 3 0 0]
 // [4 0 0 5]
 // [0 0 6 0]
 //
-// CHECK: [70, 60, 240, 180]
+// CHECK: [70, 0, 60, 240, 180]
 func.func @main() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -66,12 +74,13 @@ func.func @main() {
   %f30 = arith.constant 30.0 : f32
   %f40 = arith.constant 40.0 : f32
 
-  %rowOffsets = memref.alloc() : memref<5xi32>
-  memref.store %i0, %rowOffsets[%c0] : memref<5xi32>
-  memref.store %i2, %rowOffsets[%c1] : memref<5xi32>
-  memref.store %i3, %rowOffsets[%c2] : memref<5xi32>
-  memref.store %i5, %rowOffsets[%c3] : memref<5xi32>
-  memref.store %i6, %rowOffsets[%c4] : memref<5xi32>
+  %rowOffsets = memref.alloc() : memref<6xi32>
+  memref.store %i0, %rowOffsets[%c0] : memref<6xi32>
+  memref.store %i2, %rowOffsets[%c1] : memref<6xi32>
+  memref.store %i2, %rowOffsets[%c2] : memref<6xi32>
+  memref.store %i3, %rowOffsets[%c3] : memref<6xi32>
+  memref.store %i5, %rowOffsets[%c4] : memref<6xi32>
+  memref.store %i6, %rowOffsets[%c5] : memref<6xi32>
 
   %columnIndices = memref.alloc() : memref<6xi32>
   memref.store %i0, %columnIndices[%c0] : memref<6xi32>
@@ -95,15 +104,15 @@ func.func @main() {
   memref.store %f30, %vector[%c2] : memref<4xf32>
   memref.store %f40, %vector[%c3] : memref<4xf32>
 
-  %output = memref.alloc() : memref<4xf32>
+  %output = memref.alloc() : memref<5xf32>
 
   %rowOffsetsDynamic =
-      memref.cast %rowOffsets : memref<5xi32> to memref<?xi32>
+      memref.cast %rowOffsets : memref<6xi32> to memref<?xi32>
   %columnIndicesDynamic =
       memref.cast %columnIndices : memref<6xi32> to memref<?xi32>
   %valuesDynamic = memref.cast %values : memref<6xf32> to memref<?xf32>
   %vectorDynamic = memref.cast %vector : memref<4xf32> to memref<?xf32>
-  %outputDynamic = memref.cast %output : memref<4xf32> to memref<?xf32>
+  %outputDynamic = memref.cast %output : memref<5xf32> to memref<?xf32>
 
   %rowOffsetsUnranked =
       memref.cast %rowOffsetsDynamic : memref<?xi32> to memref<*xi32>
