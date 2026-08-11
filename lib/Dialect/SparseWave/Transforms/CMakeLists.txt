@@ -1,5 +1,7 @@
 add_mlir_library(SparseWaveTransforms
   LinalgSparseToSparseWave.cpp
+  SparseLoweringUtils.cpp
+  SparsePositionToSCF.cpp
   SparseGPUUtils.cpp
   SparseWaveToGPU.cpp
 

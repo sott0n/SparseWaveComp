@@ -1,6 +1,8 @@
 #ifndef SPARSEWAVE_LIB_DIALECT_SPARSEWAVE_TRANSFORMS_SPARSEGPUUTILS_H
 #define SPARSEWAVE_LIB_DIALECT_SPARSEWAVE_TRANSFORMS_SPARSEGPUUTILS_H
 
+#include "SparseLoweringUtils.h"
+
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
@@ -61,8 +63,6 @@ using CSRPositionBodyBuilder = llvm::function_ref<SmallVector<Value>(
 
 using CSRCoiterationBodyBuilder = llvm::function_ref<SmallVector<Value>(
     OpBuilder &, Location, CSRCoiterationEntry, ValueRange)>;
-
-Value castToIndex(OpBuilder &builder, Location loc, Value value);
 
 LinearThreadWorkDistribution
 buildLinearThreadWorkDistribution(PatternRewriter &rewriter, Location loc,

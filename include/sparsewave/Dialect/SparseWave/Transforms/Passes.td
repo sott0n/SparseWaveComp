@@ -55,6 +55,23 @@ def ConvertLinalgSDDMMToSparseWave
   ];
 }
 
+def LowerSparseWavePositionSpace
+    : Pass<"lower-sparsewave-position-space", "::mlir::ModuleOp"> {
+  let summary = "Lower sparse position-space primitives to structured control flow";
+  let description = [{
+    Lowers sparsewave.position_space to integer arithmetic implementing a
+    balanced contiguous partition. Lowers sparsewave.csr_coordinates to an
+    upper-bound binary search over CSR row offsets and a column-index load.
+    The resulting IR is target-independent and uses only Arith, MemRef, and
+    SCF operations.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect"
+  ];
+}
+
 def ConvertSparseWaveToGPU
     : Pass<"convert-sparsewave-to-gpu", "::mlir::ModuleOp"> {
   let summary = "Map SparseWave operations to GPU launches";
