@@ -80,8 +80,10 @@ def ConvertSparseWaveToGPU
     sparsewave.bsr_spmm, sparsewave.sddmm, and
     sparsewave.csr_elementwise to one-dimensional GPU launches.
     CSR SpMV can assign one GPU thread, one GPU wave, or one GPU block to each
-    matrix row. It can also partition the stored-position space across threads,
-    recover CSR coordinates, and atomically accumulate the output. COO SpMV
+    matrix row. It can also partition the stored-position space across threads
+    or waves, recover CSR coordinates, and atomically accumulate the output.
+    The wave position mapping uses a segmented scan to combine products from
+    the same row before the atomic update. COO SpMV
     assigns one thread to each nonzero and atomically accumulates the output.
     CSR SpMM can assign one GPU thread to each dense
     output element or one GPU wave to a CSR row and a tile of dense output

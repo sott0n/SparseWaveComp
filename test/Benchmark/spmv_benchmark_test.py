@@ -67,6 +67,10 @@ class SpMVBenchmarkTest(unittest.TestCase):
             (2, 1),
         )
         self.assertEqual(
+            BENCHMARK.sparsewave_kernel_layout("csr", "wave-per-position"),
+            (2, 1),
+        )
+        self.assertEqual(
             BENCHMARK.sparsewave_kernel_layout("coo", "thread-per-nonzero"),
             (2, 1),
         )

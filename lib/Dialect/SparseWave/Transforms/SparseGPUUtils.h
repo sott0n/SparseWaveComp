@@ -45,6 +45,11 @@ struct CSRPosition {
   Value value;
 };
 
+struct WaveSegmentedReduction {
+  Value inclusiveValue;
+  Value segmentEnd;
+};
+
 enum class CSRCoiterationKind {
   Union,
   Intersection,
@@ -98,6 +103,11 @@ buildCSRCoiteration(OpBuilder &builder, Location loc, Value lhsColumnIndices,
 
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
                          int64_t waveSize);
+
+WaveSegmentedReduction buildWaveSegmentedReduction(OpBuilder &builder,
+                                                   Location loc, Value key,
+                                                   Value value, Value active,
+                                                   int64_t waveSize);
 
 SmallVector<Value> buildWaveReductions(OpBuilder &builder, Location loc,
                                        ValueRange values, int64_t waveSize);

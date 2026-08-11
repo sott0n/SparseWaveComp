@@ -228,6 +228,58 @@ Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
   return value;
 }
 
+WaveSegmentedReduction buildWaveSegmentedReduction(OpBuilder &builder,
+                                                   Location loc, Value key,
+                                                   Value value, Value active,
+                                                   int64_t waveSize) {
+  Value activeI32 =
+      arith::ExtUIOp::create(builder, loc, builder.getI32Type(), active);
+  Value zeroI32 = arith::ConstantIntOp::create(builder, loc, 0, 32);
+  Value trueValue = arith::ConstantIntOp::create(builder, loc, 1, 1);
+
+  for (int32_t offset = 1; offset < waveSize; offset <<= 1) {
+    auto shuffledKey = gpu::ShuffleOp::create(builder, loc, key, offset,
+                                              waveSize, gpu::ShuffleMode::UP);
+    auto shuffledValue = gpu::ShuffleOp::create(builder, loc, value, offset,
+                                                waveSize, gpu::ShuffleMode::UP);
+    auto shuffledActive = gpu::ShuffleOp::create(
+        builder, loc, activeI32, offset, waveSize, gpu::ShuffleMode::UP);
+    Value sourceIsActive =
+        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne,
+                              shuffledActive.getShuffleResult(), zeroI32);
+    Value sameSegment =
+        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq, key,
+                              shuffledKey.getShuffleResult());
+    Value combine = arith::AndIOp::create(
+        builder, loc, active,
+        arith::AndIOp::create(
+            builder, loc, shuffledKey.getValid(),
+            arith::AndIOp::create(builder, loc, sourceIsActive, sameSegment)));
+    Value accumulated = arith::AddFOp::create(builder, loc, value,
+                                              shuffledValue.getShuffleResult());
+    value = arith::SelectOp::create(builder, loc, combine, accumulated, value);
+  }
+
+  auto nextKey = gpu::ShuffleOp::create(builder, loc, key, 1, waveSize,
+                                        gpu::ShuffleMode::DOWN);
+  auto nextActive = gpu::ShuffleOp::create(builder, loc, activeI32, 1, waveSize,
+                                           gpu::ShuffleMode::DOWN);
+  Value nextLaneIsActive =
+      arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne,
+                            nextActive.getShuffleResult(), zeroI32);
+  Value nextIsSameSegment = arith::AndIOp::create(
+      builder, loc, nextKey.getValid(),
+      arith::AndIOp::create(builder, loc, nextLaneIsActive,
+                            arith::CmpIOp::create(builder, loc,
+                                                  arith::CmpIPredicate::eq, key,
+                                                  nextKey.getShuffleResult())));
+  Value nextIsDifferent =
+      arith::XOrIOp::create(builder, loc, nextIsSameSegment, trueValue);
+  Value segmentEnd =
+      arith::AndIOp::create(builder, loc, active, nextIsDifferent);
+  return {value, segmentEnd};
+}
+
 SmallVector<Value> buildWaveReductions(OpBuilder &builder, Location loc,
                                        ValueRange values, int64_t waveSize) {
   SmallVector<Value> reducedValues;

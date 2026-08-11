@@ -14,10 +14,14 @@ row count, and nonzero count whenever those properties are statically known.
 
 The `convert-sparsewave-to-gpu` pass maps `sparsewave.spmv` to a
 one-dimensional `gpu.launch`. The `mapping` option accepts `thread-per-row`,
-`thread-per-position`, `wave-per-row`, and `block-per-row`.
+`thread-per-position`, `wave-per-position`, `wave-per-row`, and
+`block-per-row`.
 Thread-per-position partitions the flattened CSR nonzero positions across GPU
 threads, recovers each position's row and column, and atomically accumulates
 the output. It is the correctness baseline for position-space scheduling.
+Wave-per-position assigns contiguous position ranges to waves, uses a
+segmented scan to combine products from the same row, and performs one atomic
+update per row segment instead of per nonzero.
 Wave-per-row assigns one Wave32 to each CSR row and reduces lane partial sums
 with shuffle instructions. Block-per-row assigns an entire block to each row,
 reduces within each wave, then combines the wave sums through workgroup memory
@@ -37,7 +41,8 @@ sparsewave-opt input.mlir \
   --convert-sparsewave-to-gpu='mapping=thread-per-row block-size=128'
 ```
 
-For wave-per-row and block-per-row, the block size must be a multiple of 32:
+For wave-per-position, wave-per-row, and block-per-row, the block size must be
+a multiple of 32:
 
 ```sh
 sparsewave-opt input.mlir \

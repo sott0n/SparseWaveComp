@@ -12,6 +12,7 @@ import benchmark_utils as common
 MAPPINGS = (
     "thread-per-row",
     "thread-per-position",
+    "wave-per-position",
     "wave-per-row",
     "block-per-row",
 )
@@ -134,7 +135,10 @@ parse_kernel_trace = common.parse_kernel_trace
 
 
 def sparsewave_kernel_layout(sparse_format, mapping):
-    if sparse_format == "coo" or mapping == "thread-per-position":
+    if sparse_format == "coo" or mapping in (
+        "thread-per-position",
+        "wave-per-position",
+    ):
         return 2, 1
     return 1, 0
 
@@ -517,8 +521,8 @@ def validate_paths(args):
         validate_distribution_rows(args.rows, args.distributions)
     if args.wave_size != 32:
         raise ValueError(
-            "wave-per-row and block-per-row benchmarking currently require "
-            "Wave32"
+            "wave-per-position, wave-per-row, and block-per-row benchmarking "
+            "currently require Wave32"
         )
     common.validate_block_sizes(args, require_wave_multiple=True)
     maximum_i32 = (1 << 31) - 1

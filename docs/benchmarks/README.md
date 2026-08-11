@@ -11,7 +11,7 @@ be included as CSR baselines.
 
 | Runner | Format | Format selection and parameters | GPU mappings |
 | --- | --- | --- | --- |
-| SpMV | CSR | `--formats=csr` | `thread-per-row`, `thread-per-position`, `wave-per-row`, `block-per-row` |
+| SpMV | CSR | `--formats=csr` | `thread-per-row`, `thread-per-position`, `wave-per-position`, `wave-per-row`, `block-per-row` |
 | SpMV | COO | `--formats=coo` | `thread-per-nonzero` |
 | SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths | `thread-per-output`, `wave-per-row-tile` |
 | SpMM | BSR | `--formats=bsr`; `--bsr-block-sizes` selects square storage block sizes | `thread-per-output` |

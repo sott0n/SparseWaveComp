@@ -10,6 +10,9 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=64 binary-format=none spmv-mapping=thread-per-position spmv-block-size=128})' \
 // RUN:   | FileCheck %s --check-prefix=POSITION
+// RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=32 binary-format=none spmv-mapping=wave-per-position spmv-block-size=128})' \
+// RUN:   | FileCheck %s --check-prefix=SEGMENT
 
 // CHECK-NOT: sparsewave.spmv
 // CHECK-LABEL: func.func @spmv(
@@ -48,6 +51,15 @@
 // POSITION-SAME: rocdl.kernel
 // POSITION: llvm.atomicrmw fadd
 // POSITION-NOT: scf.
+// SEGMENT-NOT: sparsewave.
+// SEGMENT-LABEL: gpu.module @spmv_kernel
+// SEGMENT-SAME: [#rocdl.target<chip = "gfx942"
+// SEGMENT-SAME: flags = {no_wave64}
+// SEGMENT: llvm.func @spmv_kernel(
+// SEGMENT-SAME: rocdl.kernel
+// SEGMENT: rocdl.ds_bpermute
+// SEGMENT: llvm.atomicrmw fadd
+// SEGMENT-NOT: scf.
 func.func @spmv(
     %rowOffsets: memref<?xi32>,
     %columnIndices: memref<?xi32>,

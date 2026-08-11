@@ -14,6 +14,9 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(convert-sparsewave-to-gpu{mapping=thread-per-position block-size=128},lower-sparsewave-position-space)' \
 // RUN:   | FileCheck %s --check-prefix=POS-LOWER
+// RUN: sparsewave-opt %s \
+// RUN:   --convert-sparsewave-to-gpu='mapping=wave-per-position block-size=128 wave-size=32' \
+// RUN:   | FileCheck %s --check-prefix=SEGMENT
 
 // CHECK-LABEL: func.func @spmv(
 // CHECK: %[[ZERO:.*]] = arith.constant 0.000000e+00 : f32
@@ -134,6 +137,32 @@
 // POS-LOWER: scf.while
 // POS-LOWER: memref.atomic_rmw addf
 // POS-LOWER-NOT: sparsewave.spmv
+
+// SEGMENT-LABEL: func.func @spmv(
+// SEGMENT: %[[ZERO:.*]] = arith.constant 0 : index
+// SEGMENT: %[[ONE:.*]] = arith.constant 1 : index
+// SEGMENT: %[[BLOCK_SIZE:.*]] = arith.constant 128 : index
+// SEGMENT: %[[WAVE_SIZE:.*]] = arith.constant 32 : index
+// SEGMENT: %[[WAVES_PER_BLOCK:.*]] = arith.constant 4 : index
+// SEGMENT: %[[OUTPUT_SIZE:.*]] = memref.dim %{{.*}}, %[[ZERO]]
+// SEGMENT-NEXT: %[[NNZ:.*]] = memref.dim %{{.*}}, %[[ZERO]]
+// SEGMENT: gpu.launch
+// SEGMENT: gpu.terminator
+// SEGMENT: gpu.launch
+// SEGMENT: %[[WAVE_IN_BLOCK:.*]] = arith.divui %{{.*}}, %[[WAVE_SIZE]]
+// SEGMENT: %[[LANE:.*]] = arith.remui %{{.*}}, %[[WAVE_SIZE]]
+// SEGMENT: %[[WAVE_BASE:.*]] = arith.muli %{{.*}}, %[[WAVES_PER_BLOCK]]
+// SEGMENT: %[[POSITION_WORKER:.*]] = arith.addi %[[WAVE_BASE]], %[[WAVE_IN_BLOCK]]
+// SEGMENT: %[[WAVE_COUNT:.*]] = arith.muli %{{.*}}, %[[WAVES_PER_BLOCK]]
+// SEGMENT: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space %[[ZERO]] to %[[NNZ]] partition %[[POSITION_WORKER]] of %[[WAVE_COUNT]] mapping = "wave"
+// SEGMENT: %[[POSITION:.*]] = arith.addi %[[BEGIN]], %[[LANE]]
+// SEGMENT: %[[ACTIVE:.*]] = arith.cmpi ult, %[[POSITION]], %[[END]]
+// SEGMENT: scf.if %[[ACTIVE]] -> (index, f32)
+// SEGMENT: sparsewave.csr_coordinates
+// SEGMENT-COUNT-15: gpu.shuffle up
+// SEGMENT-COUNT-2: gpu.shuffle down
+// SEGMENT: memref.atomic_rmw addf
+// SEGMENT-NOT: sparsewave.spmv
 
 func.func @spmv(
     %rowOffsets: memref<?xi32>,
