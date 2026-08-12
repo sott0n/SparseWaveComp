@@ -57,6 +57,9 @@ environment, reproduction commands, performance data, and interpretation:
 - [gfx1101 SpMV mapping sweep](spmv-mapping-sweep-gfx1101.md) compares
   thread-, wave-, and block-per-row mappings across SuiteSparse and controlled
   synthetic inputs.
+- [gfx1101 SpMV position-mapping study](spmv-position-mapping-gfx1101.md)
+  evaluates thread- and wave-per-position mappings, including segmented
+  reduction costs and comparisons with row mappings and rocSPARSE.
 - [gfx1101 SpMM tile-size sweep](spmm-tile-size-sweep-gfx1101.md) compares
   thread-per-output and wave-per-row-tile mappings across RHS widths and tile
   sizes.
