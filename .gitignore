@@ -1,5 +1,6 @@
 /build/
 /.cache/
 .venv/
+*.egg-info/
 __pycache__/
 compile_commands.json

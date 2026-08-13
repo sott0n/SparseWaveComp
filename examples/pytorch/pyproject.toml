@@ -5,14 +5,22 @@ description = "PyTorch export examples for SparseWave"
 requires-python = ">=3.10,<3.15"
 dependencies = [
   "numpy>=2.0,<3",
+  "sparsewave-python",
   "torch==2.13.0",
+  "torch-mlir==20260810.841; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 [tool.uv]
 package = false
 
 [tool.uv.sources]
+sparsewave-python = {path = "../../python", editable = true}
 torch = {index = "pytorch-cpu"}
+torch-mlir = [
+  {url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version < '3.11'"},
+  {url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.11' and python_version < '3.12'"},
+  {url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.12'"},
+]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sparsewave-python"
+version = "0.1.0"
+description = "Python integrations for SparseWave"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+  "torch==2.13.0",
+  "torch-mlir==20260810.841; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]

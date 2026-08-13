@@ -367,12 +367,39 @@ wheels = [
 ]
 
 [[package]]
+name = "packaging"
+version = "26.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/fa/3944b40b07da9ce895c0e6303a5ab7d53da063554f534556b134a54d6093/packaging-26.3.tar.gz", hash = "sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79", size = 313412, upload-time = "2026-08-04T18:15:28.737Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl", hash = "sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c", size = 129956, upload-time = "2026-08-04T18:15:27.159Z" },
+]
+
+[[package]]
 name = "setuptools"
 version = "84.0.0"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/6d/44/f5da03a8ef95d369145c5bb53050e7877c9f3d312e128605fd9504829143/setuptools-84.0.0.tar.gz", hash = "sha256:f4695c21257f0d9b537ec2692c941d02ee143b7cc1276941349a546573b2ef73", size = 1168449, upload-time = "2026-08-08T18:27:58.365Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/95/9c/c510029fc6ef33a6275cd2c5d3cecd6613dfd6aa401d57c54f1c18852ccf/setuptools-84.0.0-py3-none-any.whl", hash = "sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670", size = 818216, upload-time = "2026-08-08T18:27:56.719Z" },
+]
+
+[[package]]
+name = "sparsewave-python"
+version = "0.1.0"
+source = { editable = "../../python" }
+dependencies = [
+    { name = "torch", version = "2.13.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
+    { name = "torch-mlir", version = "20260810.841", source = { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torch-mlir", version = "20260810.841", source = { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torch-mlir", version = "20260810.841", source = { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "torch", specifier = "==2.13.0" },
+    { name = "torch-mlir", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==20260810.841" },
 ]
 
 [[package]]
@@ -383,14 +410,22 @@ dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "sparsewave-python" },
     { name = "torch", version = "2.13.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.13.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
+    { name = "torch-mlir", version = "20260810.841", source = { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torch-mlir", version = "20260810.841", source = { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "torch-mlir", version = "20260810.841", source = { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }, marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=2.0,<3" },
+    { name = "sparsewave-python", editable = "../../python" },
     { name = "torch", specifier = "==2.13.0", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch-mlir", marker = "python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'linux'", url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { name = "torch-mlir", marker = "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux'", url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { name = "torch-mlir", marker = "python_full_version >= '3.12' and platform_machine == 'x86_64' and sys_platform == 'linux'", url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
 ]
 
 [[package]]
@@ -481,6 +516,75 @@ wheels = [
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:b222c15a0fc2ce207d1c1a59700b46c8fa6748df1f447ad11e5c870dde0933d9", upload-time = "2026-07-08T19:31:35Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp314-cp314t-win_amd64.whl", hash = "sha256:a43376bd094124ef626bfdd3d4c2c62eacb0b5ddc99776f4a32d4fd16f1f3420", upload-time = "2026-07-08T19:31:48Z" },
 ]
+
+[[package]]
+name = "torch-mlir"
+version = "20260810.841"
+source = { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
+resolution-markers = [
+    "python_full_version < '3.11' and sys_platform != 'darwin'",
+]
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' and sys_platform != 'darwin'" },
+    { name = "packaging", marker = "python_full_version < '3.11' and sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2396396b800d84f7ed7c5e67d1319ee209587df7b905acedcac620f13667f622" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy" },
+    { name = "onnx", marker = "extra == 'onnx'", specifier = ">=1.15.0" },
+    { name = "packaging" },
+]
+provides-extras = ["onnx"]
+
+[[package]]
+name = "torch-mlir"
+version = "20260810.841"
+source = { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
+resolution-markers = [
+    "python_full_version == '3.11.*' and sys_platform != 'darwin'",
+]
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*' and sys_platform != 'darwin'" },
+    { name = "packaging", marker = "python_full_version == '3.11.*' and sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:55f729baf1d98594861c7898b1bbc23815450b8dd8254bc78ebbb676ea503a9c" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy" },
+    { name = "onnx", marker = "extra == 'onnx'", specifier = ">=1.15.0" },
+    { name = "packaging" },
+]
+provides-extras = ["onnx"]
+
+[[package]]
+name = "torch-mlir"
+version = "20260810.841"
+source = { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" }
+resolution-markers = [
+    "python_full_version >= '3.12' and sys_platform != 'darwin'",
+]
+dependencies = [
+    { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' and sys_platform != 'darwin'" },
+    { name = "packaging", marker = "python_full_version >= '3.12' and sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://github.com/llvm/torch-mlir-release/releases/download/dev-wheels/torch_mlir-20260810.841-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8695caedbb8e98dd3d6ae7d10dbc8194e9843acf9c8f7d21892c01835e399bf5" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy" },
+    { name = "onnx", marker = "extra == 'onnx'", specifier = ">=1.15.0" },
+    { name = "packaging" },
+]
+provides-extras = ["onnx"]
 
 [[package]]
 name = "typing-extensions"

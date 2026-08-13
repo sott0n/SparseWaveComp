@@ -4,6 +4,8 @@ import argparse
 
 import torch
 
+from sparsewave.torch_export import import_torch_program
+
 
 class CSRSpMM(torch.nn.Module):
     """Sparse CSR matrix times a dense matrix."""
@@ -50,11 +52,14 @@ def main():
 
     matrix, rhs = make_example_inputs()
     exported = export_csr_spmm(matrix, rhs)
+    imported = import_torch_program(exported)
     result = exported.module()(matrix, rhs)
     expected = CSRSpMM()(matrix, rhs)
     torch.testing.assert_close(result, expected)
 
     print(exported.graph_module.graph)
+    print("Torch MLIR:")
+    print(imported)
     print("result:")
     print(result)
 

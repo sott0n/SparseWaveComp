@@ -10,6 +10,8 @@ import torch
 
 
 EXAMPLE = Path(sys.argv[1]).resolve()
+REPOSITORY = EXAMPLE.parents[2]
+sys.path.insert(0, str(REPOSITORY / "python"))
 sys.argv = [sys.argv[0]]
 
 SPEC = importlib.util.spec_from_file_location("csr_spmm_example", EXAMPLE)
