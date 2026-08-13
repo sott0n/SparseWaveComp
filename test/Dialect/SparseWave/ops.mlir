@@ -83,7 +83,11 @@ func.func @static_sddmm(
     %rhs: memref<3x4xf32>, %outputValues: memref<8xf32>) {
   // CHECK: sparsewave.sddmm
   sparsewave.sddmm %rowOffsets, %columnIndices, %values, %lhs, %rhs,
-      %outputValues
+      %outputValues {
+    ^bb0(%sample: f32, %dot: f32):
+      %weighted = arith.mulf %sample, %dot : f32
+      sparsewave.yield %weighted : f32
+  }
       : memref<5xi32>, memref<8xi32>, memref<8xf32>,
         memref<4x3xf32>, memref<3x4xf32>, memref<8xf32>
   return

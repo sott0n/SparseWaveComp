@@ -15,7 +15,11 @@ func.func @sddmm(
     %rhs: memref<2x3xf32, strided<[3, 1]>>,
     %outputValues: memref<?xf32>) {
   sparsewave.sddmm %rowOffsets, %columnIndices, %values, %lhs, %rhs,
-      %outputValues
+      %outputValues {
+    ^bb0(%sample: f32, %dot: f32):
+      %weighted = arith.mulf %sample, %dot : f32
+      sparsewave.yield %weighted : f32
+  }
       : memref<?xi32>, memref<?xi32>, memref<?xf32>,
         memref<2x2xf32, strided<[2, 1]>>,
         memref<2x3xf32, strided<[3, 1]>>, memref<?xf32>

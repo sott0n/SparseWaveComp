@@ -779,10 +779,16 @@ public:
                                                 iterArgs.front(), product);
                       scf::YieldOp::create(reductionBuilder, reductionLoc, sum);
                     });
-                Value weighted =
-                    arith::MulFOp::create(positionBuilder, positionLoc,
-                                          position.value, dot.getResult(0));
-                memref::StoreOp::create(positionBuilder, positionLoc, weighted,
+                Value weighted = dot.getResult(0);
+                Block &combineBody = op.getBody().front();
+                auto yield = cast<YieldOp>(combineBody.getTerminator());
+                IRMapping mapping;
+                mapping.map(combineBody.getArgument(0), position.value);
+                mapping.map(combineBody.getArgument(1), weighted);
+                for (Operation &operation : combineBody.without_terminator())
+                  positionBuilder.clone(operation, mapping);
+                Value combined = mapping.lookup(yield.getResults().front());
+                memref::StoreOp::create(positionBuilder, positionLoc, combined,
                                         op.getOutputValues(),
                                         position.position);
                 return SmallVector<Value>{};

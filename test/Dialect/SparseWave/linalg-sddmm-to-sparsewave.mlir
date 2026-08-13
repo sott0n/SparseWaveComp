@@ -27,6 +27,9 @@
 // CHECK: %[[RHS_BUFFER:.*]] = bufferization.to_buffer %[[RHS]] read_only
 // CHECK: sparsewave.sddmm %[[POSITIONS]], %[[COORDINATES]], %[[VALUES]],
 // CHECK-SAME: %[[LHS_BUFFER]], %[[RHS_BUFFER]], %[[VALUES]]
+// CHECK: ^bb0(%[[REGION_SAMPLE:.*]]: f32, %[[DOT:.*]]: f32):
+// CHECK: %[[WEIGHTED:.*]] = arith.mulf %[[REGION_SAMPLE]], %[[DOT]] : f32
+// CHECK: sparsewave.yield %[[WEIGHTED]] : f32
 // CHECK: %[[RESULT:.*]] = sparse_tensor.load %[[SAMPLE]]
 // CHECK-NOT: linalg.generic
 // CHECK: return %[[RESULT]]

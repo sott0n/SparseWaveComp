@@ -5,7 +5,7 @@ include "sparsewave/Dialect/SparseWave/IR/SparseWaveDialect.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 def SparseWave_YieldOp : SparseWave_Op<"yield", [Pure, Terminator,
-    ParentOneOf<["CSRRowwiseMapOp"]>]> {
+    ParentOneOf<["SDDMMOp", "CSRRowwiseMapOp"]>]> {
   let summary = "Yield a scalar from a SparseWave region";
   let arguments = (ins Variadic<AnyType>:$results);
   let builders = [OpBuilder<(ins), [{ build($_builder, $_state, ValueRange()); }]>];
@@ -166,15 +166,19 @@ def SparseWave_BSRSpMMOp : SparseWave_Op<"bsr_spmm"> {
   let hasVerifier = 1;
 }
 
-def SparseWave_SDDMMOp : SparseWave_Op<"sddmm"> {
+def SparseWave_SDDMMOp : SparseWave_Op<"sddmm",
+    [SingleBlockImplicitTerminator<"YieldOp">]> {
   let summary = "Sample a dense matrix product using a CSR matrix";
   let description = [{
-    `sparsewave.sddmm` computes a value-weighted sampled dense-dense matrix
-    multiplication. For every CSR entry at `(row, column)`, it writes
+    `sparsewave.sddmm` computes a sampled dense-dense matrix multiplication.
+    For every CSR entry at `(row, column)`, its scalar region receives the
+    stored sample value and the computed dot product, then yields the output
+    value for that position. A value-weighted SDDMM is expressed as
 
     ```
-    output_values[position] =
-        values[position] * dot(lhs[row, :], rhs[:, column])
+    ^bb0(%sample: f32, %dot: f32):
+      %weighted = arith.mulf %sample, %dot : f32
+      sparsewave.yield %weighted : f32
     ```
 
     Row offsets and column indices are preserved, so the output values have
@@ -184,7 +188,11 @@ def SparseWave_SDDMMOp : SparseWave_Op<"sddmm"> {
 
     ```mlir
     sparsewave.sddmm %row_offsets, %column_indices, %values,
-        %lhs, %rhs, %output_values
+        %lhs, %rhs, %output_values {
+      ^bb0(%sample: f32, %dot: f32):
+        %weighted = arith.mulf %sample, %dot : f32
+        sparsewave.yield %weighted : f32
+    }
         : memref<5xi32>, memref<8xi32>, memref<8xf32>,
           memref<4x3xf32>, memref<3x4xf32>, memref<8xf32>
     ```
@@ -200,10 +208,11 @@ def SparseWave_SDDMMOp : SparseWave_Op<"sddmm"> {
                            [MemRead]>:$rhs,
                        Arg<AnyMemRef, "CSR output values",
                            [MemWrite]>:$outputValues);
+  let regions = (region SizedRegion<1>:$body);
 
   let assemblyFormat = [{
     $rowOffsets `,` $columnIndices `,` $values `,` $lhs `,` $rhs `,`
-    $outputValues attr-dict `:` type($rowOffsets) `,`
+    $outputValues $body attr-dict `:` type($rowOffsets) `,`
     type($columnIndices) `,` type($values) `,` type($lhs) `,` type($rhs) `,`
     type($outputValues)
   }];

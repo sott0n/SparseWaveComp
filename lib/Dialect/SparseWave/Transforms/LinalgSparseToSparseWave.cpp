@@ -393,8 +393,18 @@ LogicalResult rewriteLinalgSDDMM(linalg::GenericOp op,
   // The zero-filled destination is derived from the sample itself, proving
   // that the input and result share one CSR structure. Each GPU work item
   // reads a sample value before replacing that same position.
-  SDDMMOp::create(rewriter, loc, sample.rowOffsets, sample.columnIndices,
-                  sample.values, lhsBuffer, rhsBuffer, sample.values);
+  auto sddmm =
+      SDDMMOp::create(rewriter, loc, sample.rowOffsets, sample.columnIndices,
+                      sample.values, lhsBuffer, rhsBuffer, sample.values);
+  Block *body = new Block();
+  sddmm.getBody().push_back(body);
+  Type valueType = match.sampleType.getElementType();
+  BlockArgument sampleValue = body->addArgument(valueType, loc);
+  BlockArgument dotProduct = body->addArgument(valueType, loc);
+  OpBuilder bodyBuilder = OpBuilder::atBlockEnd(body);
+  Value weighted =
+      arith::MulFOp::create(bodyBuilder, loc, sampleValue, dotProduct);
+  YieldOp::create(bodyBuilder, loc, weighted);
   rewriter.replaceOpWithNewOp<sparse_tensor::LoadOp>(op, match.sample);
   rewriter.eraseOp(match.zeroFill);
   return success();

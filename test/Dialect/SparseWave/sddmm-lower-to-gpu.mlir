@@ -3,6 +3,8 @@
 // RUN:   | FileCheck %s
 
 // CHECK-LABEL: func.func @sddmm(
+// CHECK: %[[ALPHA:.*]] = arith.constant 5.000000e-01 : f32
+// CHECK: %[[BETA:.*]] = arith.constant 2.000000e+00 : f32
 // CHECK: %[[ZERO:.*]] = arith.constant 0 : index
 // CHECK: %[[ONE:.*]] = arith.constant 1 : index
 // CHECK: %[[BLOCK_SIZE:.*]] = arith.constant 64 : index
@@ -22,8 +24,10 @@
 // CHECK: %[[RHS_VALUE:.*]] = memref.load %{{.*}}[%[[K]], %[[COLUMN]]]
 // CHECK: %[[PRODUCT:.*]] = arith.mulf %[[LHS_VALUE]], %[[RHS_VALUE]]
 // CHECK: arith.addf
-// CHECK: %[[WEIGHTED:.*]] = arith.mulf %[[SPARSE_VALUE]], %[[DOT]]
-// CHECK: memref.store %[[WEIGHTED]], %{{.*}}[%[[POSITION]]]
+// CHECK: %[[SCALED_SAMPLE:.*]] = arith.mulf %[[SPARSE_VALUE]], %[[BETA]]
+// CHECK: %[[SCALED_DOT:.*]] = arith.mulf %[[DOT]], %[[ALPHA]]
+// CHECK: %[[COMBINED:.*]] = arith.addf %[[SCALED_SAMPLE]], %[[SCALED_DOT]]
+// CHECK: memref.store %[[COMBINED]], %{{.*}}[%[[POSITION]]]
 // CHECK-NOT: sparsewave.sddmm
 func.func @sddmm(
     %rowOffsets: memref<?xi32>,
@@ -33,7 +37,15 @@ func.func @sddmm(
     %rhs: memref<?x?xf32>,
     %outputValues: memref<?xf32>) {
   sparsewave.sddmm %rowOffsets, %columnIndices, %values, %lhs, %rhs,
-      %outputValues
+      %outputValues {
+    ^bb0(%sample: f32, %dot: f32):
+      %beta = arith.constant 2.0 : f32
+      %alpha = arith.constant 0.5 : f32
+      %scaledSample = arith.mulf %sample, %beta : f32
+      %scaledDot = arith.mulf %dot, %alpha : f32
+      %combined = arith.addf %scaledSample, %scaledDot : f32
+      sparsewave.yield %combined : f32
+  }
       : memref<?xi32>, memref<?xi32>, memref<?xf32>,
         memref<?x?xf32>, memref<?x?xf32>, memref<?xf32>
   return

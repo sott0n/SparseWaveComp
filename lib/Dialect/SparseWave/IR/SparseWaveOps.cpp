@@ -344,6 +344,23 @@ LogicalResult SDDMMOp::verify() {
            << valuesType.getDimSize(0) << " and "
            << outputValuesType.getDimSize(0);
 
+  Block &body = getBody().front();
+  if (body.getNumArguments() != 2)
+    return emitOpError() << "body must have two arguments, but got "
+                         << body.getNumArguments();
+  for (BlockArgument argument : body.getArguments())
+    if (argument.getType() != valueType)
+      return emitOpError()
+             << "body arguments must have the values element type "
+             << valueType;
+
+  auto yield = dyn_cast<YieldOp>(body.getTerminator());
+  if (!yield || yield.getResults().size() != 1 ||
+      yield.getResults().front().getType() != valueType)
+    return emitOpError()
+           << "body must yield one value with the values element type "
+           << valueType;
+
   return success();
 }
 
