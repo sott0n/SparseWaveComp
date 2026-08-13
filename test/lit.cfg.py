@@ -22,6 +22,15 @@ llvm_config.add_tool_substitutions(
     ["mlir-translate", "sparsewave-opt"], tool_dirs
 )
 
+try:
+    import torch
+
+    version = torch.__version__.split("+", maxsplit=1)[0].split(".")
+    if tuple(int(component) for component in version[:2]) >= (2, 13):
+        config.available_features.add("pytorch-2.13")
+except (ImportError, ValueError):
+    pass
+
 rocm_path = next(
     (
         os.environ[name]
