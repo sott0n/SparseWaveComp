@@ -47,8 +47,12 @@ if os.path.isfile(rocm_linker) and os.access(rocm_linker, os.X_OK):
     config.substitutions.append(("%rocm_path", rocm_path))
 
 mlir_runner = os.path.join(config.llvm_tools_dir, "mlir-runner")
-rocm_runtime = os.path.join(config.llvm_lib_dir, "libmlir_rocm_runtime.so")
-runner_utils = os.path.join(config.llvm_lib_dir, "libmlir_runner_utils.so")
+rocm_runtime = os.path.join(
+    config.mlir_runtime_lib_dir, "libmlir_rocm_runtime.so"
+)
+runner_utils = os.path.join(
+    config.mlir_runtime_lib_dir, "libmlir_runner_utils.so"
+)
 arch_tools = [
     os.path.join(rocm_path, "bin", name)
     for name in ("amdgpu-arch", "rocm_agent_enumerator")

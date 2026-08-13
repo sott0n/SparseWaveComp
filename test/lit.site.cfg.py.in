@@ -2,6 +2,9 @@
 
 config.llvm_tools_dir = lit_config.substitute("@LLVM_TOOLS_DIR@")
 config.llvm_lib_dir = lit_config.substitute("@LLVM_LIBRARY_DIR@")
+config.mlir_runtime_lib_dir = lit_config.substitute(
+    "@SPARSEWAVE_MLIR_RUNTIME_LIBRARY_DIR@"
+)
 config.sparsewave_obj_root = "@SPARSEWAVE_BINARY_DIR@"
 config.sparsewave_tools_dir = "@LLVM_RUNTIME_OUTPUT_INTDIR@"
 

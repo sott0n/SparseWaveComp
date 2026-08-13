@@ -247,6 +247,7 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   sparseWaveOptions.spmmTileSize = options.spmmTileSize;
   sparseWaveOptions.sddmmBlockSize = options.sddmmBlockSize;
   sparseWaveOptions.rowReductionBlockSize = options.rowReductionBlockSize;
+  sparseWaveOptions.rowwiseMapBlockSize = options.rowwiseMapBlockSize;
   sparseWaveOptions.elementwiseBlockSize = options.elementwiseBlockSize;
   pm.addPass(createConvertSparseWaveToGPU(sparseWaveOptions));
 

@@ -100,3 +100,19 @@ func.func @static_csr_row_reduce(
       : memref<5xi32>, memref<8xi32>, memref<8xf32>, memref<4xf32>
   return
 }
+
+// CHECK-LABEL: func.func @static_csr_rowwise_map(
+func.func @static_csr_rowwise_map(
+    %rowOffsets: memref<5xi32>, %columnIndices: memref<8xi32>,
+    %values: memref<8xf32>, %rowValues: memref<4xf32>,
+    %outputValues: memref<8xf32>) {
+  // CHECK: sparsewave.csr_rowwise_map
+  sparsewave.csr_rowwise_map %rowOffsets, %columnIndices, %values, %rowValues,
+      %outputValues {
+    ^bb0(%value: f32, %rowValue: f32):
+      %mapped = arith.divf %value, %rowValue : f32
+      sparsewave.yield %mapped : f32
+  } : memref<5xi32>, memref<8xi32>, memref<8xf32>, memref<4xf32>,
+      memref<8xf32>
+  return
+}

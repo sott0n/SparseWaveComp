@@ -9,6 +9,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -867,6 +868,65 @@ private:
   int64_t blockSize;
 };
 
+class ThreadPerRowCSRRowwiseMapPattern
+    : public OpRewritePattern<CSRRowwiseMapOp> {
+public:
+  ThreadPerRowCSRRowwiseMapPattern(MLIRContext *context, int64_t blockSize)
+      : OpRewritePattern<CSRRowwiseMapOp>(context), blockSize(blockSize) {}
+
+  LogicalResult matchAndRewrite(CSRRowwiseMapOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value blockSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, blockSize);
+    Value rowCount =
+        memref::DimOp::create(rewriter, loc, op.getRowValues(), zeroIndex);
+    LinearThreadWorkDistribution distribution =
+        buildLinearThreadWorkDistribution(rewriter, loc, rowCount, oneIndex,
+                                          blockSizeValue);
+    Value row = distribution.workUnit;
+
+    scf::IfOp::create(
+        rewriter, loc, distribution.workUnitIsActive,
+        [&](OpBuilder &builder, Location bodyLoc) {
+          CompressedRowBounds rowBounds = buildCompressedRowBounds(
+              builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
+          Value rowValue =
+              memref::LoadOp::create(builder, bodyLoc, op.getRowValues(), row);
+          Block &mapBody = op.getBody().front();
+          auto yield = cast<YieldOp>(mapBody.getTerminator());
+          scf::ForOp::create(
+              builder, bodyLoc, rowBounds.start, rowBounds.end, oneIndex,
+              ValueRange{},
+              [&](OpBuilder &mapBuilder, Location mapLoc, Value position,
+                  ValueRange) {
+                Value value = memref::LoadOp::create(mapBuilder, mapLoc,
+                                                     op.getValues(), position);
+                IRMapping mapping;
+                mapping.map(mapBody.getArgument(0), value);
+                mapping.map(mapBody.getArgument(1), rowValue);
+                for (Operation &operation : mapBody.without_terminator())
+                  mapBuilder.clone(operation, mapping);
+                Value mapped = mapping.lookup(yield.getResults().front());
+                memref::StoreOp::create(mapBuilder, mapLoc, mapped,
+                                        op.getOutputValues(), position);
+                scf::YieldOp::create(mapBuilder, mapLoc);
+              });
+          scf::YieldOp::create(builder, bodyLoc);
+        });
+
+    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
+    gpu::TerminatorOp::create(rewriter, loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  int64_t blockSize;
+};
+
 class ThreadPerRowCSRElementwisePattern
     : public OpRewritePattern<CSRElementwiseOp> {
 public:
@@ -1304,6 +1364,13 @@ public:
       signalPassFailure();
       return;
     }
+    if (rowwiseMapBlockSize < 1 || rowwiseMapBlockSize > 1024) {
+      getOperation().emitError()
+          << "CSR row-wise map block size must be between 1 and 1024, but got "
+          << rowwiseMapBlockSize.getValue();
+      signalPassFailure();
+      return;
+    }
     if (elementwiseBlockSize < 1 || elementwiseBlockSize > 1024) {
       getOperation().emitError()
           << "elementwise block size must be between 1 and 1024, but got "
@@ -1349,6 +1416,8 @@ public:
     patterns.add<ThreadPerRowSDDMMPattern>(&getContext(), sddmmBlockSize);
     patterns.add<ThreadPerRowCSRRowReducePattern>(&getContext(),
                                                   rowReductionBlockSize);
+    patterns.add<ThreadPerRowCSRRowwiseMapPattern>(&getContext(),
+                                                   rowwiseMapBlockSize);
     patterns.add<ThreadPerRowCSRElementwisePattern>(&getContext(),
                                                     elementwiseBlockSize);
     patterns.add<ThreadPerOutputBSRSpMMPattern>(&getContext(), spmmBlockSize);

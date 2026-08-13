@@ -96,7 +96,7 @@ def ConvertSparseWaveToGPU
   let summary = "Map SparseWave operations to GPU launches";
   let description = [{
     Lowers sparsewave.spmv, sparsewave.coo_spmv, sparsewave.spmm,
-    sparsewave.bsr_spmm, sparsewave.sddmm, and
+    sparsewave.bsr_spmm, sparsewave.sddmm, sparsewave.csr_rowwise_map, and
     sparsewave.csr_elementwise to one-dimensional GPU launches.
     CSR SpMV can assign one GPU thread, one GPU wave, or one GPU block to each
     matrix row. It can also partition the stored-position space across threads
@@ -136,6 +136,9 @@ def ConvertSparseWaveToGPU
     Option<"rowReductionBlockSize", "row-reduction-block-size", "int64_t",
            /*default=*/"256",
            "Number of GPU threads in each CSR row-reduction block">,
+    Option<"rowwiseMapBlockSize", "rowwise-map-block-size", "int64_t",
+           /*default=*/"256",
+           "Number of GPU threads in each CSR row-wise map block">,
     Option<"elementwiseBlockSize", "elementwise-block-size", "int64_t",
            /*default=*/"256",
            "Number of GPU threads in each sparse elementwise block">

@@ -4,6 +4,14 @@
 include "sparsewave/Dialect/SparseWave/IR/SparseWaveDialect.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
+def SparseWave_YieldOp : SparseWave_Op<"yield", [Pure, Terminator,
+    ParentOneOf<["CSRRowwiseMapOp"]>]> {
+  let summary = "Yield a scalar from a SparseWave region";
+  let arguments = (ins Variadic<AnyType>:$results);
+  let builders = [OpBuilder<(ins), [{ build($_builder, $_state, ValueRange()); }]>];
+  let assemblyFormat = [{ attr-dict ($results^ `:` type($results))? }];
+}
+
 def SparseWave_SpMVOp : SparseWave_Op<"spmv"> {
   let summary = "Multiply a CSR matrix by a dense vector";
   let description = [{
@@ -232,6 +240,48 @@ def SparseWave_CSRRowReduceOp : SparseWave_Op<"csr_row_reduce"> {
     $rowOffsets `,` $columnIndices `,` $values `,` $output
     `kind` `=` $kind attr-dict `:` type($rowOffsets) `,`
     type($columnIndices) `,` type($values) `,` type($output)
+  }];
+
+  let hasVerifier = 1;
+}
+
+def SparseWave_CSRRowwiseMapOp : SparseWave_Op<"csr_rowwise_map",
+    [SingleBlockImplicitTerminator<"YieldOp">]> {
+  let summary = "Map CSR values with a dense value broadcast by row";
+  let description = [{
+    `sparsewave.csr_rowwise_map` applies a scalar region to every stored CSR
+    value. The region receives the stored value and the corresponding element
+    of a dense row vector, and yields the replacement stored value. The CSR
+    structure is preserved.
+
+    Example:
+
+    ```mlir
+    sparsewave.csr_rowwise_map %row_offsets, %column_indices, %values,
+        %row_max, %output_values {
+      ^bb0(%value: f32, %maximum: f32):
+        %shifted = arith.subf %value, %maximum : f32
+        %mapped = math.exp %shifted : f32
+        sparsewave.yield %mapped : f32
+    } : memref<5xi32>, memref<8xi32>, memref<8xf32>,
+        memref<4xf32>, memref<8xf32>
+    ```
+  }];
+
+  let arguments = (ins Arg<AnyMemRef, "CSR row offsets", [MemRead]>:$rowOffsets,
+                       Arg<AnyMemRef, "CSR column indices",
+                           [MemRead]>:$columnIndices,
+                       Arg<AnyMemRef, "CSR input values", [MemRead]>:$values,
+                       Arg<AnyMemRef, "dense row values", [MemRead]>:$rowValues,
+                       Arg<AnyMemRef, "CSR output values",
+                           [MemWrite]>:$outputValues);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = [{
+    $rowOffsets `,` $columnIndices `,` $values `,` $rowValues `,`
+    $outputValues $body attr-dict `:` type($rowOffsets) `,`
+    type($columnIndices) `,` type($values) `,` type($rowValues) `,`
+    type($outputValues)
   }];
 
   let hasVerifier = 1;

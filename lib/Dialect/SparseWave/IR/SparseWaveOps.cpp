@@ -2,6 +2,7 @@
 
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -363,6 +364,57 @@ LogicalResult CSRRowReduceOp::verify() {
   if (outputType.getElementType() != valuesType.getElementType())
     return emitOpError() << "values and output must have the same element type";
 
+  return success();
+}
+
+LogicalResult CSRRowwiseMapOp::verify() {
+  MemRefType rowOffsetsType = getRowOffsets().getType();
+  MemRefType columnIndicesType = getColumnIndices().getType();
+  MemRefType valuesType = getValues().getType();
+  MemRefType rowValuesType = getRowValues().getType();
+  MemRefType outputValuesType = getOutputValues().getType();
+
+  if (failed(verifyRank(*this, rowValuesType, 1, "row values")) ||
+      failed(verifyRank(*this, outputValuesType, 1, "output values")) ||
+      failed(verifyCSRStorage(*this, rowOffsetsType, columnIndicesType,
+                              valuesType, rowValuesType, "row values size")))
+    return failure();
+
+  Type valueType = valuesType.getElementType();
+  if (rowValuesType.getElementType() != valueType ||
+      outputValuesType.getElementType() != valueType)
+    return emitOpError()
+           << "values, row values, and output values must have the same "
+              "element type";
+  if (!areCompatibleStaticDimensions(valuesType.getDimSize(0),
+                                     outputValuesType.getDimSize(0)))
+    return emitOpError()
+           << "values and output values must have the same size, but got "
+           << valuesType.getDimSize(0) << " and "
+           << outputValuesType.getDimSize(0);
+
+  Block &body = getBody().front();
+  if (body.getNumArguments() != 2)
+    return emitOpError() << "body must have two arguments, but got "
+                         << body.getNumArguments();
+  for (BlockArgument argument : body.getArguments())
+    if (argument.getType() != valueType)
+      return emitOpError()
+             << "body arguments must have the values element type "
+             << valueType;
+
+  auto yield = dyn_cast<YieldOp>(body.getTerminator());
+  if (!yield || yield.getResults().size() != 1 ||
+      yield.getResults().front().getType() != valueType)
+    return emitOpError()
+           << "body must yield one value with the values element type "
+           << valueType;
+
+  for (Operation &operation : body.without_terminator())
+    if (!isMemoryEffectFree(&operation))
+      return emitOpError()
+             << "body operation must be memory-effect free, but got '"
+             << operation.getName() << "'";
   return success();
 }
 
