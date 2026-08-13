@@ -134,6 +134,11 @@ struct SparseWaveToAMDGPUPipelineOptions
       llvm::cl::desc("Number of GPU threads in each SDDMM block."),
       llvm::cl::init(256)};
 
+  PassOptions::Option<int64_t> rowReductionBlockSize{
+      *this, "row-reduction-block-size",
+      llvm::cl::desc("Number of GPU threads in each CSR row-reduction block."),
+      llvm::cl::init(256)};
+
   PassOptions::Option<int64_t> elementwiseBlockSize{
       *this, "elementwise-block-size",
       llvm::cl::desc("Number of GPU threads in each sparse elementwise block."),

@@ -107,8 +107,8 @@ def ConvertSparseWaveToGPU
     CSR SpMM can assign one GPU thread to each dense
     output element or one GPU wave to a CSR row and a tile of dense output
     columns. BSR SpMM initially assigns one GPU thread to each dense output
-    element. SDDMM assigns one thread to each CSR row and computes the sampled
-    dot products sequentially. CSR elementwise operations use parallel
+    element. SDDMM and CSR row reduction assign one thread to each CSR row.
+    SDDMM computes sampled dot products sequentially. CSR elementwise operations use parallel
     row-wise symbolic and numeric coiteration around a sequential prefix scan.
   }];
   let options = [
@@ -133,6 +133,9 @@ def ConvertSparseWaveToGPU
     Option<"sddmmBlockSize", "sddmm-block-size", "int64_t",
            /*default=*/"256",
            "Number of GPU threads in each SDDMM block">,
+    Option<"rowReductionBlockSize", "row-reduction-block-size", "int64_t",
+           /*default=*/"256",
+           "Number of GPU threads in each CSR row-reduction block">,
     Option<"elementwiseBlockSize", "elementwise-block-size", "int64_t",
            /*default=*/"256",
            "Number of GPU threads in each sparse elementwise block">

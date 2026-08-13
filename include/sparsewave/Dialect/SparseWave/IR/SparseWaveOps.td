@@ -203,6 +203,40 @@ def SparseWave_SDDMMOp : SparseWave_Op<"sddmm"> {
   let hasVerifier = 1;
 }
 
+def SparseWave_CSRRowReduceOp : SparseWave_Op<"csr_row_reduce"> {
+  let summary = "Reduce the stored values in each CSR row";
+  let description = [{
+    `sparsewave.csr_row_reduce` reduces the stored values in each CSR row into
+    a dense one-dimensional output. `kind = "sum"` uses zero as the identity;
+    `kind = "max"` uses negative infinity. Consequently, empty rows reduce to
+    the identity value.
+
+    Example:
+
+    ```mlir
+    sparsewave.csr_row_reduce %row_offsets, %column_indices, %values, %output
+        kind = "max"
+        : memref<5xi32>, memref<8xi32>, memref<8xf32>, memref<4xf32>
+    ```
+  }];
+
+  let arguments = (ins Arg<AnyMemRef, "CSR row offsets", [MemRead]>:$rowOffsets,
+                       Arg<AnyMemRef, "CSR column indices",
+                           [MemRead]>:$columnIndices,
+                       Arg<AnyMemRef, "CSR nonzero values", [MemRead]>:$values,
+                       Arg<AnyMemRef, "dense row reduction output",
+                           [MemWrite]>:$output,
+                       StrAttr:$kind);
+
+  let assemblyFormat = [{
+    $rowOffsets `,` $columnIndices `,` $values `,` $output
+    `kind` `=` $kind attr-dict `:` type($rowOffsets) `,`
+    type($columnIndices) `,` type($values) `,` type($output)
+  }];
+
+  let hasVerifier = 1;
+}
+
 def SparseWave_CSRElementwiseOp : SparseWave_Op<"csr_elementwise"> {
   let summary = "Apply an elementwise operation to two CSR matrices";
   let description = [{

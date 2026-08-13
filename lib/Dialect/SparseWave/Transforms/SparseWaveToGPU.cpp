@@ -14,6 +14,8 @@
 
 #include "llvm/ADT/SmallVector.h"
 
+#include <limits>
+
 namespace mlir::sparsewave {
 #define GEN_PASS_DEF_CONVERTSPARSEWAVETOGPU
 #include "sparsewave/Dialect/SparseWave/Transforms/Passes.h.inc"
@@ -798,6 +800,73 @@ private:
   int64_t blockSize;
 };
 
+class ThreadPerRowCSRRowReducePattern
+    : public OpRewritePattern<CSRRowReduceOp> {
+public:
+  ThreadPerRowCSRRowReducePattern(MLIRContext *context, int64_t blockSize)
+      : OpRewritePattern<CSRRowReduceOp>(context), blockSize(blockSize) {}
+
+  LogicalResult matchAndRewrite(CSRRowReduceOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value blockSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, blockSize);
+    Value rowCount =
+        memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
+    LinearThreadWorkDistribution distribution =
+        buildLinearThreadWorkDistribution(rewriter, loc, rowCount, oneIndex,
+                                          blockSizeValue);
+    Value row = distribution.workUnit;
+
+    scf::IfOp::create(
+        rewriter, loc, distribution.workUnitIsActive,
+        [&](OpBuilder &builder, Location bodyLoc) {
+          CompressedRowBounds rowBounds = buildCompressedRowBounds(
+              builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
+          auto valueType = cast<FloatType>(
+              cast<MemRefType>(op.getValues().getType()).getElementType());
+          FloatAttr identityAttr =
+              op.getKind() == "sum"
+                  ? builder.getFloatAttr(valueType, 0.0)
+                  : builder.getFloatAttr(
+                        valueType, -std::numeric_limits<double>::infinity());
+          Value identity =
+              arith::ConstantOp::create(builder, bodyLoc, identityAttr);
+          auto reduction = scf::ForOp::create(
+              builder, bodyLoc, rowBounds.start, rowBounds.end, oneIndex,
+              ValueRange{identity},
+              [&](OpBuilder &reductionBuilder, Location reductionLoc,
+                  Value position, ValueRange iterArgs) {
+                Value value = memref::LoadOp::create(
+                    reductionBuilder, reductionLoc, op.getValues(), position);
+                Value next =
+                    op.getKind() == "sum"
+                        ? arith::AddFOp::create(reductionBuilder, reductionLoc,
+                                                iterArgs.front(), value)
+                              .getResult()
+                        : arith::MaximumFOp::create(reductionBuilder,
+                                                    reductionLoc,
+                                                    iterArgs.front(), value)
+                              .getResult();
+                scf::YieldOp::create(reductionBuilder, reductionLoc, next);
+              });
+          memref::StoreOp::create(builder, bodyLoc, reduction.getResult(0),
+                                  op.getOutput(), row);
+          scf::YieldOp::create(builder, bodyLoc);
+        });
+
+    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
+    gpu::TerminatorOp::create(rewriter, loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  int64_t blockSize;
+};
+
 class ThreadPerRowCSRElementwisePattern
     : public OpRewritePattern<CSRElementwiseOp> {
 public:
@@ -1228,6 +1297,13 @@ public:
       signalPassFailure();
       return;
     }
+    if (rowReductionBlockSize < 1 || rowReductionBlockSize > 1024) {
+      getOperation().emitError()
+          << "CSR row-reduction block size must be between 1 and 1024, but got "
+          << rowReductionBlockSize.getValue();
+      signalPassFailure();
+      return;
+    }
     if (elementwiseBlockSize < 1 || elementwiseBlockSize > 1024) {
       getOperation().emitError()
           << "elementwise block size must be between 1 and 1024, but got "
@@ -1271,6 +1347,8 @@ public:
     RewritePatternSet patterns(&getContext());
     patterns.add<ThreadPerNonzeroCOOSpMVPattern>(&getContext(), blockSize);
     patterns.add<ThreadPerRowSDDMMPattern>(&getContext(), sddmmBlockSize);
+    patterns.add<ThreadPerRowCSRRowReducePattern>(&getContext(),
+                                                  rowReductionBlockSize);
     patterns.add<ThreadPerRowCSRElementwisePattern>(&getContext(),
                                                     elementwiseBlockSize);
     patterns.add<ThreadPerOutputBSRSpMMPattern>(&getContext(), spmmBlockSize);

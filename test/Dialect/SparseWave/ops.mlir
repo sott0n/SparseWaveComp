@@ -88,3 +88,15 @@ func.func @static_sddmm(
         memref<4x3xf32>, memref<3x4xf32>, memref<8xf32>
   return
 }
+
+// CHECK-LABEL: func.func @static_csr_row_reduce(
+func.func @static_csr_row_reduce(
+    %rowOffsets: memref<5xi32>, %columnIndices: memref<8xi32>,
+    %values: memref<8xf32>, %output: memref<4xf32>) {
+  // CHECK: sparsewave.csr_row_reduce
+  // CHECK-SAME: kind = "sum"
+  sparsewave.csr_row_reduce %rowOffsets, %columnIndices, %values, %output
+      kind = "sum"
+      : memref<5xi32>, memref<8xi32>, memref<8xf32>, memref<4xf32>
+  return
+}

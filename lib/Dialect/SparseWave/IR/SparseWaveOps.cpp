@@ -346,6 +346,26 @@ LogicalResult SDDMMOp::verify() {
   return success();
 }
 
+LogicalResult CSRRowReduceOp::verify() {
+  MemRefType rowOffsetsType = getRowOffsets().getType();
+  MemRefType columnIndicesType = getColumnIndices().getType();
+  MemRefType valuesType = getValues().getType();
+  MemRefType outputType = getOutput().getType();
+
+  if (getKind() != "sum" && getKind() != "max")
+    return emitOpError() << "kind must be 'sum' or 'max', but got '"
+                         << getKind() << "'";
+  if (failed(verifyRank(*this, outputType, 1, "output")) ||
+      failed(verifyCSRStorage(*this, rowOffsetsType, columnIndicesType,
+                              valuesType, outputType, "output size")))
+    return failure();
+
+  if (outputType.getElementType() != valuesType.getElementType())
+    return emitOpError() << "values and output must have the same element type";
+
+  return success();
+}
+
 LogicalResult CSRElementwiseOp::verify() {
   MemRefType lhsRowOffsetsType = getLhsRowOffsets().getType();
   MemRefType lhsColumnIndicesType = getLhsColumnIndices().getType();
