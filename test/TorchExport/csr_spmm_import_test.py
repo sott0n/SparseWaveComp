@@ -40,6 +40,14 @@ class CSRSpMMImportTest(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "ExportedProgram"):
             import_torch_program(torch.nn.Identity())
 
+    def test_import_accepts_a_runtime_function_name(self):
+        matrix, rhs = CSR_SPMM.make_example_inputs()
+        exported = CSR_SPMM.export_csr_spmm(matrix, rhs)
+
+        module = str(import_torch_program(exported, function_name="spmm"))
+
+        self.assertIn("func.func @spmm", module)
+
     def test_generic_assembly_is_available_to_sparsewave(self):
         matrix, rhs = CSR_SPMM.make_example_inputs()
         exported = CSR_SPMM.export_csr_spmm(matrix, rhs)

@@ -2,7 +2,7 @@ import torch
 from torch_mlir import fx
 
 
-def import_torch_program(exported_program):
+def import_torch_program(exported_program, *, function_name="main"):
     """Import an ExportedProgram into the torch-mlir Torch dialect."""
     if not isinstance(exported_program, torch.export.ExportedProgram):
         raise TypeError("expected a torch.export.ExportedProgram")
@@ -11,6 +11,7 @@ def import_torch_program(exported_program):
         exported_program,
         output_type="raw",
         decomposition_table={},
+        func_name=function_name,
     )
 
 

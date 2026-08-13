@@ -1,0 +1,80 @@
+module {
+@TORCH_PROGRAM@
+
+  func.func @main() {
+    %rowOffsetsTensor = arith.constant dense<[0, 2, 3]> : tensor<3xi32>
+    %columnIndicesTensor = arith.constant dense<[0, 2, 1]> : tensor<3xi32>
+    %valuesTensor = arith.constant dense<[1.0, 2.0, 3.0]> : tensor<3xf32>
+    %rhsTensor = arith.constant dense<[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]>
+        : tensor<6xf32>
+
+    %rowOffsets = bufferization.to_buffer %rowOffsetsTensor read_only
+        : tensor<3xi32> to memref<3xi32>
+    %columnIndices = bufferization.to_buffer %columnIndicesTensor read_only
+        : tensor<3xi32> to memref<3xi32>
+    %values = bufferization.to_buffer %valuesTensor read_only
+        : tensor<3xf32> to memref<3xf32>
+    %rhs = bufferization.to_buffer %rhsTensor read_only
+        : tensor<6xf32> to memref<6xf32>
+    %output = memref.alloc() : memref<4xf32>
+
+    %rowOffsetsDynamic = memref.cast %rowOffsets
+        : memref<3xi32> to memref<?xi32>
+    %columnIndicesDynamic = memref.cast %columnIndices
+        : memref<3xi32> to memref<?xi32>
+    %valuesDynamic = memref.cast %values : memref<3xf32> to memref<?xf32>
+    %rhsDynamic = memref.cast %rhs : memref<6xf32> to memref<?xf32>
+    %outputDynamic = memref.cast %output : memref<4xf32> to memref<?xf32>
+
+    %rowOffsetsUnranked = memref.cast %rowOffsetsDynamic
+        : memref<?xi32> to memref<*xi32>
+    %columnIndicesUnranked = memref.cast %columnIndicesDynamic
+        : memref<?xi32> to memref<*xi32>
+    %valuesUnranked = memref.cast %valuesDynamic
+        : memref<?xf32> to memref<*xf32>
+    %rhsUnranked = memref.cast %rhsDynamic : memref<?xf32> to memref<*xf32>
+    %outputUnranked = memref.cast %outputDynamic
+        : memref<?xf32> to memref<*xf32>
+
+    gpu.host_register %rowOffsetsUnranked : memref<*xi32>
+    gpu.host_register %columnIndicesUnranked : memref<*xi32>
+    gpu.host_register %valuesUnranked : memref<*xf32>
+    gpu.host_register %rhsUnranked : memref<*xf32>
+    gpu.host_register %outputUnranked : memref<*xf32>
+
+    %rowOffsetsDevice = call @mgpuMemGetDeviceMemRef1dInt32(%rowOffsetsDynamic)
+        : (memref<?xi32>) -> memref<?xi32>
+    %columnIndicesDevice =
+        call @mgpuMemGetDeviceMemRef1dInt32(%columnIndicesDynamic)
+        : (memref<?xi32>) -> memref<?xi32>
+    %valuesDevice = call @mgpuMemGetDeviceMemRef1dFloat(%valuesDynamic)
+        : (memref<?xf32>) -> memref<?xf32>
+    %rhsDevice = call @mgpuMemGetDeviceMemRef1dFloat(%rhsDynamic)
+        : (memref<?xf32>) -> memref<?xf32>
+    %outputDevice = call @mgpuMemGetDeviceMemRef1dFloat(%outputDynamic)
+        : (memref<?xf32>) -> memref<?xf32>
+
+    %rowOffsetsDeviceStatic = memref.cast %rowOffsetsDevice
+        : memref<?xi32> to memref<3xi32>
+    %rhsDevice2d = memref.reinterpret_cast %rhsDevice to
+        offset: [0], sizes: [3, 2], strides: [2, 1]
+        : memref<?xf32> to memref<3x2xf32>
+    %outputDevice2d = memref.reinterpret_cast %outputDevice to
+        offset: [0], sizes: [2, 2], strides: [2, 1]
+        : memref<?xf32> to memref<2x2xf32>
+
+    "sparsewave_runtime.call"(%rowOffsetsDeviceStatic, %columnIndicesDevice,
+                              %valuesDevice, %rhsDevice2d, %outputDevice2d)
+        <{callee = @spmm}>
+        : (memref<3xi32>, memref<?xi32>, memref<?xf32>, memref<3x2xf32>,
+           memref<2x2xf32>) -> ()
+    call @printMemrefF32(%outputUnranked) : (memref<*xf32>) -> ()
+    return
+  }
+
+  func.func private @mgpuMemGetDeviceMemRef1dInt32(
+      %buffer: memref<?xi32>) -> memref<?xi32>
+  func.func private @mgpuMemGetDeviceMemRef1dFloat(
+      %buffer: memref<?xf32>) -> memref<?xf32>
+  func.func private @printMemrefF32(%buffer: memref<*xf32>)
+}

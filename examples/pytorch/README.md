@@ -18,6 +18,19 @@ uv run python csr_spmm.py --mlir-output /tmp/csr_spmm.mlir
   --convert-torch-to-sparsewave /tmp/csr_spmm.mlir
 ```
 
+Compile and run the CSR SpMM through the HIP Runtime:
+
+```sh
+uv run python csr_spmm.py --runtime-mlir-output /tmp/csr_spmm_runtime.mlir
+../../build/bin/sparsewave-opt --allow-unregistered-dialect \
+  --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx1101 wavefront-size=32 rocm-path=/opt/rocm spmm-block-size=64})' \
+  /tmp/csr_spmm_runtime.mlir | \
+../../build/llvm/bin/mlir-runner \
+  --shared-libs=../../build/llvm/lib/libmlir_rocm_runtime.so \
+  --shared-libs=../../build/llvm/lib/libmlir_runner_utils.so \
+  --entry-point-result=void
+```
+
 Run its frontend tests directly with the same environment:
 
 ```sh

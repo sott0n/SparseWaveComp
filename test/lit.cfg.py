@@ -1,4 +1,6 @@
 import os
+import re
+import shutil
 import subprocess
 
 import lit.formats
@@ -59,20 +61,31 @@ arch_tool = next(
     ),
     None,
 )
-if (
-    all(
-        os.path.isfile(path)
-        for path in (mlir_runner, rocm_runtime, runner_utils)
-    )
-    and arch_tool
-    and os.path.exists("/dev/kfd")
-):
+arch = []
+if arch_tool and os.path.exists("/dev/kfd"):
     arch = subprocess.run(
         [arch_tool],
         capture_output=True,
         check=False,
         text=True,
     ).stdout.splitlines()
+elif os.path.exists("/dev/kfd"):
+    rocminfo = shutil.which("rocminfo")
+    if rocminfo:
+        output = subprocess.run(
+            [rocminfo],
+            capture_output=True,
+            check=False,
+            text=True,
+        ).stdout
+        arch = re.findall(r"^\s*Name:\s+(gfx[0-9a-z]+)", output, re.MULTILINE)
+if (
+    all(
+        os.path.isfile(path)
+        for path in (mlir_runner, rocm_runtime, runner_utils)
+    )
+    and os.path.exists("/dev/kfd")
+):
     if arch:
         config.available_features.add("amdgpu-runtime")
         config.substitutions.extend(

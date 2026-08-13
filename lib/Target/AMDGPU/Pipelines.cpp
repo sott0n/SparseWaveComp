@@ -199,6 +199,10 @@ void mlir::sparsewave::buildAMDGPUBackendPipeline(
 
 void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
     OpPassManager &pm, const SparseWaveToAMDGPUPipelineOptions &options) {
+  // Import supported Torch operators before running the SparseWave pipeline.
+  // Modules without Torch operations pass through unchanged.
+  pm.addPass(createConvertTorchToSparseWave());
+
   // Bridge canonical CSR Linalg SpMV/SpMM/SDDMM operations while the
   // SparseTensor encoding and operation-specific output form are still
   // visible.

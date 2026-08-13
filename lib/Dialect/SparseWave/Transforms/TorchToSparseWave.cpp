@@ -5,6 +5,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/SymbolTable.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 
 namespace mlir::sparsewave {
@@ -171,6 +173,36 @@ LogicalResult lowerTorchSpMMFunction(func::FuncOp function) {
   return success();
 }
 
+LogicalResult lowerRuntimeCalls(ModuleOp module) {
+  SmallVector<Operation *> runtimeCalls;
+  module.walk([&](Operation *operation) {
+    if (operation->getName().getStringRef() == "sparsewave_runtime.call")
+      runtimeCalls.push_back(operation);
+  });
+
+  for (Operation *operation : runtimeCalls) {
+    auto callee = operation->getAttrOfType<FlatSymbolRefAttr>("callee");
+    if (!callee || operation->getNumResults() != 0)
+      return operation->emitError(
+          "expected a result-free runtime call with a callee symbol");
+    auto function =
+        SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(operation, callee);
+    if (!function)
+      return operation->emitError()
+             << "runtime callee '" << callee.getValue() << "' was not found";
+    if (!llvm::equal(function.getFunctionType().getInputs(),
+                     operation->getOperandTypes()))
+      return operation->emitError(
+          "runtime operands do not match the lowered callee ABI");
+
+    OpBuilder builder(operation);
+    func::CallOp::create(builder, operation->getLoc(), function,
+                         operation->getOperands());
+    operation->erase();
+  }
+  return success();
+}
+
 class ConvertTorchToSparseWave
     : public impl::ConvertTorchToSparseWaveBase<ConvertTorchToSparseWave> {
 public:
@@ -192,6 +224,8 @@ public:
         return;
       }
     }
+    if (failed(lowerRuntimeCalls(getOperation())))
+      signalPassFailure();
   }
 };
 
