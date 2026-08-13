@@ -10,6 +10,14 @@ uv sync
 uv run python csr_spmm.py
 ```
 
+Lower the imported graph to SparseWave IR:
+
+```sh
+uv run python csr_spmm.py --mlir-output /tmp/csr_spmm.mlir
+../../build/bin/sparsewave-opt --allow-unregistered-dialect \
+  --convert-torch-to-sparsewave /tmp/csr_spmm.mlir
+```
+
 Run its frontend tests directly with the same environment:
 
 ```sh

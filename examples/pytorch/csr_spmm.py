@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
 import argparse
+from pathlib import Path
 
 import torch
 
-from sparsewave.torch_export import import_torch_program
+from sparsewave.torch_export import import_torch_program, render_generic_torch_mlir
 
 
 class CSRSpMM(torch.nn.Module):
@@ -20,6 +21,10 @@ def export_csr_spmm(matrix, rhs):
         raise ValueError("matrix must use the torch.sparse_csr layout")
     if matrix.dtype != torch.float32 or rhs.dtype != torch.float32:
         raise ValueError("matrix and rhs must use torch.float32")
+    if matrix.crow_indices().dtype != torch.int32:
+        raise ValueError("matrix CSR indices must use torch.int32")
+    if matrix.col_indices().dtype != torch.int32:
+        raise ValueError("matrix CSR indices must use torch.int32")
     if matrix.dim() != 2 or rhs.dim() != 2:
         raise ValueError("matrix and rhs must be rank-two tensors")
     if matrix.shape[1] != rhs.shape[0]:
@@ -48,7 +53,12 @@ def main():
     parser = argparse.ArgumentParser(
         description="Export a PyTorch CSR SpMM graph for SparseWave."
     )
-    parser.parse_args()
+    parser.add_argument(
+        "--mlir-output",
+        type=Path,
+        help="write generic Torch MLIR to this path",
+    )
+    args = parser.parse_args()
 
     matrix, rhs = make_example_inputs()
     exported = export_csr_spmm(matrix, rhs)
@@ -57,9 +67,13 @@ def main():
     expected = CSRSpMM()(matrix, rhs)
     torch.testing.assert_close(result, expected)
 
+    torch_mlir = render_generic_torch_mlir(imported)
+    if args.mlir_output:
+        args.mlir_output.write_text(torch_mlir)
+
     print(exported.graph_module.graph)
     print("Torch MLIR:")
-    print(imported)
+    print(torch_mlir)
     print("result:")
     print(result)
 

@@ -14,7 +14,7 @@ REPOSITORY = EXAMPLE.parents[2]
 sys.path.insert(0, str(REPOSITORY / "python"))
 sys.argv = [sys.argv[0]]
 
-from sparsewave.torch_export import import_torch_program
+from sparsewave.torch_export import import_torch_program, render_generic_torch_mlir
 
 
 SPEC = importlib.util.spec_from_file_location("csr_spmm_example", EXAMPLE)
@@ -39,6 +39,18 @@ class CSRSpMMImportTest(unittest.TestCase):
     def test_import_rejects_non_exported_program(self):
         with self.assertRaisesRegex(TypeError, "ExportedProgram"):
             import_torch_program(torch.nn.Identity())
+
+    def test_generic_assembly_is_available_to_sparsewave(self):
+        matrix, rhs = CSR_SPMM.make_example_inputs()
+        exported = CSR_SPMM.export_csr_spmm(matrix, rhs)
+        imported = import_torch_program(exported)
+
+        mlir = render_generic_torch_mlir(imported)
+
+        self.assertIn('"torch.operator"', mlir)
+        self.assertIn('name = "torch.aten._sparse_mm"', mlir)
+        self.assertIn("#sparse_tensor.encoding", mlir)
+        self.assertNotIn("#sparse =", mlir)
 
 
 if __name__ == "__main__":

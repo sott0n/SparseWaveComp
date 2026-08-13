@@ -63,6 +63,18 @@ class CSRSpMMExportTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "matrix columns"):
             CSR_SPMM.export_csr_spmm(matrix, rhs)
 
+    def test_frontend_rejects_i64_csr_indices(self):
+        _, rhs = CSR_SPMM.make_example_inputs()
+        matrix = torch.sparse_csr_tensor(
+            torch.tensor([0, 2, 3], dtype=torch.int64),
+            torch.tensor([0, 2, 1], dtype=torch.int64),
+            torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32),
+            size=(2, 3),
+            check_invariants=True,
+        )
+        with self.assertRaisesRegex(ValueError, "CSR indices"):
+            CSR_SPMM.export_csr_spmm(matrix, rhs)
+
 
 if __name__ == "__main__":
     unittest.main()

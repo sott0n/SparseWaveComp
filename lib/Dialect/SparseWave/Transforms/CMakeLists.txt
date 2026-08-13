@@ -4,6 +4,7 @@ add_mlir_library(SparseWaveTransforms
   SparsePositionToSCF.cpp
   SparseGPUUtils.cpp
   SparseWaveToGPU.cpp
+  TorchToSparseWave.cpp
 
   DEPENDS
   SparseWavePassesIncGen
@@ -11,6 +12,7 @@ add_mlir_library(SparseWaveTransforms
   LINK_LIBS PUBLIC
   MLIRArithDialect
   MLIRBufferizationDialect
+  MLIRFuncDialect
   MLIRGPUDialect
   MLIRIR
   MLIRLinalgDialect

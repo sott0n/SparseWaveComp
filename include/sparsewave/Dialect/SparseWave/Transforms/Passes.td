@@ -3,6 +3,25 @@
 
 include "mlir/Pass/PassBase.td"
 
+def ConvertTorchToSparseWave
+    : Pass<"convert-torch-to-sparsewave", "::mlir::ModuleOp"> {
+  let summary = "Lower imported Torch sparse operations to SparseWave";
+  let description = [{
+    Converts a shape-specialized torch.aten._sparse_mm imported by torch-mlir
+    into sparsewave.spmm. The Torch tensor function boundary is expanded to
+    the SparseWave buffer ABI: CSR row offsets, column indices, values, dense
+    right-hand side, and caller-provided output.
+
+    The pass consumes generic Torch dialect assembly so SparseWave does not
+    need to build or link a second copy of torch-mlir. The initial contract is
+    rank-two, static-shape f32 tensors and i32 CSR indices.
+  }];
+  let dependentDialects = [
+    "func::FuncDialect",
+    "sparsewave::SparseWaveDialect"
+  ];
+}
+
 def ConvertLinalgSpMVToSparseWave
     : Pass<"convert-linalg-spmv-to-sparsewave", "::mlir::ModuleOp"> {
   let summary = "Recognize sparse Linalg SpMV operations";
