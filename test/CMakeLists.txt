@@ -23,6 +23,7 @@ set(SPARSEWAVE_TEST_DEPENDS
   not
   sparsewave_benchmark_utils
   sparsewave-opt
+  sparsewave-pytorch-opt
 )
 if(TARGET sparsewave-rocsparse-benchmark)
   list(APPEND SPARSEWAVE_TEST_DEPENDS sparsewave-rocsparse-benchmark)

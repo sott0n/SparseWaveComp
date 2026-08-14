@@ -57,6 +57,7 @@ add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(tools)
 add_subdirectory(benchmark)
+add_subdirectory(examples/pytorch/integration)
 
 option(SPARSEWAVE_INCLUDE_TESTS "Build SparseWave tests" ON)
 if(SPARSEWAVE_INCLUDE_TESTS)
