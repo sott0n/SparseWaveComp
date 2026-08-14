@@ -190,6 +190,42 @@ isolates the active-state shuffle as measurable ISA overhead but not the main
 performance bottleneck; coordinate recovery and atomic accumulation remain
 the higher-priority targets.
 
+### Wave-shared coordinate-recovery experiment
+
+Two follow-up implementations tested whether a wave could avoid a full CSR
+row-offset search in every lane:
+
+1. One lane recovered the row at the beginning of the contiguous wave
+   partition, broadcast it, and each active lane scanned forward to its row.
+2. The first and last active lanes recovered the partition's endpoint rows,
+   broadcast them, and every active lane performed a binary search only inside
+   that row interval.
+
+Neither implementation produced a stable improvement over the independent
+per-lane binary search. The following controlled results use block size 64,
+10 warmup iterations, and 30 measured iterations on uniform 65,536-row
+matrices:
+
+| NNZ/row | Per-lane search | Forward scan | Endpoint-bounded search |
+| ---: | ---: | ---: | ---: |
+| 4 | 97.48 us | 98.16 us | 139.42 us |
+| 32 | 925.72 us | 931.74 us | 937.80 us |
+| 256 | 2,031.25 us | 2,036.40 us | 2,056.09 us |
+
+The independent searches are less redundant in execution time than their IR
+structure suggests. Lanes search nearby positions, so they often take the same
+branches and access the same or nearby row offsets in lockstep. Restricting the
+initial lookup to one or two lanes still stalls the wave on that lookup, then
+adds broadcasts. The forward scan also introduces lane-dependent loop counts,
+while the endpoint approach adds two 64-bit broadcasts and retains a search in
+each lane.
+
+The experimental implementations were therefore not retained. A future
+coordinate-recovery design should change the representation or scheduling more
+substantially—for example, carry row coordinates across a worker's multi-
+position chunk or materialize auxiliary position-to-row metadata—rather than
+only sharing search bounds inside a one-position-per-lane wave.
+
 ## Reproduction
 
 Run the controlled experiment with:
