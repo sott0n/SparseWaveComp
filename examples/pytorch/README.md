@@ -32,6 +32,22 @@ uv run python csr_spmm.py --runtime-mlir-output /tmp/csr_spmm_runtime.mlir
   --entry-point-result=void
 ```
 
+Compile and run SparseAttention through the HIP Runtime:
+
+```sh
+uv run python sparse_attention.py \
+  --runtime-mlir-output /tmp/sparse_attention_runtime.mlir
+../../build/bin/sparsewave-pytorch-opt --allow-unregistered-dialect \
+  --convert-torch-sparse-attention-to-sparsewave \
+  /tmp/sparse_attention_runtime.mlir | \
+../../build/bin/sparsewave-opt --allow-unregistered-dialect \
+  --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx1101 wavefront-size=32 rocm-path=/opt/rocm sddmm-block-size=64 row-reduction-block-size=64 rowwise-map-block-size=64 spmm-block-size=64})' | \
+../../build/llvm/bin/mlir-runner \
+  --shared-libs=../../build/llvm/lib/libmlir_rocm_runtime.so \
+  --shared-libs=../../build/llvm/lib/libmlir_runner_utils.so \
+  --entry-point-result=void
+```
+
 Run its frontend tests directly with the same environment:
 
 ```sh

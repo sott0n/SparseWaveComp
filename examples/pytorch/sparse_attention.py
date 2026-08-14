@@ -75,6 +75,18 @@ def make_example_inputs():
     return mask, query, key, value
 
 
+def render_runtime_module(imported):
+    """Add the HIP runner harness for the fixed example inputs."""
+    torch_module = render_generic_torch_mlir(imported)
+    body_start = torch_module.find("{")
+    body_end = torch_module.rfind("}")
+    if body_start < 0 or body_end <= body_start:
+        raise ValueError("expected a builtin module from torch-mlir")
+    torch_program = torch_module[body_start + 1 : body_end].strip()
+    template = Path(__file__).with_name("sparse_attention_runtime.mlir.in").read_text()
+    return template.replace("@TORCH_PROGRAM@", torch_program)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Export PyTorch SparseAttention for SparseWave."
@@ -84,6 +96,11 @@ def main():
         type=Path,
         help="write generic Torch MLIR to this path",
     )
+    parser.add_argument(
+        "--runtime-mlir-output",
+        type=Path,
+        help="write Torch MLIR with the HIP runtime example harness",
+    )
     args = parser.parse_args()
 
     inputs = make_example_inputs()
@@ -92,9 +109,15 @@ def main():
     expected = SparseAttention(inputs[1].shape[1])(*inputs)
     torch.testing.assert_close(result, expected)
 
-    torch_mlir = render_generic_torch_mlir(import_torch_program(exported))
+    imported = import_torch_program(
+        exported,
+        function_name="sparse_attention" if args.runtime_mlir_output else "main",
+    )
+    torch_mlir = render_generic_torch_mlir(imported)
     if args.mlir_output:
         args.mlir_output.write_text(torch_mlir)
+    if args.runtime_mlir_output:
+        args.runtime_mlir_output.write_text(render_runtime_module(imported))
 
     print(exported.graph_module.graph)
     print("Torch MLIR:")

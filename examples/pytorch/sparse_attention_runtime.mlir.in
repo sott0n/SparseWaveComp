@@ -1,0 +1,140 @@
+module {
+@TORCH_PROGRAM@
+
+  func.func @main() {
+    %rowOffsetsTensor = arith.constant dense<[0, 2, 3]> : tensor<3xi32>
+    %columnIndicesTensor = arith.constant dense<[0, 2, 1]> : tensor<3xi32>
+    %maskValuesTensor = arith.constant dense<0.0> : tensor<3xf32>
+    %queryTensor = arith.constant dense<[1.0, 2.0, 3.0, 4.0]>
+        : tensor<4xf32>
+    %transposedKeyTensor = arith.constant dense<[1.0, 0.0, 1.0, 0.0, 1.0, 1.0]>
+        : tensor<6xf32>
+    %valueTensor = arith.constant dense<[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]>
+        : tensor<6xf32>
+
+    %rowOffsets = bufferization.to_buffer %rowOffsetsTensor read_only
+        : tensor<3xi32> to memref<3xi32>
+    %columnIndices = bufferization.to_buffer %columnIndicesTensor read_only
+        : tensor<3xi32> to memref<3xi32>
+    %maskValues = bufferization.to_buffer %maskValuesTensor read_only
+        : tensor<3xf32> to memref<3xf32>
+    %query = bufferization.to_buffer %queryTensor read_only
+        : tensor<4xf32> to memref<4xf32>
+    %transposedKey = bufferization.to_buffer %transposedKeyTensor read_only
+        : tensor<6xf32> to memref<6xf32>
+    %value = bufferization.to_buffer %valueTensor read_only
+        : tensor<6xf32> to memref<6xf32>
+    %scores = memref.alloc() : memref<3xf32>
+    %rowMaximum = memref.alloc() : memref<2xf32>
+    %rowSum = memref.alloc() : memref<2xf32>
+    %output = memref.alloc() : memref<4xf32>
+
+    %rowOffsetsDynamic = memref.cast %rowOffsets
+        : memref<3xi32> to memref<?xi32>
+    %columnIndicesDynamic = memref.cast %columnIndices
+        : memref<3xi32> to memref<?xi32>
+    %maskValuesDynamic = memref.cast %maskValues
+        : memref<3xf32> to memref<?xf32>
+    %queryDynamic = memref.cast %query : memref<4xf32> to memref<?xf32>
+    %transposedKeyDynamic = memref.cast %transposedKey
+        : memref<6xf32> to memref<?xf32>
+    %valueDynamic = memref.cast %value : memref<6xf32> to memref<?xf32>
+    %scoresDynamic = memref.cast %scores : memref<3xf32> to memref<?xf32>
+    %rowMaximumDynamic = memref.cast %rowMaximum
+        : memref<2xf32> to memref<?xf32>
+    %rowSumDynamic = memref.cast %rowSum : memref<2xf32> to memref<?xf32>
+    %outputDynamic = memref.cast %output : memref<4xf32> to memref<?xf32>
+
+    %rowOffsetsUnranked = memref.cast %rowOffsetsDynamic
+        : memref<?xi32> to memref<*xi32>
+    %columnIndicesUnranked = memref.cast %columnIndicesDynamic
+        : memref<?xi32> to memref<*xi32>
+    %maskValuesUnranked = memref.cast %maskValuesDynamic
+        : memref<?xf32> to memref<*xf32>
+    %queryUnranked = memref.cast %queryDynamic
+        : memref<?xf32> to memref<*xf32>
+    %transposedKeyUnranked = memref.cast %transposedKeyDynamic
+        : memref<?xf32> to memref<*xf32>
+    %valueUnranked = memref.cast %valueDynamic
+        : memref<?xf32> to memref<*xf32>
+    %scoresUnranked = memref.cast %scoresDynamic
+        : memref<?xf32> to memref<*xf32>
+    %rowMaximumUnranked = memref.cast %rowMaximumDynamic
+        : memref<?xf32> to memref<*xf32>
+    %rowSumUnranked = memref.cast %rowSumDynamic
+        : memref<?xf32> to memref<*xf32>
+    %outputUnranked = memref.cast %outputDynamic
+        : memref<?xf32> to memref<*xf32>
+
+    gpu.host_register %rowOffsetsUnranked : memref<*xi32>
+    gpu.host_register %columnIndicesUnranked : memref<*xi32>
+    gpu.host_register %maskValuesUnranked : memref<*xf32>
+    gpu.host_register %queryUnranked : memref<*xf32>
+    gpu.host_register %transposedKeyUnranked : memref<*xf32>
+    gpu.host_register %valueUnranked : memref<*xf32>
+    gpu.host_register %scoresUnranked : memref<*xf32>
+    gpu.host_register %rowMaximumUnranked : memref<*xf32>
+    gpu.host_register %rowSumUnranked : memref<*xf32>
+    gpu.host_register %outputUnranked : memref<*xf32>
+
+    %rowOffsetsDevice = call @mgpuMemGetDeviceMemRef1dInt32(%rowOffsetsDynamic)
+        : (memref<?xi32>) -> memref<?xi32>
+    %columnIndicesDevice =
+        call @mgpuMemGetDeviceMemRef1dInt32(%columnIndicesDynamic)
+        : (memref<?xi32>) -> memref<?xi32>
+    %maskValuesDevice = call @mgpuMemGetDeviceMemRef1dFloat(%maskValuesDynamic)
+        : (memref<?xf32>) -> memref<?xf32>
+    %queryDevice = call @mgpuMemGetDeviceMemRef1dFloat(%queryDynamic)
+        : (memref<?xf32>) -> memref<?xf32>
+    %transposedKeyDevice =
+        call @mgpuMemGetDeviceMemRef1dFloat(%transposedKeyDynamic)
+        : (memref<?xf32>) -> memref<?xf32>
+    %valueDevice = call @mgpuMemGetDeviceMemRef1dFloat(%valueDynamic)
+        : (memref<?xf32>) -> memref<?xf32>
+    %scoresDevice = call @mgpuMemGetDeviceMemRef1dFloat(%scoresDynamic)
+        : (memref<?xf32>) -> memref<?xf32>
+    %rowMaximumDevice =
+        call @mgpuMemGetDeviceMemRef1dFloat(%rowMaximumDynamic)
+        : (memref<?xf32>) -> memref<?xf32>
+    %rowSumDevice = call @mgpuMemGetDeviceMemRef1dFloat(%rowSumDynamic)
+        : (memref<?xf32>) -> memref<?xf32>
+    %outputDevice = call @mgpuMemGetDeviceMemRef1dFloat(%outputDynamic)
+        : (memref<?xf32>) -> memref<?xf32>
+
+    %rowOffsetsDeviceStatic = memref.cast %rowOffsetsDevice
+        : memref<?xi32> to memref<3xi32>
+    %rowMaximumDeviceStatic = memref.cast %rowMaximumDevice
+        : memref<?xf32> to memref<2xf32>
+    %rowSumDeviceStatic = memref.cast %rowSumDevice
+        : memref<?xf32> to memref<2xf32>
+    %queryDevice2d = memref.reinterpret_cast %queryDevice to
+        offset: [0], sizes: [2, 2], strides: [2, 1]
+        : memref<?xf32> to memref<2x2xf32>
+    %transposedKeyDevice2d = memref.reinterpret_cast %transposedKeyDevice to
+        offset: [0], sizes: [2, 3], strides: [3, 1]
+        : memref<?xf32> to memref<2x3xf32>
+    %valueDevice2d = memref.reinterpret_cast %valueDevice to
+        offset: [0], sizes: [3, 2], strides: [2, 1]
+        : memref<?xf32> to memref<3x2xf32>
+    %outputDevice2d = memref.reinterpret_cast %outputDevice to
+        offset: [0], sizes: [2, 2], strides: [2, 1]
+        : memref<?xf32> to memref<2x2xf32>
+
+    "sparsewave_runtime.call"(
+        %rowOffsetsDeviceStatic, %columnIndicesDevice, %maskValuesDevice,
+        %queryDevice2d, %transposedKeyDevice2d, %valueDevice2d, %scoresDevice,
+        %rowMaximumDeviceStatic, %rowSumDeviceStatic, %outputDevice2d)
+        <{callee = @sparse_attention}>
+        : (memref<3xi32>, memref<?xi32>, memref<?xf32>, memref<2x2xf32>,
+           memref<2x3xf32>, memref<3x2xf32>, memref<?xf32>, memref<2xf32>,
+           memref<2xf32>, memref<2x2xf32>) -> ()
+    call @printMemrefF32(%outputUnranked) : (memref<*xf32>) -> ()
+    return
+  }
+
+  func.func private @mgpuMemGetDeviceMemRef1dInt32(
+      %buffer: memref<?xi32>) -> memref<?xi32>
+  func.func private @mgpuMemGetDeviceMemRef1dFloat(
+      %buffer: memref<?xf32>) -> memref<?xf32>
+  func.func private @printMemrefF32(%buffer: memref<*xf32>)
+}
