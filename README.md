@@ -106,6 +106,40 @@ operations and operands to the LLVM dialect. The remaining `gpu.binary` and
 wrapper ABI, including module loading, kernel lookup, launch, and
 synchronization.
 
+## HSACO bundles
+
+`sparsewave-bundle` compiles an MLIR input without generating the host runtime
+wrapper and writes a standalone two-file bundle:
+
+```text
+bundle/
+  manifest.json
+  kernels.hsaco
+```
+
+For example, a fixed-shape SpMM can be compiled with:
+
+```sh
+sparsewave-bundle spmm.mlir --output bundle --chip gfx1101 \
+  --operation spmm --mapping wave-per-row-tile \
+  --block-size 64 --tile-size 4 --wavefront-size 32
+```
+
+The tool always enables `kernel-bare-ptr-calling-convention` explicitly. The
+manifest records the requested target and mapping choices, while kernel symbol,
+kernarg layout, required block dimensions, shared-memory size, wavefront size,
+and the resolved target architecture are read from the generated HSACO
+metadata. It also records the HSACO SHA-256 digest. Bundle generation performs
+an immediate consistency check; an existing bundle can be checked again with:
+
+```sh
+sparsewave-bundle --verify bundle
+```
+
+The regular `gpu.binary` path remains the default. The lower-level pipelines
+also expose `lower-host=false` for callers that need a binary without host GPU
+runtime wrapper lowering.
+
 The runtime integration tests are enabled automatically when `mlir-runner`,
 `libmlir_rocm_runtime.so`, `libmlir_runner_utils.so`, an ROCm architecture
 enumerator, and `/dev/kfd` are available. Configure LLVM with

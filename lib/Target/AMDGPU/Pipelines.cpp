@@ -170,10 +170,12 @@ void mlir::sparsewave::buildAMDGPUBackendPipeline(
   gpuModulePM.addPass(std::make_unique<VerifyAMDDeviceLoweringPass>());
 
   if (options.binaryFormat != AMDGPUCompilationTarget::None) {
-    GpuToLLVMConversionPassOptions hostOptions;
-    hostOptions.hostBarePtrCallConv = options.hostUseBarePtrCallConv;
-    hostOptions.kernelBarePtrCallConv = options.kernelUseBarePtrCallConv;
-    pm.addPass(createGpuToLLVMConversionPass(hostOptions));
+    if (options.lowerHost) {
+      GpuToLLVMConversionPassOptions hostOptions;
+      hostOptions.hostBarePtrCallConv = options.hostUseBarePtrCallConv;
+      hostOptions.kernelBarePtrCallConv = options.kernelUseBarePtrCallConv;
+      pm.addPass(createGpuToLLVMConversionPass(hostOptions));
+    }
 
     GpuModuleToBinaryPassOptions binaryOptions;
     switch (options.binaryFormat) {

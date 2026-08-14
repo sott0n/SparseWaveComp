@@ -54,6 +54,10 @@ struct AMDGPUTargetOptions {
             llvm::cl::desc(
                 "Use the bare pointer calling convention for host functions."),
             llvm::cl::init(false)),
+        lowerHost(
+            owner, "lower-host",
+            llvm::cl::desc("Lower GPU launches to host runtime wrapper calls."),
+            llvm::cl::init(true)),
         binaryFormat(
             owner, "binary-format",
             llvm::cl::desc("AMDGPU device compilation output."),
@@ -88,6 +92,7 @@ struct AMDGPUTargetOptions {
   detail::PassOptions::Option<unsigned> indexBitWidth;
   detail::PassOptions::Option<bool> kernelUseBarePtrCallConv;
   detail::PassOptions::Option<bool> hostUseBarePtrCallConv;
+  detail::PassOptions::Option<bool> lowerHost;
   detail::PassOptions::Option<AMDGPUCompilationTarget> binaryFormat;
   detail::PassOptions::Option<std::string> rocmPath;
   detail::PassOptions::Option<WavefrontSize> wavefrontSize;

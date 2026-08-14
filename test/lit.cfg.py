@@ -21,7 +21,13 @@ llvm_config.with_environment("PATH", config.llvm_tools_dir, append_path=True)
 
 tool_dirs = [config.sparsewave_tools_dir, config.llvm_tools_dir]
 llvm_config.add_tool_substitutions(
-    ["mlir-translate", "sparsewave-opt", "sparsewave-pytorch-opt"], tool_dirs
+    [
+        "mlir-translate",
+        "sparsewave-bundle",
+        "sparsewave-opt",
+        "sparsewave-pytorch-opt",
+    ],
+    tool_dirs,
 )
 
 try:

@@ -22,6 +22,7 @@ set(SPARSEWAVE_TEST_DEPENDS
   mlir-translate
   not
   sparsewave_benchmark_utils
+  sparsewave-bundle
   sparsewave-opt
   sparsewave-pytorch-opt
 )

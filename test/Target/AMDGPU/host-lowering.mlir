@@ -6,6 +6,9 @@
 // RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 rocm-path=%rocm_path})' \
 // RUN:   | mlir-translate --mlir-to-llvmir \
 // RUN:   | FileCheck %s --check-prefix=LLVM
+// RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-amdgpu-pipeline{chip=gfx942 rocm-path=%rocm_path lower-host=false})' \
+// RUN:   | FileCheck %s --check-prefix=NO-HOST
 
 // CHECK: gpu.binary @kernels
 // CHECK: llvm.func @launch()
@@ -17,6 +20,10 @@
 // LLVM-DAG: call ptr @mgpuModuleGetFunction(
 // LLVM-DAG: call void @mgpuLaunchKernel(
 // LLVM-DAG: call void @mgpuStreamSynchronize(
+// NO-HOST: gpu.binary @kernels
+// NO-HOST: func.func @launch()
+// NO-HOST: gpu.launch_func @kernels::@kernel
+// NO-HOST-NOT: llvm.call @mgpu
 module attributes {gpu.container_module} {
   gpu.module @kernels {
     gpu.func @kernel() kernel {
