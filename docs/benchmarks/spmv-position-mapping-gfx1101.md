@@ -165,6 +165,31 @@ Any such optimization should retain the current mapping as an ablation
 baseline and remeasure atomic count, shuffle count, register usage, and tail
 latency.
 
+### Prefix-active segmented scan follow-up
+
+A follow-up experiment after SparseWave commit `2942ac3` uses the fact that
+the active lanes of each position-space wave are contiguous and start at lane
+zero. A valid lower source lane is therefore active whenever the destination
+lane is active. Removing the redundant active-state shuffle from each scan
+stage changes the generated reduction as follows:
+
+| Metric | Original | Prefix-active |
+| --- | ---: | ---: |
+| MLIR `gpu.shuffle up` operations | 15 | 10 |
+| MLIR `gpu.shuffle down` operations | 2 | 2 |
+| ISA `ds_bpermute_b32` instructions | 23 | 18 |
+| VGPR | 21 | 21 |
+| SGPR | 31 | 31 |
+| Spills / scratch | 0 | 0 |
+
+The focused rerun did not show a consistent latency improvement. For uniform
+rows, the old and new medians were 203.41 us and 204.28 us at 32 NNZ/row, and
+1,999.76 us and 1,995.53 us at 256 NNZ/row. Short-row measurements had larger
+run-to-run variation, so no speedup is attributed to this change. The result
+isolates the active-state shuffle as measurable ISA overhead but not the main
+performance bottleneck; coordinate recovery and atomic accumulation remain
+the higher-priority targets.
+
 ## Reproduction
 
 Run the controlled experiment with:

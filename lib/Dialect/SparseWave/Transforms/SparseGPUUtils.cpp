@@ -228,10 +228,9 @@ Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
   return value;
 }
 
-WaveSegmentedReduction buildWaveSegmentedReduction(OpBuilder &builder,
-                                                   Location loc, Value key,
-                                                   Value value, Value active,
-                                                   int64_t waveSize) {
+WaveSegmentedReduction
+buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
+                                  Value value, Value active, int64_t waveSize) {
   Value activeI32 =
       arith::ExtUIOp::create(builder, loc, builder.getI32Type(), active);
   Value zeroI32 = arith::ConstantIntOp::create(builder, loc, 0, 32);
@@ -242,19 +241,15 @@ WaveSegmentedReduction buildWaveSegmentedReduction(OpBuilder &builder,
                                               waveSize, gpu::ShuffleMode::UP);
     auto shuffledValue = gpu::ShuffleOp::create(builder, loc, value, offset,
                                                 waveSize, gpu::ShuffleMode::UP);
-    auto shuffledActive = gpu::ShuffleOp::create(
-        builder, loc, activeI32, offset, waveSize, gpu::ShuffleMode::UP);
-    Value sourceIsActive =
-        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne,
-                              shuffledActive.getShuffleResult(), zeroI32);
     Value sameSegment =
         arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq, key,
                               shuffledKey.getShuffleResult());
+    // Valid source lanes below an active lane are active because the active
+    // lanes form a prefix, so no active-state shuffle is required here.
     Value combine = arith::AndIOp::create(
         builder, loc, active,
-        arith::AndIOp::create(
-            builder, loc, shuffledKey.getValid(),
-            arith::AndIOp::create(builder, loc, sourceIsActive, sameSegment)));
+        arith::AndIOp::create(builder, loc, shuffledKey.getValid(),
+                              sameSegment));
     Value accumulated = arith::AddFOp::create(builder, loc, value,
                                               shuffledValue.getShuffleResult());
     value = arith::SelectOp::create(builder, loc, combine, accumulated, value);

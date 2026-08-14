@@ -260,7 +260,7 @@ public:
     Value row = entry.getResult(0);
     Value rowKey =
         arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), row);
-    WaveSegmentedReduction reduction = buildWaveSegmentedReduction(
+    WaveSegmentedReduction reduction = buildWavePrefixSegmentedReduction(
         rewriter, loc, rowKey, entry.getResult(1), active, waveSize);
     scf::IfOp::create(rewriter, loc, reduction.segmentEnd,
                       [&](OpBuilder &builder, Location bodyLoc) {

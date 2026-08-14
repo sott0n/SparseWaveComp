@@ -104,10 +104,11 @@ buildCSRCoiteration(OpBuilder &builder, Location loc, Value lhsColumnIndices,
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
                          int64_t waveSize);
 
-WaveSegmentedReduction buildWaveSegmentedReduction(OpBuilder &builder,
-                                                   Location loc, Value key,
-                                                   Value value, Value active,
-                                                   int64_t waveSize);
+/// Builds an inclusive segmented reduction for a prefix of active wave lanes.
+/// Active lanes must be contiguous and start at lane zero.
+WaveSegmentedReduction
+buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
+                                  Value value, Value active, int64_t waveSize);
 
 SmallVector<Value> buildWaveReductions(OpBuilder &builder, Location loc,
                                        ValueRange values, int64_t waveSize);

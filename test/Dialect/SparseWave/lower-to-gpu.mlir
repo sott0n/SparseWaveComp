@@ -159,7 +159,7 @@
 // SEGMENT: %[[ACTIVE:.*]] = arith.cmpi ult, %[[POSITION]], %[[END]]
 // SEGMENT: scf.if %[[ACTIVE]] -> (index, f32)
 // SEGMENT: sparsewave.csr_coordinates
-// SEGMENT-COUNT-15: gpu.shuffle up
+// SEGMENT-COUNT-10: gpu.shuffle up
 // SEGMENT-COUNT-2: gpu.shuffle down
 // SEGMENT: memref.atomic_rmw addf
 // SEGMENT-NOT: sparsewave.spmv
