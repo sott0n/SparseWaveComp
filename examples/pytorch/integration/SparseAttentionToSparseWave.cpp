@@ -221,6 +221,12 @@ void addYieldingRegion(Operation *operation, Type elementType, Location loc,
   YieldOp::create(builder, loc, build(builder, lhs, rhs));
 }
 
+template <typename OpTy> OpTy setKernelName(OpTy operation, StringRef name) {
+  operation->setAttr("sparsewave.kernel_name",
+                     StringAttr::get(operation.getContext(), name));
+  return operation;
+}
+
 LogicalResult lower(func::FuncOp function) {
   SparseAttentionMatch match;
   if (failed(validate(function, match)))
@@ -261,8 +267,10 @@ LogicalResult lower(func::FuncOp function) {
   Value rowSum = entry->getArgument(8);
   Value output = entry->getArgument(9);
 
-  auto sddmm = SDDMMOp::create(builder, loc, rowOffsets, columns, maskValues,
-                               query, transposedKey, scores);
+  auto sddmm =
+      setKernelName(SDDMMOp::create(builder, loc, rowOffsets, columns,
+                                    maskValues, query, transposedKey, scores),
+                    "sparse_attention_scores");
   addYieldingRegion(
       sddmm, elementType, loc, [&](OpBuilder &nested, Value sample, Value dot) {
         Value beta = arith::ConstantOp::create(
@@ -274,26 +282,34 @@ LogicalResult lower(func::FuncOp function) {
         return arith::AddFOp::create(nested, loc, scaledSample, scaledDot);
       });
 
-  CSRRowReduceOp::create(builder, loc, rowOffsets, columns, scores, rowMaximum,
-                         "max");
-  auto exponentiate = CSRRowwiseMapOp::create(builder, loc, rowOffsets, columns,
-                                              scores, rowMaximum, scores);
+  setKernelName(CSRRowReduceOp::create(builder, loc, rowOffsets, columns,
+                                       scores, rowMaximum, "max"),
+                "sparse_attention_row_max");
+  auto exponentiate =
+      setKernelName(CSRRowwiseMapOp::create(builder, loc, rowOffsets, columns,
+                                            scores, rowMaximum, scores),
+                    "sparse_attention_exp");
   addYieldingRegion(exponentiate, elementType, loc,
                     [&](OpBuilder &nested, Value input, Value maximum) {
                       Value shifted =
                           arith::SubFOp::create(nested, loc, input, maximum);
                       return math::ExpOp::create(nested, loc, shifted);
                     });
-  CSRRowReduceOp::create(builder, loc, rowOffsets, columns, scores, rowSum,
-                         "sum");
-  auto normalize = CSRRowwiseMapOp::create(builder, loc, rowOffsets, columns,
-                                           scores, rowSum, scores);
+  setKernelName(CSRRowReduceOp::create(builder, loc, rowOffsets, columns,
+                                       scores, rowSum, "sum"),
+                "sparse_attention_row_sum");
+  auto normalize =
+      setKernelName(CSRRowwiseMapOp::create(builder, loc, rowOffsets, columns,
+                                            scores, rowSum, scores),
+                    "sparse_attention_normalize");
   addYieldingRegion(normalize, elementType, loc,
                     [&](OpBuilder &nested, Value numerator, Value denominator) {
                       return arith::DivFOp::create(nested, loc, numerator,
                                                    denominator);
                     });
-  SpMMOp::create(builder, loc, rowOffsets, columns, scores, value, output);
+  setKernelName(
+      SpMMOp::create(builder, loc, rowOffsets, columns, scores, value, output),
+      "sparse_attention_output");
   func::ReturnOp::create(builder, function.getLoc());
   return success();
 }

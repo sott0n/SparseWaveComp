@@ -117,6 +117,10 @@ bundle/
   kernels.hsaco
 ```
 
+SparseAttention uses the same top-level manifest with one stable, relative
+`kernels/*.hsaco` artifact per logical kernel; launch ordering remains the
+responsibility of the lrrt Executor.
+
 For example, a fixed-shape SpMM can be compiled with:
 
 ```sh

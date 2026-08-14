@@ -48,6 +48,24 @@ uv run python sparse_attention.py \
   --entry-point-result=void
 ```
 
+To produce the corresponding lrrt application bundle directly from raw Torch
+MLIR, run:
+
+```sh
+uv run python sparse_attention.py --mlir-output /tmp/sparse_attention.mlir
+../../build/bin/sparsewave-bundle /tmp/sparse_attention.mlir \
+  --output /tmp/sparse_attention.bundle --chip gfx1101 \
+  --rocm-path /opt/rocm --operation sparse-attention
+```
+
+The manifest exposes `sparse_attention_scores`, `sparse_attention_row_max`,
+`sparse_attention_exp`, `sparse_attention_row_sum`,
+`sparse_attention_normalize`, and `sparse_attention_output`. The lrrt Executor
+chooses their launch order and allocates the declared `scores`, `rowMaximum`,
+and `rowSum` intermediates. It passes output rows as `n` to all kernels except
+`sparse_attention_output`, which uses the number of output elements. The key
+input for `sparse_attention_scores` is specialized in transposed layout.
+
 Run its frontend tests directly with the same environment:
 
 ```sh

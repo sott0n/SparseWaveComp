@@ -12,12 +12,12 @@
 // CHECK-NOT: torch.
 // CHECK-NOT: sparsewave_runtime.call
 // CHECK-NOT: sparsewave.
-// CHECK: gpu.module @sparse_attention_kernel
-// CHECK: gpu.module @sparse_attention_kernel_0
-// CHECK: gpu.module @sparse_attention_kernel_1
-// CHECK: gpu.module @sparse_attention_kernel_2
-// CHECK: gpu.module @sparse_attention_kernel_3
-// CHECK: gpu.module @sparse_attention_kernel_4
+// CHECK: gpu.module @sparse_attention_scores
+// CHECK: gpu.module @sparse_attention_row_max
+// CHECK: gpu.module @sparse_attention_exp
+// CHECK: gpu.module @sparse_attention_row_sum
+// CHECK: gpu.module @sparse_attention_normalize
+// CHECK: gpu.module @sparse_attention_output
 // CHECK-LABEL: func.func @main()
 // CHECK: call @sparse_attention(
 // CHECK: call @printMemrefF32

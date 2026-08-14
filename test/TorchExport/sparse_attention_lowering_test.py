@@ -45,14 +45,20 @@ OUTPUT.write_text(render_generic_torch_mlir(module))
 # CHECK: arith.mulf
 # CHECK: arith.mulf
 # CHECK: arith.addf
+# CHECK: } {sparsewave.kernel_name = "sparse_attention_scores"}
 # CHECK: sparsewave.csr_row_reduce
 # CHECK-SAME: kind = "max"
+# CHECK-SAME: sparsewave.kernel_name = "sparse_attention_row_max"
 # CHECK: sparsewave.csr_rowwise_map
 # CHECK: arith.subf
 # CHECK: math.exp
+# CHECK: } {sparsewave.kernel_name = "sparse_attention_exp"}
 # CHECK: sparsewave.csr_row_reduce
 # CHECK-SAME: kind = "sum"
+# CHECK-SAME: sparsewave.kernel_name = "sparse_attention_row_sum"
 # CHECK: sparsewave.csr_rowwise_map
 # CHECK: arith.divf
+# CHECK: } {sparsewave.kernel_name = "sparse_attention_normalize"}
 # CHECK: sparsewave.spmm
+# CHECK-SAME: sparsewave.kernel_name = "sparse_attention_output"
 # CHECK-NOT: torch.

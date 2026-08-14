@@ -23,6 +23,15 @@ namespace mlir::sparsewave {
 
 namespace {
 
+void propagateKernelName(Operation *source, gpu::LaunchOp launch) {
+  auto name = source->getAttrOfType<StringAttr>("sparsewave.kernel_name");
+  if (!name)
+    return;
+  auto symbol = FlatSymbolRefAttr::get(source->getContext(), name.getValue());
+  launch.setModuleAttr(symbol);
+  launch.setFunctionAttr(symbol);
+}
+
 Value castIndexToType(OpBuilder &builder, Location loc, Value value,
                       Type targetType) {
   if (targetType.isIndex())
@@ -608,6 +617,7 @@ public:
 
     rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
     gpu::TerminatorOp::create(rewriter, loc);
+    propagateKernelName(op, distribution.launch);
     rewriter.eraseOp(op);
     return success();
   }
@@ -799,6 +809,7 @@ public:
 
     rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
     gpu::TerminatorOp::create(rewriter, loc);
+    propagateKernelName(op, distribution.launch);
     rewriter.eraseOp(op);
     return success();
   }
@@ -866,6 +877,7 @@ public:
 
     rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
     gpu::TerminatorOp::create(rewriter, loc);
+    propagateKernelName(op, distribution.launch);
     rewriter.eraseOp(op);
     return success();
   }
@@ -925,6 +937,7 @@ public:
 
     rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
     gpu::TerminatorOp::create(rewriter, loc);
+    propagateKernelName(op, distribution.launch);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1300,6 +1313,7 @@ public:
 
     rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
     gpu::TerminatorOp::create(rewriter, loc);
+    propagateKernelName(op, distribution.launch);
     rewriter.eraseOp(op);
     return success();
   }

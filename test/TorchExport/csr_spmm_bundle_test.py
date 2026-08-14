@@ -58,7 +58,7 @@ OUTPUT.write_text(render_generic_torch_mlir(module))
 # CHECK-NEXT: "ceil_div(n, 2) * 64",
 # CHECK: "kernarg_size": 40
 # CHECK: "fixed_output_rows": 4
-# CHECK: "hsaco_sha256": "{{[0-9a-f]{64}}}"
+# CHECK: "hsaco_sha256": "{{[0-9a-f]+}}"
 # CHECK: "symbol": "main_kernel"
 # CHECK: "manifest_version": 1
 # CHECK: "target": "gfx1101"

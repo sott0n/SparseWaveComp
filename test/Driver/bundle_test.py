@@ -74,11 +74,13 @@ def options():
         block_size=64,
         tile_size=4,
         rocm_path="",
+        sparsewave_pytorch_opt=Path("sparsewave-pytorch-opt"),
     )
 
 
 def ir_description():
     return {
+        "application": "spmm",
         "name": "spmm",
         "args": [
             {"name": name, "type": "ptr"}
@@ -86,6 +88,44 @@ def ir_description():
         ],
         "output_rows": 4,
         "rhs_columns": 4,
+    }
+
+
+def attention_source():
+    return """func.func @main(
+  %arg0: memref<3xi32>, %arg1: memref<?xi32>, %arg2: memref<?xf32>,
+  %arg3: memref<2x2xf32>, %arg4: memref<2x3xf32>,
+  %arg5: memref<3x2xf32>, %arg6: memref<?xf32>,
+  %arg7: memref<2xf32>, %arg8: memref<2xf32>,
+  %arg9: memref<2x2xf32>) {
+  sparsewave.sddmm %arg0, %arg1, %arg2, %arg3, %arg4, %arg6
+      {sparsewave.kernel_name = "sparse_attention_scores"}
+  return
+}
+"""
+
+
+def attention_metadata(name, argument_count):
+    return {
+        "target": "gfx1101",
+        "kernels": [
+            {
+                "name": name,
+                "descriptor_symbol": f"{name}.kd",
+                "args": [
+                    {
+                        "offset": index * 8,
+                        "size": 8,
+                        "value_kind": "global_buffer",
+                    }
+                    for index in range(argument_count)
+                ],
+                "kernarg_size": argument_count * 8,
+                "block": [64, 1, 1],
+                "fixed_group_segment_bytes": 128,
+                "wavefront_size": 32,
+            }
+        ],
     }
 
 
@@ -201,6 +241,104 @@ class BundleTest(unittest.TestCase):
             ],
         )
         run.assert_called_once_with(command, text=True)
+
+    def test_raw_torch_attention_uses_attention_frontend(self):
+        source = '"torch.aten.sparse_sampled_addmm"() : () -> ()\n'
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "attention.mlir"
+            path.write_text(source, encoding="utf-8")
+            args = options()
+            args.input = path
+            completed = types.SimpleNamespace(stdout=attention_source())
+            with mock.patch.object(
+                BUNDLE, "run", return_value=completed
+            ) as run:
+                normalized, command = BUNDLE.prepare_bundle_input(args)
+        self.assertEqual(normalized, attention_source())
+        self.assertEqual(
+            command,
+            [
+                "sparsewave-pytorch-opt",
+                "--allow-unregistered-dialect",
+                str(path),
+                "--convert-torch-sparse-attention-to-sparsewave",
+            ],
+        )
+        run.assert_called_once_with(command, text=True)
+
+    def test_sparse_attention_manifest_has_stable_multi_kernel_abi(self):
+        ir = BUNDLE.parse_sparse_attention_ir_text(attention_source())
+        self.assertEqual(ir["specialization"]["output_rows"], 2)
+        self.assertFalse(ir["buffers"]["scores"]["tensor"]["specialized"])
+        self.assertEqual(
+            ir["buffers"]["scores"]["tensor"]["dynamic_dimensions"],
+            [{"index": 0, "name": "nnz"}],
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory)
+            artifacts = {}
+            for name, specification in BUNDLE.ATTENTION_KERNELS.items():
+                path = bundle / f"{name}.hsaco"
+                path.write_bytes(b"\x7fELF" + name.encode())
+                artifacts[name] = {
+                    "path": path,
+                    "relative_path": f"kernels/{name}.hsaco",
+                    "metadata": attention_metadata(
+                        name, len(specification["args"])
+                    ),
+                }
+            manifest = BUNDLE.sparse_attention_manifest_for(
+                options(), artifacts, ir
+            )
+
+        self.assertEqual(
+            [kernel["name"] for kernel in manifest["kernels"]],
+            sorted(BUNDLE.ATTENTION_KERNELS),
+        )
+        self.assertNotIn("execution_order", manifest)
+        for kernel in manifest["kernels"]:
+            self.assertEqual(kernel["symbol"], kernel["name"])
+            self.assertEqual(
+                kernel["code_object"], f"kernels/{kernel['name']}.hsaco"
+            )
+            self.assertEqual(kernel["grid"], ["ceil_div(n, 64) * 64", 1, 1])
+            self.assertTrue(all(arg["type"] == "ptr" for arg in kernel["args"]))
+
+    def test_verify_resolves_every_attention_artifact(self):
+        ir = BUNDLE.parse_sparse_attention_ir_text(attention_source())
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory)
+            (bundle / "kernels").mkdir()
+            artifacts = {}
+            metadata_by_path = {}
+            for name, specification in BUNDLE.ATTENTION_KERNELS.items():
+                relative = f"kernels/{name}.hsaco"
+                path = bundle / relative
+                path.write_bytes(b"\x7fELF" + name.encode())
+                kernel_metadata = attention_metadata(
+                    name, len(specification["args"])
+                )
+                artifacts[name] = {
+                    "path": path,
+                    "relative_path": relative,
+                    "metadata": kernel_metadata,
+                }
+                metadata_by_path[path] = kernel_metadata
+            manifest = BUNDLE.sparse_attention_manifest_for(
+                options(), artifacts, ir
+            )
+            (bundle / "manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            with mock.patch.object(
+                BUNDLE,
+                "inspect_hsaco",
+                side_effect=lambda _, path: metadata_by_path[path],
+            ) as inspect:
+                verified = BUNDLE.verify_bundle(bundle, Path("llvm-readobj"))
+        self.assertEqual(len(verified["kernels"]), 6)
+        self.assertEqual(inspect.call_count, 6)
 
     def test_pipeline_preserves_bundle_compilation_contract(self):
         rendered = BUNDLE.pipeline(options())
