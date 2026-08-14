@@ -256,8 +256,7 @@ def abi_type_from_ir(type_text):
     fail(f"unsupported kernel argument IR type '{type_text}'")
 
 
-def parse_fixed_spmm_ir(path):
-    text = path.read_text(encoding="utf-8")
+def parse_fixed_spmm_ir_text(text):
     operation = re.search(r"^\s*sparsewave\.spmm\b", text, re.MULTILINE)
     if operation is None:
         fail("expected one fixed-shape function containing sparsewave.spmm")
@@ -272,9 +271,6 @@ def parse_fixed_spmm_ir(path):
     if not functions:
         fail("expected one fixed-shape function containing sparsewave.spmm")
     function = functions[-1]
-    if function.group(1) != SUPPORTED_OPERATION:
-        fail("initial lrrt bundle requires the logical function name 'spmm'")
-
     arguments = re.findall(
         r"%([A-Za-z_.$-][A-Za-z0-9_.$-]*)\s*:\s*"
         r"(memref<[^>]+>|unranked_memref<[^>]+>|i32|f32|f16|bf16)",
@@ -282,17 +278,10 @@ def parse_fixed_spmm_ir(path):
     )
     if len(arguments) != len(SPMM_ARGUMENT_NAMES):
         fail("fixed-shape SpMM bundle requires exactly five kernel arguments")
-    names = tuple(name for name, _ in arguments)
-    if names != SPMM_ARGUMENT_NAMES:
-        fail(
-            "fixed-shape SpMM arguments must be named "
-            + ", ".join(SPMM_ARGUMENT_NAMES)
-        )
-
     types = [type_text for _, type_text in arguments]
     row_offsets = re.fullmatch(r"memref<(\d+)xi32>", types[0])
-    column_indices = re.fullmatch(r"memref<(\d+)xi32>", types[1])
-    values = re.fullmatch(r"memref<(\d+)xf32>", types[2])
+    column_indices = re.fullmatch(r"memref<(\d+|\?)xi32>", types[1])
+    values = re.fullmatch(r"memref<(\d+|\?)xf32>", types[2])
     rhs = re.fullmatch(r"memref<(\d+)x(\d+)xf32>", types[3])
     output = re.fullmatch(r"memref<(\d+)x(\d+)xf32>", types[4])
     if not all((row_offsets, column_indices, values, rhs, output)):
@@ -302,7 +291,13 @@ def parse_fixed_spmm_ir(path):
     rhs_columns = int(rhs.group(2))
     if int(row_offsets.group(1)) != rows + 1:
         fail("rowOffsets extent must equal output rows plus one")
-    if int(column_indices.group(1)) != int(values.group(1)):
+    column_indices_extent = column_indices.group(1)
+    values_extent = values.group(1)
+    if (
+        column_indices_extent != "?"
+        and values_extent != "?"
+        and int(column_indices_extent) != int(values_extent)
+    ):
         fail("columnIndices and values extents must match")
     if rows <= 0 or int(rhs.group(1)) <= 0:
         fail("output and RHS row extents must be positive")
@@ -315,14 +310,32 @@ def parse_fixed_spmm_ir(path):
         )
 
     return {
-        "name": function.group(1),
+        "name": SUPPORTED_OPERATION,
         "args": [
             {"name": name, "type": abi_type_from_ir(type_text)}
-            for name, type_text in arguments
+            for name, (_, type_text) in zip(SPMM_ARGUMENT_NAMES, arguments)
         ],
         "output_rows": rows,
         "rhs_columns": rhs_columns,
     }
+
+
+def parse_fixed_spmm_ir(path):
+    return parse_fixed_spmm_ir_text(path.read_text(encoding="utf-8"))
+
+
+def prepare_bundle_input(args):
+    text = args.input.read_text(encoding="utf-8")
+    if not re.search(r'(?:!torch\.|"torch\.)', text):
+        return text, None
+
+    command = [
+        str(args.sparsewave_opt),
+        "--allow-unregistered-dialect",
+        str(args.input),
+        "--convert-torch-to-sparsewave",
+    ]
+    return run(command, text=True).stdout, command
 
 
 def validate_supported_options(args):
@@ -548,6 +561,7 @@ def pipeline(args):
         "kernel-bare-ptr-calling-convention": "true",
         "lower-host": "false",
         "sink-launch-index-computations": "true",
+        "prepare-gpu-bare-ptr-abi": "true",
         "spmm-mapping": args.mapping,
         "spmm-block-size": args.block_size,
         "spmm-tile-size": args.tile_size,
@@ -562,18 +576,22 @@ def pipeline(args):
 
 def build_bundle(args):
     validate_supported_options(args)
-    ir = parse_fixed_spmm_ir(args.input)
+    input_text, frontend_command = prepare_bundle_input(args)
+    ir = parse_fixed_spmm_ir_text(input_text)
     output = args.output.resolve()
     if output.exists() and (not output.is_dir() or any(output.iterdir())):
         fail(f"output directory is not empty: {output}")
     output.mkdir(parents=True, exist_ok=True)
 
-    command = [
-        str(args.sparsewave_opt),
-        str(args.input),
-        f"--pass-pipeline={pipeline(args)}",
-    ]
-    compiled = run(command, text=True).stdout
+    command = [str(args.sparsewave_opt)]
+    compile_input = None
+    if frontend_command:
+        command.extend(["--allow-unregistered-dialect", "-"])
+        compile_input = input_text
+    else:
+        command.append(str(args.input))
+    command.append(f"--pass-pipeline={pipeline(args)}")
+    compiled = run(command, input=compile_input, text=True).stdout
     hsaco = output / CODE_OBJECT
     hsaco.write_bytes(extract_gpu_binary(compiled))
     metadata = inspect_hsaco(args.llvm_readobj, hsaco)
@@ -582,12 +600,12 @@ def build_bundle(args):
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     verify_bundle(output, args.llvm_readobj)
-    return command
+    return [candidate for candidate in (frontend_command, command) if candidate]
 
 
 def parser():
     result = argparse.ArgumentParser(
-        description="Compile fixed-shape SparseWave SpMM into an lrrt bundle."
+        description="Compile shape-specialized SpMM MLIR into an lrrt bundle."
     )
     result.add_argument("input", nargs="?", type=Path)
     result.add_argument("-o", "--output", type=Path)
@@ -626,8 +644,12 @@ def main():
             argument_parser.error(
                 "bundle generation requires INPUT, --output, and --chip"
             )
-        command = build_bundle(args)
-        print("bundle compile: " + " ".join(map(str, command)), file=sys.stderr)
+        commands = build_bundle(args)
+        for command in commands:
+            print(
+                "bundle compile: " + " ".join(map(str, command)),
+                file=sys.stderr,
+            )
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
         print(f"sparsewave-bundle: error: {error}", file=sys.stderr)
         raise SystemExit(1)

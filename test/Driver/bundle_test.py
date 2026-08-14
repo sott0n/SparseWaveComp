@@ -122,7 +122,7 @@ class BundleTest(unittest.TestCase):
         )
         self.assertEqual(kernel["sparsewave"]["launch_n"], "output_rows")
 
-    def test_fixed_spmm_types_and_names_come_from_ir(self):
+    def test_fixed_spmm_uses_positional_abi_names(self):
         source = """func.func @spmm(
   %rowOffsets: memref<5xi32>,
   %columnIndices: memref<8xi32>,
@@ -141,11 +141,73 @@ class BundleTest(unittest.TestCase):
             parsed = BUNDLE.parse_fixed_spmm_ir(path)
         self.assertEqual(parsed, ir_description())
 
+    def test_frontend_dynamic_nnz_and_ssa_names_are_accepted(self):
+        source = """func.func @main(
+  %arg0: memref<5xi32>,
+  %arg1: memref<?xi32>,
+  %arg2: memref<?xf32>,
+  %arg3: memref<8x4xf32>,
+  %arg4: memref<4x4xf32>) {
+  sparsewave.spmm %arg0, %arg1, %arg2, %arg3, %arg4
+      : memref<5xi32>, memref<?xi32>, memref<?xf32>,
+        memref<8x4xf32>, memref<4x4xf32>
+  return
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "frontend.mlir"
+            path.write_text(source, encoding="utf-8")
+            parsed = BUNDLE.parse_fixed_spmm_ir(path)
+        self.assertEqual(parsed, ir_description())
+
+    def test_raw_torch_input_is_lowered_inside_producer(self):
+        source = """func.func @main(
+    %arg0: !torch.vtensor<[4,8],f32>,
+    %arg1: !torch.vtensor<[8,4],f32>)
+    -> !torch.vtensor<[4,4],f32> {
+  %0 = \"torch.operator\"(%arg0, %arg1) <{name = \"torch.aten._sparse_mm\"}>
+      : (!torch.vtensor<[4,8],f32>, !torch.vtensor<[8,4],f32>)
+      -> !torch.vtensor<[4,4],f32>
+  return %0 : !torch.vtensor<[4,4],f32>
+}
+"""
+        lowered = """func.func @main(
+    %arg0: memref<5xi32>, %arg1: memref<?xi32>,
+    %arg2: memref<?xf32>, %arg3: memref<8x4xf32>,
+    %arg4: memref<4x4xf32>) {
+  sparsewave.spmm %arg0, %arg1, %arg2, %arg3, %arg4
+      : memref<5xi32>, memref<?xi32>, memref<?xf32>,
+        memref<8x4xf32>, memref<4x4xf32>
+  return
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "torch.mlir"
+            path.write_text(source, encoding="utf-8")
+            args = options()
+            args.input = path
+            args.sparsewave_opt = Path("sparsewave-opt")
+            completed = types.SimpleNamespace(stdout=lowered)
+            with mock.patch.object(BUNDLE, "run", return_value=completed) as run:
+                normalized, command = BUNDLE.prepare_bundle_input(args)
+        self.assertEqual(normalized, lowered)
+        self.assertEqual(
+            command,
+            [
+                "sparsewave-opt",
+                "--allow-unregistered-dialect",
+                str(path),
+                "--convert-torch-to-sparsewave",
+            ],
+        )
+        run.assert_called_once_with(command, text=True)
+
     def test_pipeline_preserves_bundle_compilation_contract(self):
         rendered = BUNDLE.pipeline(options())
         self.assertIn("lower-host=false", rendered)
         self.assertIn("kernel-bare-ptr-calling-convention=true", rendered)
         self.assertIn("sink-launch-index-computations=true", rendered)
+        self.assertIn("prepare-gpu-bare-ptr-abi=true", rendered)
 
     def test_unsupported_launch_contract_is_rejected(self):
         cases = {

@@ -22,6 +22,22 @@ def ConvertTorchToSparseWave
   ];
 }
 
+def PrepareGPUBarePtrABI
+    : Pass<"prepare-gpu-bare-ptr-abi", "::mlir::ModuleOp"> {
+  let summary = "Prepare GPU launch captures for a bare-pointer kernel ABI";
+  let description = [{
+    Rewrites dynamic memrefs captured by gpu.launch to static views when their
+    layout has no dynamic offset or strides and every in-kernel use implements
+    the indexed-memory-access interface. These conditions prove that kernel
+    address calculation does not consume runtime shape metadata. Unsupported
+    descriptor-dependent captures are rejected instead of being specialized.
+  }];
+  let dependentDialects = [
+    "gpu::GPUDialect",
+    "memref::MemRefDialect"
+  ];
+}
+
 def ConvertLinalgSpMVToSparseWave
     : Pass<"convert-linalg-spmv-to-sparsewave", "::mlir::ModuleOp"> {
   let summary = "Recognize sparse Linalg SpMV operations";

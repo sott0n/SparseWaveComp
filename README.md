@@ -125,8 +125,11 @@ sparsewave-bundle spmm.mlir --output bundle --chip gfx1101 \
   --block-size 64 --tile-size 4 --wavefront-size 32
 ```
 
-Initial support is limited to fixed-shape CSR i32/FP32 SpMM on gfx1101 with
-Wave32, four RHS columns, `wave-per-row-tile`, block size 64, and tile size 4.
+Inputs may be fixed-shape SparseWave MLIR or raw Torch MLIR produced by the
+PyTorch frontend; dynamic CSR column/value extents are accepted because NNZ is
+not part of the launch ABI. Initial support is limited to CSR i32/FP32 SpMM on
+gfx1101 with Wave32, four RHS columns, `wave-per-row-tile`, block size 64, and
+tile size 4.
 Pass the output row count as `n` to `lrrt::Bundle::launch(n, args)`; the emitted
 grid is the HSA total work-item count. Dynamic LDS is zero, while fixed LDS
 remains in the HSACO metadata. Unsupported configurations are rejected.

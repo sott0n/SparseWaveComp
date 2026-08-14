@@ -159,6 +159,12 @@ struct SparseWaveToAMDGPUPipelineOptions
       llvm::cl::desc(
           "Sink constant index computations into outlined GPU kernels."),
       llvm::cl::init(false)};
+
+  PassOptions::Option<bool> prepareGPUBarePtrABI{
+      *this, "prepare-gpu-bare-ptr-abi",
+      llvm::cl::desc(
+          "Remove unused dynamic memref metadata from GPU kernel captures."),
+      llvm::cl::init(false)};
 };
 
 void buildAMDGPUBackendPipeline(OpPassManager &pm,
