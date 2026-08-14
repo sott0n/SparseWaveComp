@@ -357,6 +357,41 @@ def SparseWave_CSRElementwiseOp : SparseWave_Op<"csr_elementwise"> {
   let hasVerifier = 1;
 }
 
+def SparseWave_PositionSplitOp : SparseWave_Op<"position_split", [Pure]> {
+  let summary = "Split a sparse position into outer and inner coordinates";
+  let description = [{
+    `sparsewave.position_split` derives two scheduling coordinates from one
+    nonnegative sparse position. For a positive constant `factor`, the
+    operation computes:
+
+    ```text
+    outer = position / factor
+    inner = position % factor
+    position = outer * factor + inner
+    ```
+
+    The operation records a target-independent TACO-style split without
+    assigning either derived coordinate to hardware. Later scheduling passes
+    can independently reorder or map `outer` and `inner`; lowering
+    materializes the mapping as integer arithmetic.
+
+    Example:
+
+    ```mlir
+    %outer, %inner = sparsewave.position_split %position by 32 : index
+    ```
+  }];
+
+  let arguments = (ins Index:$position, I64Attr:$factor);
+  let results = (outs Index:$outer, Index:$inner);
+
+  let assemblyFormat = [{
+    $position `by` $factor attr-dict `:` type($position)
+  }];
+
+  let hasVerifier = 1;
+}
+
 def SparseWave_PositionSpaceOp : SparseWave_Op<"position_space", [Pure]> {
   let summary = "Partition a linear sparse position space among workers";
   let description = [{

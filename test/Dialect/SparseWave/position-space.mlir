@@ -15,6 +15,14 @@ func.func @position_space(
   return
 }
 
+// CHECK-LABEL: func.func @position_split(
+func.func @position_split(%position: index) -> (index, index) {
+  // CHECK: %[[OUTER:.*]], %[[INNER:.*]] = sparsewave.position_split
+  // CHECK-SAME: %[[POSITION:.*]] by 32 : index
+  %outer, %inner = sparsewave.position_split %position by 32 : index
+  return %outer, %inner : index, index
+}
+
 // CHECK-LABEL: func.func @static_valid_partition(
 func.func @static_valid_partition() {
   %lower = arith.constant 0 : index

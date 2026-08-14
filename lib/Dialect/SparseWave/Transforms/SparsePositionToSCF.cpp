@@ -17,6 +17,24 @@ namespace mlir::sparsewave {
 
 namespace {
 
+class LowerPositionSplitPattern : public OpRewritePattern<PositionSplitOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(PositionSplitOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value factor = arith::ConstantIndexOp::create(rewriter, loc,
+                                                  op.getFactorAttr().getInt());
+    Value outer =
+        arith::DivUIOp::create(rewriter, loc, op.getPosition(), factor);
+    Value inner =
+        arith::RemUIOp::create(rewriter, loc, op.getPosition(), factor);
+    rewriter.replaceOp(op, ValueRange{outer, inner});
+    return success();
+  }
+};
+
 class LowerPositionSpacePattern : public OpRewritePattern<PositionSpaceOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
@@ -124,8 +142,8 @@ public:
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<LowerPositionSpacePattern, LowerCSRCoordinatesPattern>(
-        &getContext());
+    patterns.add<LowerPositionSplitPattern, LowerPositionSpacePattern,
+                 LowerCSRCoordinatesPattern>(&getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
   }

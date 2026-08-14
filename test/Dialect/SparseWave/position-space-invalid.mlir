@@ -10,6 +10,23 @@ func.func @invalid_mapping(
 
 // -----
 
+func.func @nonpositive_split_factor(%position: index) {
+  // expected-error @+1 {{factor must be positive, but got 0}}
+  %outer, %inner = sparsewave.position_split %position by 0 : index
+  return
+}
+
+// -----
+
+func.func @negative_split_position() {
+  %position = arith.constant -1 : index
+  // expected-error @+1 {{position must be nonnegative, but got -1}}
+  %outer, %inner = sparsewave.position_split %position by 8 : index
+  return
+}
+
+// -----
+
 func.func @reversed_range() {
   %lower = arith.constant 9 : index
   %upper = arith.constant 4 : index

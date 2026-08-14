@@ -558,6 +558,19 @@ LogicalResult PositionSpaceOp::verify() {
   return success();
 }
 
+LogicalResult PositionSplitOp::verify() {
+  int64_t factor = getFactorAttr().getInt();
+  if (factor <= 0)
+    return emitOpError() << "factor must be positive, but got " << factor;
+
+  std::optional<int64_t> position = matchConstantIndex(getPosition());
+  if (position && *position < 0)
+    return emitOpError() << "position must be nonnegative, but got "
+                         << *position;
+
+  return success();
+}
+
 LogicalResult CSRCoordinatesOp::verify() {
   MemRefType rowOffsetsType = getRowOffsets().getType();
   MemRefType columnIndicesType = getColumnIndices().getType();

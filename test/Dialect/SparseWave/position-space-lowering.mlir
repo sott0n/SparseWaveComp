@@ -1,6 +1,18 @@
 // RUN: sparsewave-opt %s --lower-sparsewave-position-space | FileCheck %s
 // RUN: sparsewave-opt %s --lower-sparsewave-position-space --canonicalize | FileCheck %s --check-prefix=FOLD
 
+// CHECK-LABEL: func.func @split(
+// CHECK-SAME: %[[POSITION:.*]]: index)
+func.func @split(%position: index) -> (index, index) {
+  // CHECK: %[[FACTOR:.*]] = arith.constant 8 : index
+  // CHECK: %[[OUTER:.*]] = arith.divui %[[POSITION]], %[[FACTOR]] : index
+  // CHECK: %[[INNER:.*]] = arith.remui %[[POSITION]], %[[FACTOR]] : index
+  // CHECK-NOT: sparsewave.position_split
+  // CHECK: return %[[OUTER]], %[[INNER]] : index, index
+  %outer, %inner = sparsewave.position_split %position by 8 : index
+  return %outer, %inner : index, index
+}
+
 // CHECK-LABEL: func.func @partition(
 // CHECK-SAME: %[[LOWER:[^,]+]]: index, %[[UPPER:[^,]+]]: index,
 // CHECK-SAME: %[[WORKER_ID:[^,]+]]: index, %[[WORKER_COUNT:[^)]+]]: index)
@@ -86,6 +98,16 @@ func.func @partition_remainder() -> (index, index) {
   %begin, %end = sparsewave.position_space %lower to %upper
       partition %workerId of %workerCount mapping = "thread" : index
   return %begin, %end : index, index
+}
+
+// FOLD-LABEL: func.func @split_constant()
+// FOLD: %[[OUTER:.*]] = arith.constant 4 : index
+// FOLD: %[[INNER:.*]] = arith.constant 5 : index
+// FOLD: return %[[OUTER]], %[[INNER]] : index, index
+func.func @split_constant() -> (index, index) {
+  %position = arith.constant 37 : index
+  %outer, %inner = sparsewave.position_split %position by 8 : index
+  return %outer, %inner : index, index
 }
 
 // When there are more workers than positions, trailing workers receive an
