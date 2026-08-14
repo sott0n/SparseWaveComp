@@ -256,6 +256,8 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   // Materialize target-independent sparse position partitions and coordinate
   // recovery after GPU worker identities have been assigned.
   pm.addPass(createLowerSparseWavePositionSpace());
+  if (options.sinkLaunchIndexComputations)
+    pm.addPass(createGpuLaunchSinkIndexComputationsPass());
   pm.addPass(createGpuKernelOutliningPass());
   buildAMDGPUBackendPipeline(pm, options);
 }

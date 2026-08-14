@@ -108,8 +108,8 @@ synchronization.
 
 ## HSACO bundles
 
-`sparsewave-bundle` compiles an MLIR input without generating the host runtime
-wrapper and writes a standalone two-file bundle:
+`sparsewave-bundle` compiles MLIR without a host runtime wrapper and writes an
+[lrrt-compatible bundle](https://github.com/sott0n/light-rocm-runtime/blob/main/docs/manifest-schema.md):
 
 ```text
 bundle/
@@ -125,20 +125,19 @@ sparsewave-bundle spmm.mlir --output bundle --chip gfx1101 \
   --block-size 64 --tile-size 4 --wavefront-size 32
 ```
 
-The tool always enables `kernel-bare-ptr-calling-convention` explicitly. The
-manifest records the requested target and mapping choices, while kernel symbol,
-kernarg layout, required block dimensions, shared-memory size, wavefront size,
-and the resolved target architecture are read from the generated HSACO
-metadata. It also records the HSACO SHA-256 digest. Bundle generation performs
-an immediate consistency check; an existing bundle can be checked again with:
+Initial support is limited to fixed-shape CSR i32/FP32 SpMM on gfx1101 with
+Wave32, four RHS columns, `wave-per-row-tile`, block size 64, and tile size 4.
+Pass the output row count as `n` to `lrrt::Bundle::launch(n, args)`; the emitted
+grid is the HSA total work-item count. Dynamic LDS is zero, while fixed LDS
+remains in the HSACO metadata. Unsupported configurations are rejected.
 
 ```sh
 sparsewave-bundle --verify bundle
 ```
 
-The regular `gpu.binary` path remains the default. The lower-level pipelines
-also expose `lower-host=false` for callers that need a binary without host GPU
-runtime wrapper lowering.
+Generation and `--verify` check the HSACO hash, target, symbol, kernarg layout,
+block, grid, and LDS contract. The regular `gpu.binary` and host-wrapper path
+remains the default.
 
 The runtime integration tests are enabled automatically when `mlir-runner`,
 `libmlir_rocm_runtime.so`, `libmlir_runner_utils.so`, an ROCm architecture

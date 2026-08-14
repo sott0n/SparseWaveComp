@@ -153,6 +153,12 @@ struct SparseWaveToAMDGPUPipelineOptions
       *this, "elementwise-block-size",
       llvm::cl::desc("Number of GPU threads in each sparse elementwise block."),
       llvm::cl::init(256)};
+
+  PassOptions::Option<bool> sinkLaunchIndexComputations{
+      *this, "sink-launch-index-computations",
+      llvm::cl::desc(
+          "Sink constant index computations into outlined GPU kernels."),
+      llvm::cl::init(false)};
 };
 
 void buildAMDGPUBackendPipeline(OpPassManager &pm,
