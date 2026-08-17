@@ -95,8 +95,9 @@ def LowerSparseWavePositionSpace
   let summary = "Lower sparse position-space primitives to structured control flow";
   let description = [{
     Lowers sparsewave.position_split to quotient and remainder arithmetic,
-    sparsewave.position_for to a bounded sequential loop, and
-    sparsewave.position_space to integer arithmetic implementing a balanced
+    sparsewave.position_for to a bounded sequential loop,
+    sparsewave.position_reorder to an SCF loop nest in the requested order,
+    and sparsewave.position_space to integer arithmetic implementing a balanced
     contiguous partition. Lowers sparsewave.csr_coordinates to an upper-bound
     binary search over CSR row offsets and a column-index load. The resulting
     IR is target-independent and uses only Arith, MemRef, and SCF operations.

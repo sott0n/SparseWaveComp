@@ -5,7 +5,8 @@ include "sparsewave/Dialect/SparseWave/IR/SparseWaveDialect.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 def SparseWave_YieldOp : SparseWave_Op<"yield", [Pure, Terminator,
-    ParentOneOf<["SDDMMOp", "CSRRowwiseMapOp", "PositionForOp"]>]> {
+    ParentOneOf<["SDDMMOp", "CSRRowwiseMapOp", "PositionForOp",
+                 "PositionReorderOp"]>]> {
   let summary = "Yield from a SparseWave region";
   let arguments = (ins Variadic<AnyType>:$results);
   let builders = [OpBuilder<(ins), [{ build($_builder, $_state, ValueRange()); }]>];
@@ -430,6 +431,46 @@ def SparseWave_PositionForOp : SparseWave_Op<"position_for",
 
   let assemblyFormat = [{
     $workerId `in` $lower `to` $upper `by` $factor `:` type($lower) $body
+    attr-dict
+  }];
+
+  let hasVerifier = 1;
+}
+
+def SparseWave_PositionReorderOp : SparseWave_Op<"position_reorder",
+    [AttrSizedOperandSegments, SingleBlockImplicitTerminator<"YieldOp">,
+     RecursiveMemoryEffects]> {
+  let summary = "Execute logical position axes in a specified nesting order";
+  let description = [{
+    `sparsewave.position_reorder` represents a rectangular nest of logical
+    position-space axes and makes their execution order explicit. The lower
+    and upper bounds are listed in logical axis order. The `order` permutation
+    lists those axes from outermost to innermost, while the region arguments
+    remain in logical axis order.
+
+    For example, `order = [1, 0]` executes axis 1 as the outer loop and axis 0
+    as the inner loop, but passes `(axis0, axis1)` to the body:
+
+    ```mlir
+    sparsewave.position_reorder lower (%zero, %zero)
+        upper (%rows, %columns) order = [1, 0] {
+    ^bb0(%row: index, %column: index):
+      // Executes column-major while preserving logical argument order.
+      sparsewave.yield
+    }
+    ```
+
+    Bounds describe half-open ranges and every loop has unit stride. This is a
+    target-independent scheduling operation; it does not map an axis to GPU
+    hardware.
+  }];
+
+  let arguments = (ins Variadic<Index>:$lower, Variadic<Index>:$upper,
+                       DenseI64ArrayAttr:$order);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = [{
+    `lower` `(` $lower `)` `upper` `(` $upper `)` `order` `=` $order $body
     attr-dict
   }];
 

@@ -91,6 +91,82 @@ func.func @position_for_must_not_yield_values(
 
 // -----
 
+func.func @position_reorder_requires_two_axes(%lower: index, %upper: index) {
+  // expected-error @+1 {{requires at least two axes, but got 1}}
+  sparsewave.position_reorder lower (%lower) upper (%upper) order = [0] {
+  ^bb0(%axis0: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_reorder_bound_count(
+    %lower0: index, %lower1: index, %upper0: index) {
+  // expected-error @+1 {{lower and upper bounds must have the same number of axes, but got 2 and 1}}
+  sparsewave.position_reorder lower (%lower0, %lower1) upper (%upper0)
+      order = [0, 1] {
+  ^bb0(%axis0: index, %axis1: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_reorder_order_size(
+    %lower0: index, %lower1: index, %upper0: index, %upper1: index) {
+  // expected-error @+1 {{order must contain one entry per axis, but got 1 entries for 2 axes}}
+  sparsewave.position_reorder lower (%lower0, %lower1)
+      upper (%upper0, %upper1) order = [1] {
+  ^bb0(%axis0: index, %axis1: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_reorder_duplicate_axis(
+    %lower0: index, %lower1: index, %upper0: index, %upper1: index) {
+  // expected-error @+1 {{order must be a permutation, but axis 0 appears more than once}}
+  sparsewave.position_reorder lower (%lower0, %lower1)
+      upper (%upper0, %upper1) order = [0, 0] {
+  ^bb0(%axis0: index, %axis1: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_reorder_axis_out_of_range(
+    %lower0: index, %lower1: index, %upper0: index, %upper1: index) {
+  // expected-error @+1 {{order axis must be in [0, 2), but got 2}}
+  sparsewave.position_reorder lower (%lower0, %lower1)
+      upper (%upper0, %upper1) order = [0, 2] {
+  ^bb0(%axis0: index, %axis1: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_reorder_body_arguments(
+    %lower0: index, %lower1: index, %upper0: index, %upper1: index) {
+  // expected-error @+1 {{body must have one argument per logical axis, but got 1 for 2 axes}}
+  sparsewave.position_reorder lower (%lower0, %lower1)
+      upper (%upper0, %upper1) order = [0, 1] {
+  ^bb0(%axis0: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
 func.func @reversed_range() {
   %lower = arith.constant 9 : index
   %upper = arith.constant 4 : index

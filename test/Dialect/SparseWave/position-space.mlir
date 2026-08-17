@@ -36,6 +36,20 @@ func.func @position_for(%lower: index, %upper: index, %workerId: index,
   return
 }
 
+// CHECK-LABEL: func.func @position_reorder(
+func.func @position_reorder(%lower0: index, %lower1: index, %upper0: index,
+                            %upper1: index, %output: memref<?x?xindex>) {
+  // CHECK: sparsewave.position_reorder lower(%[[LOWER0:.*]], %[[LOWER1:.*]]) upper(%[[UPPER0:.*]], %[[UPPER1:.*]]) order = [1, 0] {
+  // CHECK: ^bb0(%[[AXIS0:.*]]: index, %[[AXIS1:.*]]: index):
+  sparsewave.position_reorder lower (%lower0, %lower1)
+      upper (%upper0, %upper1) order = [1, 0] {
+  ^bb0(%axis0: index, %axis1: index):
+    memref.store %axis0, %output[%axis0, %axis1] : memref<?x?xindex>
+    sparsewave.yield
+  }
+  return
+}
+
 // CHECK-LABEL: func.func @static_valid_partition(
 func.func @static_valid_partition() {
   %lower = arith.constant 0 : index

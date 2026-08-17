@@ -97,6 +97,40 @@ public:
   }
 };
 
+class LowerPositionReorderPattern : public OpRewritePattern<PositionReorderOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(PositionReorderOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    SmallVector<Value> inductionVariables(op.getLower().size());
+    Block *innermostBody = nullptr;
+
+    // Build loops from outermost to innermost according to the scheduling
+    // permutation. Keep induction variables indexed by logical axis so the
+    // region interface does not change when execution order changes.
+    for (int64_t axis : op.getOrder()) {
+      auto loop = scf::ForOp::create(rewriter, loc, op.getLower()[axis],
+                                     op.getUpper()[axis], one);
+      inductionVariables[axis] = loop.getInductionVar();
+      innermostBody = loop.getBody();
+      rewriter.setInsertionPointToStart(innermostBody);
+    }
+
+    auto sparseYield = cast<YieldOp>(op.getBody().front().getTerminator());
+    rewriter.setInsertionPoint(sparseYield);
+    scf::YieldOp::create(rewriter, sparseYield.getLoc());
+    rewriter.eraseOp(sparseYield);
+    rewriter.eraseOp(innermostBody->getTerminator());
+    rewriter.mergeBlocks(&op.getBody().front(), innermostBody,
+                         inductionVariables);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 class LowerPositionSpacePattern : public OpRewritePattern<PositionSpaceOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
@@ -205,8 +239,8 @@ public:
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     patterns.add<LowerPositionSplitPattern, LowerPositionForPattern,
-                 LowerPositionSpacePattern, LowerCSRCoordinatesPattern>(
-        &getContext());
+                 LowerPositionReorderPattern, LowerPositionSpacePattern,
+                 LowerCSRCoordinatesPattern>(&getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
   }

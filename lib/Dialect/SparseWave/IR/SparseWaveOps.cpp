@@ -609,6 +609,65 @@ LogicalResult PositionForOp::verify() {
   return success();
 }
 
+LogicalResult PositionReorderOp::verify() {
+  unsigned rank = getLower().size();
+  if (rank != getUpper().size())
+    return emitOpError() << "lower and upper bounds must have the same number "
+                            "of axes, but got "
+                         << rank << " and " << getUpper().size();
+  if (rank < 2)
+    return emitOpError() << "requires at least two axes, but got " << rank;
+
+  ArrayRef<int64_t> order = getOrder();
+  if (order.size() != rank)
+    return emitOpError() << "order must contain one entry per axis, but got "
+                         << order.size() << " entries for " << rank << " axes";
+
+  SmallVector<bool> seen(rank, false);
+  for (int64_t axis : order) {
+    if (axis < 0 || axis >= static_cast<int64_t>(rank))
+      return emitOpError() << "order axis must be in [0, " << rank
+                           << "), but got " << axis;
+    if (seen[axis])
+      return emitOpError() << "order must be a permutation, but axis " << axis
+                           << " appears more than once";
+    seen[axis] = true;
+  }
+
+  for (auto [axis, lowerValue, upperValue] :
+       llvm::enumerate(getLower(), getUpper())) {
+    std::optional<int64_t> lower = matchConstantIndex(lowerValue);
+    std::optional<int64_t> upper = matchConstantIndex(upperValue);
+    if (lower && *lower < 0)
+      return emitOpError() << "lower bound for axis " << axis
+                           << " must be nonnegative, but got " << *lower;
+    if (upper && *upper < 0)
+      return emitOpError() << "upper bound for axis " << axis
+                           << " must be nonnegative, but got " << *upper;
+    if (lower && upper && *lower > *upper)
+      return emitOpError() << "lower bound must not exceed upper bound for "
+                              "axis "
+                           << axis << ", but got " << *lower << " and "
+                           << *upper;
+  }
+
+  Block &body = getBody().front();
+  if (body.getNumArguments() != rank)
+    return emitOpError() << "body must have one argument per logical axis, "
+                            "but got "
+                         << body.getNumArguments() << " for " << rank
+                         << " axes";
+  for (BlockArgument argument : body.getArguments())
+    if (!argument.getType().isIndex())
+      return emitOpError() << "body arguments must have index type";
+
+  auto yield = dyn_cast<YieldOp>(body.getTerminator());
+  if (!yield || !yield.getResults().empty())
+    return emitOpError() << "body must yield no values";
+
+  return success();
+}
+
 LogicalResult CSRCoordinatesOp::verify() {
   MemRefType rowOffsetsType = getRowOffsets().getType();
   MemRefType columnIndicesType = getColumnIndices().getType();

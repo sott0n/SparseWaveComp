@@ -48,6 +48,30 @@ func.func @position_for(%lower: index, %upper: index, %worker: index,
   return
 }
 
+// The order permutation controls loop nesting, while body arguments remain in
+// logical axis order.
+// CHECK-LABEL: func.func @position_reorder(
+// CHECK-SAME: %[[LOWER0:[^,]+]]: index, %[[LOWER1:[^,]+]]: index,
+// CHECK-SAME: %[[UPPER0:[^,]+]]: index, %[[UPPER1:[^,]+]]: index,
+// CHECK-SAME: %[[OUTPUT:[^)]+]]: memref<?x?xindex>)
+func.func @position_reorder(%lower0: index, %lower1: index, %upper0: index,
+                            %upper1: index, %output: memref<?x?xindex>) {
+  // CHECK: %[[ONE:.*]] = arith.constant 1 : index
+  // CHECK: scf.for %[[AXIS1:.*]] = %[[LOWER1]] to %[[UPPER1]] step %[[ONE]] {
+  // CHECK:   scf.for %[[AXIS0:.*]] = %[[LOWER0]] to %[[UPPER0]] step %[[ONE]] {
+  // CHECK:     memref.store %[[AXIS0]], %[[OUTPUT]][%[[AXIS0]], %[[AXIS1]]] : memref<?x?xindex>
+  // CHECK:   }
+  // CHECK: }
+  // CHECK-NOT: sparsewave.position_reorder
+  sparsewave.position_reorder lower (%lower0, %lower1)
+      upper (%upper0, %upper1) order = [1, 0] {
+  ^bb0(%axis0: index, %axis1: index):
+    memref.store %axis0, %output[%axis0, %axis1] : memref<?x?xindex>
+    sparsewave.yield
+  }
+  return
+}
+
 // CHECK-LABEL: func.func @partition(
 // CHECK-SAME: %[[LOWER:[^,]+]]: index, %[[UPPER:[^,]+]]: index,
 // CHECK-SAME: %[[WORKER_ID:[^,]+]]: index, %[[WORKER_COUNT:[^)]+]]: index)
