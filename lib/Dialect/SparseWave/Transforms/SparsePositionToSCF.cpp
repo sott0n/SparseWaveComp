@@ -35,6 +35,68 @@ public:
   }
 };
 
+class LowerPositionForPattern : public OpRewritePattern<PositionForOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(PositionForOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value factor = arith::ConstantIndexOp::create(rewriter, loc,
+                                                  op.getFactorAttr().getInt());
+    Value span =
+        arith::SubIOp::create(rewriter, loc, op.getUpper(), op.getLower());
+
+    // Compute ceil(span / factor) without forming span + factor - 1, which
+    // could overflow at the upper end of the index range.
+    Value fullChunks = arith::DivUIOp::create(rewriter, loc, span, factor);
+    Value remainder = arith::RemUIOp::create(rewriter, loc, span, factor);
+    Value hasRemainder = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::ne, remainder, zero);
+    Value extraChunk =
+        arith::SelectOp::create(rewriter, loc, hasRemainder, one, zero);
+    Value chunkCount =
+        arith::AddIOp::create(rewriter, loc, fullChunks, extraChunk);
+    Value active = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::ult, op.getWorkerId(), chunkCount);
+
+    // Substitute zero before multiplication for an inactive worker. This
+    // avoids overflowing worker_id * factor even when a rounded-up launch
+    // supplies an arbitrarily large extra worker ID.
+    Value safeWorker =
+        arith::SelectOp::create(rewriter, loc, active, op.getWorkerId(), zero);
+    Value chunkOffset =
+        arith::MulIOp::create(rewriter, loc, safeWorker, factor);
+    Value begin =
+        arith::AddIOp::create(rewriter, loc, op.getLower(), chunkOffset);
+    Value remaining =
+        arith::SubIOp::create(rewriter, loc, op.getUpper(), begin);
+    Value boundedSize =
+        arith::MinUIOp::create(rewriter, loc, remaining, factor);
+    Value size =
+        arith::SelectOp::create(rewriter, loc, active, boundedSize, zero);
+    Value end = arith::AddIOp::create(rewriter, loc, begin, size);
+
+    auto loop = scf::ForOp::create(rewriter, loc, begin, end, one);
+    Block *loopBody = loop.getBody();
+    rewriter.setInsertionPointToStart(loopBody);
+    Value inner =
+        arith::SubIOp::create(rewriter, loc, loop.getInductionVar(), begin);
+
+    auto sparseYield = cast<YieldOp>(op.getBody().front().getTerminator());
+    rewriter.setInsertionPoint(sparseYield);
+    scf::YieldOp::create(rewriter, sparseYield.getLoc());
+    rewriter.eraseOp(sparseYield);
+    rewriter.eraseOp(loopBody->getTerminator());
+    rewriter.mergeBlocks(&op.getBody().front(), loopBody,
+                         ValueRange{loop.getInductionVar(), inner});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 class LowerPositionSpacePattern : public OpRewritePattern<PositionSpaceOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
@@ -142,8 +204,9 @@ public:
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<LowerPositionSplitPattern, LowerPositionSpacePattern,
-                 LowerCSRCoordinatesPattern>(&getContext());
+    patterns.add<LowerPositionSplitPattern, LowerPositionForPattern,
+                 LowerPositionSpacePattern, LowerCSRCoordinatesPattern>(
+        &getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
   }

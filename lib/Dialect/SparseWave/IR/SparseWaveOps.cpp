@@ -571,6 +571,44 @@ LogicalResult PositionSplitOp::verify() {
   return success();
 }
 
+LogicalResult PositionForOp::verify() {
+  int64_t factor = getFactorAttr().getInt();
+  if (factor <= 0)
+    return emitOpError() << "factor must be positive, but got " << factor;
+
+  std::optional<int64_t> lower = matchConstantIndex(getLower());
+  std::optional<int64_t> upper = matchConstantIndex(getUpper());
+  if (lower && *lower < 0)
+    return emitOpError() << "lower bound must be nonnegative, but got "
+                         << *lower;
+  if (upper && *upper < 0)
+    return emitOpError() << "upper bound must be nonnegative, but got "
+                         << *upper;
+  if (lower && upper && *lower > *upper)
+    return emitOpError() << "lower bound must not exceed upper bound, but got "
+                         << *lower << " and " << *upper;
+
+  std::optional<int64_t> workerId = matchConstantIndex(getWorkerId());
+  if (workerId && *workerId < 0)
+    return emitOpError() << "worker ID must be nonnegative, but got "
+                         << *workerId;
+
+  Block &body = getBody().front();
+  if (body.getNumArguments() != 2)
+    return emitOpError() << "body must have position and inner arguments, but "
+                            "got "
+                         << body.getNumArguments();
+  for (BlockArgument argument : body.getArguments())
+    if (!argument.getType().isIndex())
+      return emitOpError() << "body arguments must have index type";
+
+  auto yield = dyn_cast<YieldOp>(body.getTerminator());
+  if (!yield || !yield.getResults().empty())
+    return emitOpError() << "body must yield no values";
+
+  return success();
+}
+
 LogicalResult CSRCoordinatesOp::verify() {
   MemRefType rowOffsetsType = getRowOffsets().getType();
   MemRefType columnIndicesType = getColumnIndices().getType();

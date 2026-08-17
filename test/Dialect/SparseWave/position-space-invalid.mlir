@@ -27,6 +27,70 @@ func.func @negative_split_position() {
 
 // -----
 
+func.func @nonpositive_position_for_factor(
+    %lower: index, %upper: index, %workerId: index) {
+  // expected-error @+1 {{factor must be positive, but got 0}}
+  sparsewave.position_for %workerId in %lower to %upper by 0 : index {
+  ^bb0(%position: index, %inner: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_for_reversed_range() {
+  %lower = arith.constant 9 : index
+  %upper = arith.constant 4 : index
+  %workerId = arith.constant 0 : index
+  // expected-error @+1 {{lower bound must not exceed upper bound, but got 9 and 4}}
+  sparsewave.position_for %workerId in %lower to %upper by 8 : index {
+  ^bb0(%position: index, %inner: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_for_negative_worker() {
+  %lower = arith.constant 0 : index
+  %upper = arith.constant 4 : index
+  %workerId = arith.constant -1 : index
+  // expected-error @+1 {{worker ID must be nonnegative, but got -1}}
+  sparsewave.position_for %workerId in %lower to %upper by 8 : index {
+  ^bb0(%position: index, %inner: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_for_body_arguments(
+    %lower: index, %upper: index, %workerId: index) {
+  // expected-error @+1 {{body must have position and inner arguments, but got 1}}
+  sparsewave.position_for %workerId in %lower to %upper by 8 : index {
+  ^bb0(%position: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_for_must_not_yield_values(
+    %lower: index, %upper: index, %workerId: index) {
+  // expected-error @+1 {{body must yield no values}}
+  sparsewave.position_for %workerId in %lower to %upper by 8 : index {
+  ^bb0(%position: index, %inner: index):
+    sparsewave.yield %position : index
+  }
+  return
+}
+
+// -----
+
 func.func @reversed_range() {
   %lower = arith.constant 9 : index
   %upper = arith.constant 4 : index

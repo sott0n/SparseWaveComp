@@ -13,6 +13,41 @@ func.func @split(%position: index) -> (index, index) {
   return %outer, %inner : index, index
 }
 
+// CHECK-LABEL: func.func @position_for(
+// CHECK-SAME: %[[LOWER:[^,]+]]: index, %[[UPPER:[^,]+]]: index,
+// CHECK-SAME: %[[WORKER:[^,]+]]: index, %[[OUTPUT:[^)]+]]: memref<?xindex>)
+func.func @position_for(%lower: index, %upper: index, %worker: index,
+                        %output: memref<?xindex>) {
+  // CHECK: %[[ZERO:.*]] = arith.constant 0 : index
+  // CHECK: %[[ONE:.*]] = arith.constant 1 : index
+  // CHECK: %[[FACTOR:.*]] = arith.constant 8 : index
+  // CHECK: %[[SPAN:.*]] = arith.subi %[[UPPER]], %[[LOWER]] : index
+  // CHECK: %[[FULL:.*]] = arith.divui %[[SPAN]], %[[FACTOR]] : index
+  // CHECK: %[[REMAINDER:.*]] = arith.remui %[[SPAN]], %[[FACTOR]] : index
+  // CHECK: %[[HAS_REMAINDER:.*]] = arith.cmpi ne, %[[REMAINDER]], %[[ZERO]] : index
+  // CHECK: %[[EXTRA:.*]] = arith.select %[[HAS_REMAINDER]], %[[ONE]], %[[ZERO]] : index
+  // CHECK: %[[COUNT:.*]] = arith.addi %[[FULL]], %[[EXTRA]] : index
+  // CHECK: %[[ACTIVE:.*]] = arith.cmpi ult, %[[WORKER]], %[[COUNT]] : index
+  // CHECK: %[[SAFE_WORKER:.*]] = arith.select %[[ACTIVE]], %[[WORKER]], %[[ZERO]] : index
+  // CHECK: %[[OFFSET:.*]] = arith.muli %[[SAFE_WORKER]], %[[FACTOR]] : index
+  // CHECK: %[[BEGIN:.*]] = arith.addi %[[LOWER]], %[[OFFSET]] : index
+  // CHECK: %[[REMAINING:.*]] = arith.subi %[[UPPER]], %[[BEGIN]] : index
+  // CHECK: %[[BOUNDED_SIZE:.*]] = arith.minui %[[REMAINING]], %[[FACTOR]] : index
+  // CHECK: %[[SIZE:.*]] = arith.select %[[ACTIVE]], %[[BOUNDED_SIZE]], %[[ZERO]] : index
+  // CHECK: %[[END:.*]] = arith.addi %[[BEGIN]], %[[SIZE]] : index
+  // CHECK: scf.for %[[POSITION:.*]] = %[[BEGIN]] to %[[END]] step %[[ONE]] {
+  // CHECK: %[[INNER:.*]] = arith.subi %[[POSITION]], %[[BEGIN]] : index
+  // CHECK: memref.store %[[INNER]], %[[OUTPUT]][%[[POSITION]]] : memref<?xindex>
+  // CHECK: }
+  // CHECK-NOT: sparsewave.position_for
+  sparsewave.position_for %worker in %lower to %upper by 8 : index {
+  ^bb0(%position: index, %inner: index):
+    memref.store %inner, %output[%position] : memref<?xindex>
+    sparsewave.yield
+  }
+  return
+}
+
 // CHECK-LABEL: func.func @partition(
 // CHECK-SAME: %[[LOWER:[^,]+]]: index, %[[UPPER:[^,]+]]: index,
 // CHECK-SAME: %[[WORKER_ID:[^,]+]]: index, %[[WORKER_COUNT:[^)]+]]: index)
@@ -108,6 +143,44 @@ func.func @split_constant() -> (index, index) {
   %position = arith.constant 37 : index
   %outer, %inner = sparsewave.position_split %position by 8 : index
   return %outer, %inner : index, index
+}
+
+// A nonzero lower bound is included in the chunk start, and the final chunk
+// stops at upper instead of executing all factor iterations.
+// FOLD-LABEL: func.func @position_for_tail(
+// FOLD: %[[ONE:.*]] = arith.constant 1 : index
+// FOLD: %[[BEGIN:.*]] = arith.constant 13 : index
+// FOLD: %[[END:.*]] = arith.constant 15 : index
+// FOLD: scf.for %[[POSITION:.*]] = %[[BEGIN]] to %[[END]] step %[[ONE]] {
+// FOLD: %[[INNER:.*]] = arith.subi %[[POSITION]], %[[BEGIN]] : index
+// FOLD: memref.store %[[INNER]], %{{.*}}[%[[POSITION]]] : memref<?xindex>
+func.func @position_for_tail(%output: memref<?xindex>) {
+  %lower = arith.constant 5 : index
+  %upper = arith.constant 15 : index
+  %worker = arith.constant 2 : index
+  sparsewave.position_for %worker in %lower to %upper by 4 : index {
+  ^bb0(%position: index, %inner: index):
+    memref.store %inner, %output[%position] : memref<?xindex>
+    sparsewave.yield
+  }
+  return
+}
+
+// A worker beyond ceil((upper - lower) / factor) executes no body operations.
+// FOLD-LABEL: func.func @position_for_extra_worker(
+// FOLD-NOT: scf.for
+// FOLD-NOT: memref.store
+// FOLD: return
+func.func @position_for_extra_worker(%output: memref<?xindex>) {
+  %lower = arith.constant 0 : index
+  %upper = arith.constant 10 : index
+  %worker = arith.constant 3 : index
+  sparsewave.position_for %worker in %lower to %upper by 4 : index {
+  ^bb0(%position: index, %inner: index):
+    memref.store %inner, %output[%position] : memref<?xindex>
+    sparsewave.yield
+  }
+  return
 }
 
 // When there are more workers than positions, trailing workers receive an

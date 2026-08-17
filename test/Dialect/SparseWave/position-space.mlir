@@ -23,6 +23,19 @@ func.func @position_split(%position: index) -> (index, index) {
   return %outer, %inner : index, index
 }
 
+// CHECK-LABEL: func.func @position_for(
+func.func @position_for(%lower: index, %upper: index, %workerId: index,
+                        %output: memref<?xindex>) {
+  // CHECK: sparsewave.position_for %[[WORKER:.*]] in %[[LOWER:.*]] to %[[UPPER:.*]] by 8 : index {
+  // CHECK: ^bb0(%[[POSITION:.*]]: index, %[[INNER:.*]]: index):
+  sparsewave.position_for %workerId in %lower to %upper by 8 : index {
+  ^bb0(%position: index, %inner: index):
+    memref.store %inner, %output[%position] : memref<?xindex>
+    sparsewave.yield
+  }
+  return
+}
+
 // CHECK-LABEL: func.func @static_valid_partition(
 func.func @static_valid_partition() {
   %lower = arith.constant 0 : index

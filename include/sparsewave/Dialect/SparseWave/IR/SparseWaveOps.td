@@ -5,8 +5,8 @@ include "sparsewave/Dialect/SparseWave/IR/SparseWaveDialect.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 def SparseWave_YieldOp : SparseWave_Op<"yield", [Pure, Terminator,
-    ParentOneOf<["SDDMMOp", "CSRRowwiseMapOp"]>]> {
-  let summary = "Yield a scalar from a SparseWave region";
+    ParentOneOf<["SDDMMOp", "CSRRowwiseMapOp", "PositionForOp"]>]> {
+  let summary = "Yield from a SparseWave region";
   let arguments = (ins Variadic<AnyType>:$results);
   let builders = [OpBuilder<(ins), [{ build($_builder, $_state, ValueRange()); }]>];
   let assemblyFormat = [{ attr-dict ($results^ `:` type($results))? }];
@@ -387,6 +387,50 @@ def SparseWave_PositionSplitOp : SparseWave_Op<"position_split", [Pure]> {
 
   let assemblyFormat = [{
     $position `by` $factor attr-dict `:` type($position)
+  }];
+
+  let hasVerifier = 1;
+}
+
+def SparseWave_PositionForOp : SparseWave_Op<"position_for",
+    [SingleBlockImplicitTerminator<"YieldOp">, RecursiveMemoryEffects]> {
+  let summary = "Execute one logical worker's split position chunk";
+  let description = [{
+    `sparsewave.position_for` materializes the sequential inner iteration of a
+    TACO-style position split. The `worker_id` identifies the split `outer`
+    coordinate, while the region receives the original `position` and the
+    corresponding `inner` coordinate:
+
+    ```text
+    position = lower + worker_id * factor + inner
+    ```
+
+    Positions are restricted to the half-open range `[lower, upper)`. The last
+    worker may therefore execute fewer than `factor` iterations. Worker IDs
+    beyond the number of required chunks execute an empty region, allowing a
+    later mapping pass to launch a rounded-up number of hardware workers.
+
+    The operation describes a target-independent logical worker. It does not
+    assign that worker to a GPU thread, wave, or block.
+
+    Example:
+
+    ```mlir
+    sparsewave.position_for %worker_id in %lower to %upper by 32 : index {
+    ^bb0(%position: index, %inner: index):
+      // Process one stored sparse position.
+      sparsewave.yield
+    }
+    ```
+  }];
+
+  let arguments = (ins Index:$lower, Index:$upper, Index:$workerId,
+                       I64Attr:$factor);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = [{
+    $workerId `in` $lower `to` $upper `by` $factor `:` type($lower) $body
+    attr-dict
   }];
 
   let hasVerifier = 1;
