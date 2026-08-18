@@ -1,15 +1,5 @@
 // RUN: sparsewave-opt %s -split-input-file -verify-diagnostics
 
-func.func @invalid_mapping(
-    %lower: index, %upper: index, %workerId: index, %workerCount: index) {
-  // expected-error @+1 {{mapping must be 'thread', 'wave', or 'block', but got 'lane'}}
-  %begin, %end = sparsewave.position_space %lower to %upper
-      partition %workerId of %workerCount mapping = "lane" : index
-  return
-}
-
-// -----
-
 func.func @nonpositive_split_factor(%position: index) {
   // expected-error @+1 {{factor must be positive, but got 0}}
   %outer, %inner = sparsewave.position_split %position by 0 : index
@@ -257,7 +247,7 @@ func.func @reversed_range() {
   %workerCount = arith.constant 1 : index
   // expected-error @+1 {{lower bound must not exceed upper bound, but got 9 and 4}}
   %begin, %end = sparsewave.position_space %lower to %upper
-      partition %workerId of %workerCount mapping = "thread" : index
+      partition %workerId of %workerCount : index
   return
 }
 
@@ -270,7 +260,7 @@ func.func @negative_position_bound() {
   %workerCount = arith.constant 1 : index
   // expected-error @+1 {{lower bound must be nonnegative, but got -1}}
   %begin, %end = sparsewave.position_space %lower to %upper
-      partition %workerId of %workerCount mapping = "thread" : index
+      partition %workerId of %workerCount : index
   return
 }
 
@@ -283,7 +273,7 @@ func.func @nonpositive_worker_count() {
   %workerCount = arith.constant 0 : index
   // expected-error @+1 {{worker count must be positive, but got 0}}
   %begin, %end = sparsewave.position_space %lower to %upper
-      partition %workerId of %workerCount mapping = "wave" : index
+      partition %workerId of %workerCount : index
   return
 }
 
@@ -296,7 +286,7 @@ func.func @negative_worker_id() {
   %workerCount = arith.constant 2 : index
   // expected-error @+1 {{worker ID must be nonnegative, but got -1}}
   %begin, %end = sparsewave.position_space %lower to %upper
-      partition %workerId of %workerCount mapping = "block" : index
+      partition %workerId of %workerCount : index
   return
 }
 
@@ -309,7 +299,7 @@ func.func @worker_id_out_of_range() {
   %workerCount = arith.constant 2 : index
   // expected-error @+1 {{worker ID must be smaller than worker count, but got 2 and 2}}
   %begin, %end = sparsewave.position_space %lower to %upper
-      partition %workerId of %workerCount mapping = "thread" : index
+      partition %workerId of %workerCount : index
   return
 }
 

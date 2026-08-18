@@ -134,7 +134,7 @@ func.func @partition(%lower: index, %upper: index, %workerId: index,
   // CHECK-NOT: sparsewave.position_space
   // CHECK: return %[[BEGIN]], %[[END]] : index, index
   %begin, %end = sparsewave.position_space %lower to %upper
-      partition %workerId of %workerCount mapping = "wave" : index
+      partition %workerId of %workerCount : index
   return %begin, %end : index, index
 }
 
@@ -196,7 +196,7 @@ func.func @partition_remainder() -> (index, index) {
   %workerId = arith.constant 1 : index
   %workerCount = arith.constant 3 : index
   %begin, %end = sparsewave.position_space %lower to %upper
-      partition %workerId of %workerCount mapping = "thread" : index
+      partition %workerId of %workerCount : index
   return %begin, %end : index, index
 }
 
@@ -340,6 +340,6 @@ func.func @partition_empty_worker() -> (index, index) {
   %workerId = arith.constant 4 : index
   %workerCount = arith.constant 5 : index
   %begin, %end = sparsewave.position_space %lower to %upper
-      partition %workerId of %workerCount mapping = "block" : index
+      partition %workerId of %workerCount : index
   return %begin, %end : index, index
 }

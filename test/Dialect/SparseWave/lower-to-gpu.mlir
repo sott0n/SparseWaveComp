@@ -122,7 +122,7 @@
 // POS: %[[WORKER_BASE:.*]] = arith.muli %{{.*}}, %{{.*}}
 // POS-NEXT: %[[WORKER:.*]] = arith.addi %[[WORKER_BASE]], %{{.*}}
 // POS: %[[WORKER_COUNT:.*]] = arith.muli %{{.*}}, %{{.*}}
-// POS: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space %[[ZERO]] to %[[NNZ]] partition %[[WORKER]] of %[[WORKER_COUNT]] mapping = "thread"
+// POS: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space %[[ZERO]] to %[[NNZ]] partition %[[WORKER]] of %[[WORKER_COUNT]]
 // POS: scf.for %[[POSITION_VALUE:.*]] = %[[BEGIN]] to %[[END]] step %[[ONE]]
 // POS: %[[ROW:.*]], %[[COLUMN:.*]] = sparsewave.csr_coordinates %{{.*}}, %{{.*}} at %[[POSITION_VALUE]]
 // POS: %[[SPARSE_VALUE:.*]] = memref.load %{{.*}}[%[[POSITION_VALUE]]]
@@ -154,7 +154,7 @@
 // SEGMENT: %[[WAVE_BASE:.*]] = arith.muli %{{.*}}, %[[WAVES_PER_BLOCK]]
 // SEGMENT: %[[POSITION_WORKER:.*]] = arith.addi %[[WAVE_BASE]], %[[WAVE_IN_BLOCK]]
 // SEGMENT: %[[WAVE_COUNT:.*]] = arith.muli %{{.*}}, %[[WAVES_PER_BLOCK]]
-// SEGMENT: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space %[[ZERO]] to %[[NNZ]] partition %[[POSITION_WORKER]] of %[[WAVE_COUNT]] mapping = "wave"
+// SEGMENT: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space %[[ZERO]] to %[[NNZ]] partition %[[POSITION_WORKER]] of %[[WAVE_COUNT]]
 // SEGMENT: %[[POSITION:.*]] = arith.addi %[[BEGIN]], %[[LANE]]
 // SEGMENT: %[[ACTIVE:.*]] = arith.cmpi ult, %[[POSITION]], %[[END]]
 // SEGMENT: scf.if %[[ACTIVE]] -> (index, f32)

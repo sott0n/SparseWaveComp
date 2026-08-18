@@ -584,11 +584,6 @@ LogicalResult CSRElementwiseOp::verify() {
 }
 
 LogicalResult PositionSpaceOp::verify() {
-  if (failed(symbolizePositionMapping(getMapping())))
-    return emitOpError()
-           << "mapping must be 'thread', 'wave', or 'block', but got '"
-           << getMapping() << "'";
-
   std::optional<int64_t> lower = matchConstantIndex(getLower());
   std::optional<int64_t> upper = matchConstantIndex(getUpper());
   if (lower && *lower < 0)

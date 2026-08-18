@@ -246,7 +246,7 @@ public:
         distribution.launch.getBlockSize().x);
     auto partition = PositionSpaceOp::create(
         rewriter, loc, rewriter.getIndexType(), rewriter.getIndexType(),
-        zeroIndex, nonzeroCount, distribution.workUnit, workerCount, "thread");
+        zeroIndex, nonzeroCount, distribution.workUnit, workerCount);
 
     scf::ForOp::create(
         rewriter, loc, partition.getBegin(), partition.getEnd(), oneIndex,
@@ -323,7 +323,7 @@ public:
         rewriter, loc, distribution.launch.getGridSize().x, wavesPerBlockValue);
     auto partition = PositionSpaceOp::create(
         rewriter, loc, rewriter.getIndexType(), rewriter.getIndexType(),
-        zeroIndex, nonzeroCount, wave, waveCount, "wave");
+        zeroIndex, nonzeroCount, wave, waveCount);
     Value position =
         arith::AddIOp::create(rewriter, loc, partition.getBegin(), lane);
     Value active = arith::CmpIOp::create(

@@ -5,9 +5,9 @@ func.func @position_space(
     %lower: index, %upper: index, %workerId: index, %workerCount: index,
     %rowOffsets: memref<?xi32>, %columnIndices: memref<?xi32>) {
   // CHECK: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space
-  // CHECK-SAME: mapping = "wave" : index
+  // CHECK-SAME: partition %{{.*}} of %{{.*}} : index
   %begin, %end = sparsewave.position_space %lower to %upper
-      partition %workerId of %workerCount mapping = "wave" : index
+      partition %workerId of %workerCount : index
 
   // CHECK: sparsewave.csr_coordinates
   %row, %column = sparsewave.csr_coordinates
@@ -85,8 +85,8 @@ func.func @static_valid_partition() {
   %workerId = arith.constant 3 : index
   %workerCount = arith.constant 8 : index
   // CHECK: sparsewave.position_space
-  // CHECK-SAME: mapping = "thread" : index
+  // CHECK-SAME: partition %{{.*}} of %{{.*}} : index
   %begin, %end = sparsewave.position_space %lower to %upper
-      partition %workerId of %workerCount mapping = "thread" : index
+      partition %workerId of %workerCount : index
   return
 }

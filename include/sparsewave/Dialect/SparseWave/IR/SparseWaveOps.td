@@ -581,9 +581,9 @@ def SparseWave_PositionSpaceOp : SparseWave_Op<"position_space", [Pure]> {
     logical worker. The operation returns that worker's `[begin, end)` range.
 
     `worker_id` is in `[0, worker_count)`. Partitions cover `[lower, upper)`
-    without overlap and differ in size by at most one position. The `mapping`
-    attribute records whether a worker will later map to a GPU thread, wave, or
-    block; this operation does not encode an AMD-specific hardware ID.
+    without overlap and differ in size by at most one position. This operation
+    only describes the logical partition. An enclosing `position_parallel`
+    operation independently maps its workers to threads, waves, or blocks.
 
     For `span = upper - lower`, `base = span / worker_count`, and
     `remainder = span % worker_count`, the returned bounds are:
@@ -597,23 +597,17 @@ def SparseWave_PositionSpaceOp : SparseWave_Op<"position_space", [Pure]> {
 
     ```mlir
     %begin, %end = sparsewave.position_space %lower to %upper
-        partition %worker_id of %worker_count mapping = "wave" : index
+        partition %worker_id of %worker_count : index
     ```
   }];
 
   let arguments = (ins Index:$lower, Index:$upper, Index:$workerId,
-                       Index:$workerCount, StrAttr:$mapping);
+                       Index:$workerCount);
   let results = (outs Index:$begin, Index:$end);
 
   let assemblyFormat = [{
     $lower `to` $upper `partition` $workerId `of` $workerCount
-    `mapping` `=` $mapping attr-dict `:` type($lower)
-  }];
-
-  let extraClassDeclaration = [{
-    FailureOr<PositionMapping> getMappingKind() {
-      return symbolizePositionMapping(getMapping());
-    }
+    attr-dict `:` type($lower)
   }];
 
   let hasVerifier = 1;
