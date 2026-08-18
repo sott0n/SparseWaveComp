@@ -541,7 +541,8 @@ def SparseWave_PositionParallelOp : SparseWave_Op<"position_parallel",
     the participant values.
 
     ```mlir
-    sparsewave.position_parallel %worker_count mapping = "wave" {
+    sparsewave.position_parallel %worker_count mapping = "wave"
+        block_size = 128 {
     ^bb0(%worker_id: index, %lane: index, %wave_size: index):
       sparsewave.position_collapse %worker_id in lower (%zero, %zero)
           upper (%rows, %columns) order = [0, 1] {
@@ -555,13 +556,17 @@ def SparseWave_PositionParallelOp : SparseWave_Op<"position_parallel",
 
     `worker_count` may be zero. A rounded-up launch can contain extra hardware
     units, but only logical workers in `[0, worker_count)` execute the region.
+    The optional `block_size` records a schedule-specific workgroup size. When
+    omitted, target lowering uses its configured default.
   }];
 
-  let arguments = (ins Index:$workerCount, StrAttr:$mapping);
+  let arguments = (ins Index:$workerCount, StrAttr:$mapping,
+                       OptionalAttr<I64Attr>:$blockSize);
   let regions = (region SizedRegion<1>:$body);
 
   let assemblyFormat = [{
-    $workerCount `mapping` `=` $mapping $body attr-dict
+    $workerCount `mapping` `=` $mapping
+    (`block_size` `=` $blockSize^)? $body attr-dict
   }];
 
   let extraClassDeclaration = [{

@@ -207,6 +207,28 @@ func.func @position_parallel_negative_worker_count() {
 
 // -----
 
+func.func @position_parallel_invalid_block_size(%workerCount: index) {
+  // expected-error @+1 {{block size must be in [1, 1024], but got 0}}
+  sparsewave.position_parallel %workerCount mapping = "thread" block_size = 0 {
+  ^bb0(%worker: index, %participant: index, %participantCount: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_parallel_oversized_block(%workerCount: index) {
+  // expected-error @+1 {{block size must be in [1, 1024], but got 1025}}
+  sparsewave.position_parallel %workerCount mapping = "thread" block_size = 1025 {
+  ^bb0(%worker: index, %participant: index, %participantCount: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
 func.func @position_parallel_body_arguments(%workerCount: index) {
   // expected-error @+1 {{body must have worker ID, participant ID, and participant count arguments, but got 2}}
   sparsewave.position_parallel %workerCount mapping = "block" {

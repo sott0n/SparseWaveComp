@@ -67,3 +67,16 @@ func.func @block_mapping(%workers: index, %output: memref<?x?xindex>) {
   }
   return
 }
+
+// CHECK-LABEL: func.func @block_size_override(
+// CHECK: %[[BLOCK_SIZE:.*]] = arith.constant 96 : index
+// CHECK: gpu.launch
+// CHECK-SAME: threads{{.*}} in (%{{.*}} = %[[BLOCK_SIZE]],
+func.func @block_size_override(%workers: index, %output: memref<?xindex>) {
+  sparsewave.position_parallel %workers mapping = "thread" block_size = 96 {
+  ^bb0(%worker: index, %participant: index, %participantCount: index):
+    memref.store %participant, %output[%worker] : memref<?xindex>
+    sparsewave.yield
+  }
+  return
+}

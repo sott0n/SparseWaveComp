@@ -63,16 +63,17 @@ gpu::LaunchOp buildOutputInitialization(PatternRewriter &rewriter, Location loc,
 
 class PositionParallelPattern : public OpRewritePattern<PositionParallelOp> {
 public:
-  PositionParallelPattern(MLIRContext *context, int64_t blockSize,
+  PositionParallelPattern(MLIRContext *context, int64_t defaultBlockSize,
                           int64_t waveSize)
-      : OpRewritePattern<PositionParallelOp>(context), blockSize(blockSize),
-        waveSize(waveSize) {}
+      : OpRewritePattern<PositionParallelOp>(context),
+        defaultBlockSize(defaultBlockSize), waveSize(waveSize) {}
 
   LogicalResult matchAndRewrite(PositionParallelOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    int64_t blockSize = op.getBlockSize().value_or(defaultBlockSize);
     Value blockSizeValue =
         arith::ConstantIndexOp::create(rewriter, loc, blockSize);
     Value workerId;
@@ -146,7 +147,7 @@ public:
   }
 
 private:
-  int64_t blockSize;
+  int64_t defaultBlockSize;
   int64_t waveSize;
 };
 
@@ -238,15 +239,25 @@ public:
                                   zero, oneIndex, blockSizeValue);
 
     rewriter.setInsertionPointAfter(initialization);
-    LinearThreadWorkDistribution distribution =
-        buildLinearThreadWorkDistribution(rewriter, loc, nonzeroCount, oneIndex,
-                                          blockSizeValue);
-    Value workerCount = arith::MulIOp::create(
-        rewriter, loc, distribution.launch.getGridSize().x,
-        distribution.launch.getBlockSize().x);
+    Value requiredBlocks =
+        arith::CeilDivUIOp::create(rewriter, loc, nonzeroCount, blockSizeValue);
+    Value gridSize =
+        arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
+    Value workerCount =
+        arith::MulIOp::create(rewriter, loc, gridSize, blockSizeValue);
+    auto parallel =
+        PositionParallelOp::create(rewriter, loc, workerCount, "thread",
+                                   rewriter.getI64IntegerAttr(blockSize));
+    Block *parallelBody =
+        rewriter.createBlock(&parallel.getBody(), parallel.getBody().end(),
+                             {rewriter.getIndexType(), rewriter.getIndexType(),
+                              rewriter.getIndexType()},
+                             {loc, loc, loc});
+    rewriter.setInsertionPointToStart(parallelBody);
+    Value worker = parallelBody->getArgument(0);
     auto partition = PositionSpaceOp::create(
         rewriter, loc, rewriter.getIndexType(), rewriter.getIndexType(),
-        zeroIndex, nonzeroCount, distribution.workUnit, workerCount);
+        zeroIndex, nonzeroCount, worker, workerCount);
 
     scf::ForOp::create(
         rewriter, loc, partition.getBegin(), partition.getEnd(), oneIndex,
@@ -267,8 +278,7 @@ public:
           scf::YieldOp::create(builder, bodyLoc);
         });
 
-    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
-    gpu::TerminatorOp::create(rewriter, loc);
+    YieldOp::create(rewriter, loc);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1530,10 +1540,16 @@ public:
     }
 
     bool hasPositionWaveMapping = false;
+    std::optional<int64_t> invalidPositionWaveBlockSize;
     getOperation().walk([&](PositionParallelOp op) {
       FailureOr<PositionMapping> mapping = op.getMappingKind();
-      hasPositionWaveMapping |=
-          succeeded(mapping) && *mapping == PositionMapping::Wave;
+      if (failed(mapping) || *mapping != PositionMapping::Wave)
+        return;
+      hasPositionWaveMapping = true;
+      int64_t effectiveBlockSize =
+          op.getBlockSize().value_or(positionBlockSize.getValue());
+      if (effectiveBlockSize % waveSize != 0)
+        invalidPositionWaveBlockSize = effectiveBlockSize;
     });
     if (hasPositionWaveMapping && waveSize != 32 && waveSize != 64) {
       getOperation().emitError()
@@ -1542,11 +1558,11 @@ public:
       signalPassFailure();
       return;
     }
-    if (hasPositionWaveMapping && positionBlockSize % waveSize != 0) {
+    if (invalidPositionWaveBlockSize) {
       getOperation().emitError()
-          << "wave position mapping requires the position block size to be a "
-             "multiple of the wave size, but got "
-          << positionBlockSize.getValue() << " and " << waveSize.getValue();
+          << "wave position mapping requires its block size to be a multiple "
+             "of the wave size, but got "
+          << *invalidPositionWaveBlockSize << " and " << waveSize.getValue();
       signalPassFailure();
       return;
     }

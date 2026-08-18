@@ -689,6 +689,9 @@ LogicalResult PositionParallelOp::verify() {
   if (workerCount && *workerCount < 0)
     return emitOpError() << "worker count must be nonnegative, but got "
                          << *workerCount;
+  if (getBlockSize() && (*getBlockSize() <= 0 || *getBlockSize() > 1024))
+    return emitOpError() << "block size must be in [1, 1024], but got "
+                         << *getBlockSize();
 
   Block &body = getBody().front();
   if (body.getNumArguments() != 3)

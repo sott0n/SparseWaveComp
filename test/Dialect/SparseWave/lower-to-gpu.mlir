@@ -118,10 +118,14 @@
 // POS: gpu.launch
 // POS: memref.store
 // POS: gpu.terminator
+// POS: %[[REQUIRED_BLOCKS:.*]] = arith.ceildivui %[[NNZ]], %[[BLOCK_SIZE]]
+// POS: %[[GRID_SIZE:.*]] = arith.maxui %[[REQUIRED_BLOCKS]], %[[ONE]]
+// POS: %[[WORKER_COUNT:.*]] = arith.muli %[[GRID_SIZE]], %[[BLOCK_SIZE]]
 // POS: gpu.launch
 // POS: %[[WORKER_BASE:.*]] = arith.muli %{{.*}}, %{{.*}}
 // POS-NEXT: %[[WORKER:.*]] = arith.addi %[[WORKER_BASE]], %{{.*}}
-// POS: %[[WORKER_COUNT:.*]] = arith.muli %{{.*}}, %{{.*}}
+// POS: %[[ACTIVE:.*]] = arith.cmpi ult, %[[WORKER]], %[[WORKER_COUNT]]
+// POS: scf.if %[[ACTIVE]]
 // POS: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space %[[ZERO]] to %[[NNZ]] partition %[[WORKER]] of %[[WORKER_COUNT]]
 // POS: scf.for %[[POSITION_VALUE:.*]] = %[[BEGIN]] to %[[END]] step %[[ONE]]
 // POS: %[[ROW:.*]], %[[COLUMN:.*]] = sparsewave.csr_coordinates %{{.*}}, %{{.*}} at %[[POSITION_VALUE]]
