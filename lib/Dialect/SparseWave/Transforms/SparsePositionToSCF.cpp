@@ -131,6 +131,62 @@ public:
   }
 };
 
+class LowerPositionCollapsePattern
+    : public OpRewritePattern<PositionCollapseOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(PositionCollapseOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value nonEmpty =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getBoolAttr(true));
+    Value remaining = op.getWorkerId();
+    SmallVector<Value> coordinates(op.getLower().size());
+    ArrayRef<int64_t> order = op.getOrder();
+
+    // Recover coordinates from innermost to outermost. Repeated division
+    // avoids forming the product of all extents, which could overflow index.
+    for (size_t orderIndex = order.size(); orderIndex > 0; --orderIndex) {
+      int64_t axis = order[orderIndex - 1];
+      Value extent = arith::SubIOp::create(rewriter, loc, op.getUpper()[axis],
+                                           op.getLower()[axis]);
+      Value hasExtent = arith::CmpIOp::create(
+          rewriter, loc, arith::CmpIPredicate::ne, extent, zero);
+      nonEmpty = arith::AndIOp::create(rewriter, loc, nonEmpty, hasExtent);
+
+      // Use one as a safe divisor for an empty axis. The accumulated
+      // nonEmpty predicate prevents the recovered coordinates from escaping.
+      Value safeExtent =
+          arith::SelectOp::create(rewriter, loc, hasExtent, extent, one);
+      Value offset =
+          arith::RemUIOp::create(rewriter, loc, remaining, safeExtent);
+      remaining = arith::DivUIOp::create(rewriter, loc, remaining, safeExtent);
+      coordinates[axis] =
+          arith::AddIOp::create(rewriter, loc, op.getLower()[axis], offset);
+    }
+
+    Value workerInRange = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::eq, remaining, zero);
+    Value active =
+        arith::AndIOp::create(rewriter, loc, nonEmpty, workerInRange);
+    auto guard = scf::IfOp::create(rewriter, loc, active,
+                                   /*withElseRegion=*/false);
+    Block *thenBody = &guard.getThenRegion().front();
+
+    auto sparseYield = cast<YieldOp>(op.getBody().front().getTerminator());
+    rewriter.setInsertionPoint(sparseYield);
+    scf::YieldOp::create(rewriter, sparseYield.getLoc());
+    rewriter.eraseOp(sparseYield);
+    rewriter.eraseOp(thenBody->getTerminator());
+    rewriter.mergeBlocks(&op.getBody().front(), thenBody, coordinates);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 class LowerPositionSpacePattern : public OpRewritePattern<PositionSpaceOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
@@ -239,8 +295,9 @@ public:
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     patterns.add<LowerPositionSplitPattern, LowerPositionForPattern,
-                 LowerPositionReorderPattern, LowerPositionSpacePattern,
-                 LowerCSRCoordinatesPattern>(&getContext());
+                 LowerPositionReorderPattern, LowerPositionCollapsePattern,
+                 LowerPositionSpacePattern, LowerCSRCoordinatesPattern>(
+        &getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
   }

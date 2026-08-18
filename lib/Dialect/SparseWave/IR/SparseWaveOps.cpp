@@ -206,6 +206,66 @@ LogicalResult verifyBSRStorage(Operation *op, MemRefType blockRowOffsetsType,
   return success();
 }
 
+LogicalResult verifyPositionAxes(Operation *op, OperandRange lowerBounds,
+                                 OperandRange upperBounds,
+                                 ArrayRef<int64_t> order, Region &body) {
+  unsigned rank = lowerBounds.size();
+  if (rank != upperBounds.size())
+    return op->emitOpError()
+           << "lower and upper bounds must have the same number of axes, but "
+              "got "
+           << rank << " and " << upperBounds.size();
+  if (rank < 2)
+    return op->emitOpError() << "requires at least two axes, but got " << rank;
+
+  if (order.size() != rank)
+    return op->emitOpError()
+           << "order must contain one entry per axis, but got " << order.size()
+           << " entries for " << rank << " axes";
+
+  SmallVector<bool> seen(rank, false);
+  for (int64_t axis : order) {
+    if (axis < 0 || axis >= static_cast<int64_t>(rank))
+      return op->emitOpError()
+             << "order axis must be in [0, " << rank << "), but got " << axis;
+    if (seen[axis])
+      return op->emitOpError() << "order must be a permutation, but axis "
+                               << axis << " appears more than once";
+    seen[axis] = true;
+  }
+
+  for (auto [axis, lowerValue, upperValue] :
+       llvm::enumerate(lowerBounds, upperBounds)) {
+    std::optional<int64_t> lower = matchConstantIndex(lowerValue);
+    std::optional<int64_t> upper = matchConstantIndex(upperValue);
+    if (lower && *lower < 0)
+      return op->emitOpError() << "lower bound for axis " << axis
+                               << " must be nonnegative, but got " << *lower;
+    if (upper && *upper < 0)
+      return op->emitOpError() << "upper bound for axis " << axis
+                               << " must be nonnegative, but got " << *upper;
+    if (lower && upper && *lower > *upper)
+      return op->emitOpError()
+             << "lower bound must not exceed upper bound for axis " << axis
+             << ", but got " << *lower << " and " << *upper;
+  }
+
+  Block &bodyBlock = body.front();
+  if (bodyBlock.getNumArguments() != rank)
+    return op->emitOpError()
+           << "body must have one argument per logical axis, but got "
+           << bodyBlock.getNumArguments() << " for " << rank << " axes";
+  for (BlockArgument argument : bodyBlock.getArguments())
+    if (!argument.getType().isIndex())
+      return op->emitOpError() << "body arguments must have index type";
+
+  auto yield = dyn_cast<YieldOp>(bodyBlock.getTerminator());
+  if (!yield || !yield.getResults().empty())
+    return op->emitOpError() << "body must yield no values";
+
+  return success();
+}
+
 } // namespace
 
 LogicalResult SpMVOp::verify() {
@@ -610,62 +670,18 @@ LogicalResult PositionForOp::verify() {
 }
 
 LogicalResult PositionReorderOp::verify() {
-  unsigned rank = getLower().size();
-  if (rank != getUpper().size())
-    return emitOpError() << "lower and upper bounds must have the same number "
-                            "of axes, but got "
-                         << rank << " and " << getUpper().size();
-  if (rank < 2)
-    return emitOpError() << "requires at least two axes, but got " << rank;
+  return verifyPositionAxes(*this, getLower(), getUpper(), getOrder(),
+                            getBody());
+}
 
-  ArrayRef<int64_t> order = getOrder();
-  if (order.size() != rank)
-    return emitOpError() << "order must contain one entry per axis, but got "
-                         << order.size() << " entries for " << rank << " axes";
+LogicalResult PositionCollapseOp::verify() {
+  std::optional<int64_t> workerId = matchConstantIndex(getWorkerId());
+  if (workerId && *workerId < 0)
+    return emitOpError() << "worker ID must be nonnegative, but got "
+                         << *workerId;
 
-  SmallVector<bool> seen(rank, false);
-  for (int64_t axis : order) {
-    if (axis < 0 || axis >= static_cast<int64_t>(rank))
-      return emitOpError() << "order axis must be in [0, " << rank
-                           << "), but got " << axis;
-    if (seen[axis])
-      return emitOpError() << "order must be a permutation, but axis " << axis
-                           << " appears more than once";
-    seen[axis] = true;
-  }
-
-  for (auto [axis, lowerValue, upperValue] :
-       llvm::enumerate(getLower(), getUpper())) {
-    std::optional<int64_t> lower = matchConstantIndex(lowerValue);
-    std::optional<int64_t> upper = matchConstantIndex(upperValue);
-    if (lower && *lower < 0)
-      return emitOpError() << "lower bound for axis " << axis
-                           << " must be nonnegative, but got " << *lower;
-    if (upper && *upper < 0)
-      return emitOpError() << "upper bound for axis " << axis
-                           << " must be nonnegative, but got " << *upper;
-    if (lower && upper && *lower > *upper)
-      return emitOpError() << "lower bound must not exceed upper bound for "
-                              "axis "
-                           << axis << ", but got " << *lower << " and "
-                           << *upper;
-  }
-
-  Block &body = getBody().front();
-  if (body.getNumArguments() != rank)
-    return emitOpError() << "body must have one argument per logical axis, "
-                            "but got "
-                         << body.getNumArguments() << " for " << rank
-                         << " axes";
-  for (BlockArgument argument : body.getArguments())
-    if (!argument.getType().isIndex())
-      return emitOpError() << "body arguments must have index type";
-
-  auto yield = dyn_cast<YieldOp>(body.getTerminator());
-  if (!yield || !yield.getResults().empty())
-    return emitOpError() << "body must yield no values";
-
-  return success();
+  return verifyPositionAxes(*this, getLower(), getUpper(), getOrder(),
+                            getBody());
 }
 
 LogicalResult CSRCoordinatesOp::verify() {

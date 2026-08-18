@@ -167,6 +167,33 @@ func.func @position_reorder_body_arguments(
 
 // -----
 
+func.func @position_collapse_negative_worker(
+    %lower0: index, %lower1: index, %upper0: index, %upper1: index) {
+  %worker = arith.constant -1 : index
+  // expected-error @+1 {{worker ID must be nonnegative, but got -1}}
+  sparsewave.position_collapse %worker in lower (%lower0, %lower1)
+      upper (%upper0, %upper1) order = [0, 1] {
+  ^bb0(%axis0: index, %axis1: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_collapse_requires_two_axes(
+    %worker: index, %lower: index, %upper: index) {
+  // expected-error @+1 {{requires at least two axes, but got 1}}
+  sparsewave.position_collapse %worker in lower (%lower) upper (%upper)
+      order = [0] {
+  ^bb0(%axis0: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
 func.func @reversed_range() {
   %lower = arith.constant 9 : index
   %upper = arith.constant 4 : index

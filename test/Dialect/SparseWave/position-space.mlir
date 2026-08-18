@@ -50,6 +50,21 @@ func.func @position_reorder(%lower0: index, %lower1: index, %upper0: index,
   return
 }
 
+// CHECK-LABEL: func.func @position_collapse(
+func.func @position_collapse(%workerId: index, %lower0: index, %lower1: index,
+                             %upper0: index, %upper1: index,
+                             %output: memref<?x?xindex>) {
+  // CHECK: sparsewave.position_collapse %[[WORKER:.*]] in lower(%[[LOWER0:.*]], %[[LOWER1:.*]]) upper(%[[UPPER0:.*]], %[[UPPER1:.*]]) order = [0, 1] {
+  // CHECK: ^bb0(%[[AXIS0:.*]]: index, %[[AXIS1:.*]]: index):
+  sparsewave.position_collapse %workerId in lower (%lower0, %lower1)
+      upper (%upper0, %upper1) order = [0, 1] {
+  ^bb0(%axis0: index, %axis1: index):
+    memref.store %axis0, %output[%axis0, %axis1] : memref<?x?xindex>
+    sparsewave.yield
+  }
+  return
+}
+
 // CHECK-LABEL: func.func @static_valid_partition(
 func.func @static_valid_partition() {
   %lower = arith.constant 0 : index

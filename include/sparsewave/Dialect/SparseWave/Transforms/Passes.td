@@ -97,6 +97,7 @@ def LowerSparseWavePositionSpace
     Lowers sparsewave.position_split to quotient and remainder arithmetic,
     sparsewave.position_for to a bounded sequential loop,
     sparsewave.position_reorder to an SCF loop nest in the requested order,
+    sparsewave.position_collapse to coordinate recovery and a guarded region,
     and sparsewave.position_space to integer arithmetic implementing a balanced
     contiguous partition. Lowers sparsewave.csr_coordinates to an upper-bound
     binary search over CSR row offsets and a column-index load. The resulting

@@ -72,6 +72,47 @@ func.func @position_reorder(%lower0: index, %lower1: index, %upper0: index,
   return
 }
 
+// Recover logical coordinates in reverse linearization order without forming
+// the product of the axis extents.
+// CHECK-LABEL: func.func @position_collapse(
+// CHECK-SAME: %[[WORKER:[^,]+]]: index, %[[LOWER0:[^,]+]]: index,
+// CHECK-SAME: %[[LOWER1:[^,]+]]: index, %[[UPPER0:[^,]+]]: index,
+// CHECK-SAME: %[[UPPER1:[^,]+]]: index,
+// CHECK-SAME: %[[OUTPUT:[^)]+]]: memref<?x?xindex>)
+func.func @position_collapse(%worker: index, %lower0: index, %lower1: index,
+                             %upper0: index, %upper1: index,
+                             %output: memref<?x?xindex>) {
+  // CHECK: %[[ZERO:.*]] = arith.constant 0 : index
+  // CHECK: %[[ONE:.*]] = arith.constant 1 : index
+  // CHECK: %[[EXTENT1:.*]] = arith.subi %[[UPPER1]], %[[LOWER1]] : index
+  // CHECK: %[[HAS1:.*]] = arith.cmpi ne, %[[EXTENT1]], %[[ZERO]] : index
+  // CHECK: %[[SAFE1:.*]] = arith.select %[[HAS1]], %[[EXTENT1]], %[[ONE]] : index
+  // CHECK: %[[OFFSET1:.*]] = arith.remui %[[WORKER]], %[[SAFE1]] : index
+  // CHECK: %[[REMAINING1:.*]] = arith.divui %[[WORKER]], %[[SAFE1]] : index
+  // CHECK: %[[AXIS1:.*]] = arith.addi %[[LOWER1]], %[[OFFSET1]] : index
+  // CHECK: %[[EXTENT0:.*]] = arith.subi %[[UPPER0]], %[[LOWER0]] : index
+  // CHECK: %[[HAS0:.*]] = arith.cmpi ne, %[[EXTENT0]], %[[ZERO]] : index
+  // CHECK: %[[NONEMPTY0:.*]] = arith.andi %[[HAS1]], %[[HAS0]] : i1
+  // CHECK: %[[SAFE0:.*]] = arith.select %[[HAS0]], %[[EXTENT0]], %[[ONE]] : index
+  // CHECK: %[[OFFSET0:.*]] = arith.remui %[[REMAINING1]], %[[SAFE0]] : index
+  // CHECK: %[[REMAINING0:.*]] = arith.divui %[[REMAINING1]], %[[SAFE0]] : index
+  // CHECK: %[[AXIS0:.*]] = arith.addi %[[LOWER0]], %[[OFFSET0]] : index
+  // CHECK: %[[IN_RANGE:.*]] = arith.cmpi eq, %[[REMAINING0]], %[[ZERO]] : index
+  // CHECK: %[[ACTIVE:.*]] = arith.andi %[[NONEMPTY0]], %[[IN_RANGE]] : i1
+  // CHECK-NOT: arith.muli
+  // CHECK: scf.if %[[ACTIVE]] {
+  // CHECK:   memref.store %[[AXIS0]], %[[OUTPUT]][%[[AXIS0]], %[[AXIS1]]] : memref<?x?xindex>
+  // CHECK: }
+  // CHECK-NOT: sparsewave.position_collapse
+  sparsewave.position_collapse %worker in lower (%lower0, %lower1)
+      upper (%upper0, %upper1) order = [0, 1] {
+  ^bb0(%axis0: index, %axis1: index):
+    memref.store %axis0, %output[%axis0, %axis1] : memref<?x?xindex>
+    sparsewave.yield
+  }
+  return
+}
+
 // CHECK-LABEL: func.func @partition(
 // CHECK-SAME: %[[LOWER:[^,]+]]: index, %[[UPPER:[^,]+]]: index,
 // CHECK-SAME: %[[WORKER_ID:[^,]+]]: index, %[[WORKER_COUNT:[^)]+]]: index)
@@ -202,6 +243,87 @@ func.func @position_for_extra_worker(%output: memref<?xindex>) {
   sparsewave.position_for %worker in %lower to %upper by 4 : index {
   ^bb0(%position: index, %inner: index):
     memref.store %inner, %output[%position] : memref<?xindex>
+    sparsewave.yield
+  }
+  return
+}
+
+// A collapsed worker recovers coordinates relative to nonzero lower bounds.
+// For extents (3, 4), worker 5 maps to offsets (1, 1) and coordinates (3, 11).
+// FOLD-LABEL: func.func @position_collapse_constant(
+// FOLD: %[[AXIS1:.*]] = arith.constant 11 : index
+// FOLD: %[[AXIS0:.*]] = arith.constant 3 : index
+// FOLD: memref.store %[[AXIS0]], %{{.*}}[%[[AXIS0]], %[[AXIS1]]] : memref<?x?xindex>
+func.func @position_collapse_constant(%output: memref<?x?xindex>) {
+  %worker = arith.constant 5 : index
+  %lower0 = arith.constant 2 : index
+  %lower1 = arith.constant 10 : index
+  %upper0 = arith.constant 5 : index
+  %upper1 = arith.constant 14 : index
+  sparsewave.position_collapse %worker in lower (%lower0, %lower1)
+      upper (%upper0, %upper1) order = [0, 1] {
+  ^bb0(%axis0: index, %axis1: index):
+    memref.store %axis0, %output[%axis0, %axis1] : memref<?x?xindex>
+    sparsewave.yield
+  }
+  return
+}
+
+// Changing the linearization order changes coordinate recovery. For the same
+// extents and worker, order [1, 0] maps worker 5 to offsets (2, 1).
+// FOLD-LABEL: func.func @position_collapse_reordered(
+// FOLD: %[[AXIS0:.*]] = arith.constant 4 : index
+// FOLD: %[[AXIS1:.*]] = arith.constant 11 : index
+// FOLD: memref.store %[[AXIS0]], %{{.*}}[%[[AXIS0]], %[[AXIS1]]] : memref<?x?xindex>
+func.func @position_collapse_reordered(%output: memref<?x?xindex>) {
+  %worker = arith.constant 5 : index
+  %lower0 = arith.constant 2 : index
+  %lower1 = arith.constant 10 : index
+  %upper0 = arith.constant 5 : index
+  %upper1 = arith.constant 14 : index
+  sparsewave.position_collapse %worker in lower (%lower0, %lower1)
+      upper (%upper0, %upper1) order = [1, 0] {
+  ^bb0(%axis0: index, %axis1: index):
+    memref.store %axis0, %output[%axis0, %axis1] : memref<?x?xindex>
+    sparsewave.yield
+  }
+  return
+}
+
+// A worker at the collapsed extent product is outside the iteration space.
+// FOLD-LABEL: func.func @position_collapse_extra_worker(
+// FOLD-NOT: memref.store
+// FOLD: return
+func.func @position_collapse_extra_worker(%output: memref<?x?xindex>) {
+  %worker = arith.constant 12 : index
+  %lower0 = arith.constant 0 : index
+  %lower1 = arith.constant 0 : index
+  %upper0 = arith.constant 3 : index
+  %upper1 = arith.constant 4 : index
+  sparsewave.position_collapse %worker in lower (%lower0, %lower1)
+      upper (%upper0, %upper1) order = [0, 1] {
+  ^bb0(%axis0: index, %axis1: index):
+    memref.store %axis0, %output[%axis0, %axis1] : memref<?x?xindex>
+    sparsewave.yield
+  }
+  return
+}
+
+// An empty logical axis makes the complete collapsed space empty and uses a
+// safe divisor instead of issuing division by zero.
+// FOLD-LABEL: func.func @position_collapse_empty_axis(
+// FOLD-NOT: memref.store
+// FOLD: return
+func.func @position_collapse_empty_axis(%output: memref<?x?xindex>) {
+  %worker = arith.constant 0 : index
+  %lower0 = arith.constant 2 : index
+  %lower1 = arith.constant 0 : index
+  %upper0 = arith.constant 2 : index
+  %upper1 = arith.constant 4 : index
+  sparsewave.position_collapse %worker in lower (%lower0, %lower1)
+      upper (%upper0, %upper1) order = [0, 1] {
+  ^bb0(%axis0: index, %axis1: index):
+    memref.store %axis0, %output[%axis0, %axis1] : memref<?x?xindex>
     sparsewave.yield
   }
   return

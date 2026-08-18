@@ -6,7 +6,7 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 
 def SparseWave_YieldOp : SparseWave_Op<"yield", [Pure, Terminator,
     ParentOneOf<["SDDMMOp", "CSRRowwiseMapOp", "PositionForOp",
-                 "PositionReorderOp"]>]> {
+                 "PositionReorderOp", "PositionCollapseOp"]>]> {
   let summary = "Yield from a SparseWave region";
   let arguments = (ins Variadic<AnyType>:$results);
   let builders = [OpBuilder<(ins), [{ build($_builder, $_state, ValueRange()); }]>];
@@ -472,6 +472,47 @@ def SparseWave_PositionReorderOp : SparseWave_Op<"position_reorder",
   let assemblyFormat = [{
     `lower` `(` $lower `)` `upper` `(` $upper `)` `order` `=` $order $body
     attr-dict
+  }];
+
+  let hasVerifier = 1;
+}
+
+def SparseWave_PositionCollapseOp : SparseWave_Op<"position_collapse",
+    [AttrSizedOperandSegments, SingleBlockImplicitTerminator<"YieldOp">,
+     RecursiveMemoryEffects]> {
+  let summary = "Execute one worker from a collapsed logical position space";
+  let description = [{
+    `sparsewave.position_collapse` combines a rectangular set of logical axes
+    into one linear worker space. The `worker_id` identifies one point in that
+    collapsed space. The operation recovers the original logical coordinates
+    and passes them to the region in logical axis order.
+
+    The `order` permutation lists axes from outermost to innermost in the
+    linearization. For example, bounds with extents `(3, 4)` and
+    `order = [0, 1]` map worker 5 to logical coordinates `(1, 1)`.
+
+    ```mlir
+    sparsewave.position_collapse %worker_id in lower (%zero, %zero)
+        upper (%rows, %columns) order = [0, 1] {
+    ^bb0(%row: index, %column: index):
+      // Process one point from the collapsed iteration space.
+      sparsewave.yield
+    }
+    ```
+
+    A worker outside the collapsed space, or any space containing an empty
+    axis, executes an empty region. This permits a later mapping pass to use a
+    rounded-up number of GPU workers. The operation is target-independent and
+    does not select a thread, wave, or block mapping.
+  }];
+
+  let arguments = (ins Index:$workerId, Variadic<Index>:$lower,
+                       Variadic<Index>:$upper, DenseI64ArrayAttr:$order);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = [{
+    $workerId `in` `lower` `(` $lower `)` `upper` `(` $upper `)`
+    `order` `=` $order $body attr-dict
   }];
 
   let hasVerifier = 1;
