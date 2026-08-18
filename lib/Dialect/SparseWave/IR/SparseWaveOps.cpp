@@ -684,6 +684,34 @@ LogicalResult PositionCollapseOp::verify() {
                             getBody());
 }
 
+LogicalResult PositionParallelOp::verify() {
+  if (failed(symbolizePositionMapping(getMapping())))
+    return emitOpError()
+           << "mapping must be 'thread', 'wave', or 'block', but got '"
+           << getMapping() << "'";
+
+  std::optional<int64_t> workerCount = matchConstantIndex(getWorkerCount());
+  if (workerCount && *workerCount < 0)
+    return emitOpError() << "worker count must be nonnegative, but got "
+                         << *workerCount;
+
+  Block &body = getBody().front();
+  if (body.getNumArguments() != 3)
+    return emitOpError()
+           << "body must have worker ID, participant ID, and participant "
+              "count arguments, but got "
+           << body.getNumArguments();
+  for (BlockArgument argument : body.getArguments())
+    if (!argument.getType().isIndex())
+      return emitOpError() << "body arguments must have index type";
+
+  auto yield = dyn_cast<YieldOp>(body.getTerminator());
+  if (!yield || !yield.getResults().empty())
+    return emitOpError() << "body must yield no values";
+
+  return success();
+}
+
 LogicalResult CSRCoordinatesOp::verify() {
   MemRefType rowOffsetsType = getRowOffsets().getType();
   MemRefType columnIndicesType = getColumnIndices().getType();

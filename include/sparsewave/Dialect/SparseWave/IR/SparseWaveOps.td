@@ -6,7 +6,8 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 
 def SparseWave_YieldOp : SparseWave_Op<"yield", [Pure, Terminator,
     ParentOneOf<["SDDMMOp", "CSRRowwiseMapOp", "PositionForOp",
-                 "PositionReorderOp", "PositionCollapseOp"]>]> {
+                 "PositionReorderOp", "PositionCollapseOp",
+                 "PositionParallelOp"]>]> {
   let summary = "Yield from a SparseWave region";
   let arguments = (ins Variadic<AnyType>:$results);
   let builders = [OpBuilder<(ins), [{ build($_builder, $_state, ValueRange()); }]>];
@@ -513,6 +514,60 @@ def SparseWave_PositionCollapseOp : SparseWave_Op<"position_collapse",
   let assemblyFormat = [{
     $workerId `in` `lower` `(` $lower `)` `upper` `(` $upper `)`
     `order` `=` $order $body attr-dict
+  }];
+
+  let hasVerifier = 1;
+}
+
+def SparseWave_PositionParallelOp : SparseWave_Op<"position_parallel",
+    [SingleBlockImplicitTerminator<"YieldOp">, RecursiveMemoryEffects]> {
+  let summary = "Map logical position workers to parallel execution units";
+  let description = [{
+    `sparsewave.position_parallel` maps a one-dimensional set of logical
+    workers to GPU threads, waves, or blocks. The region receives a logical
+    `worker_id` followed by an ID and count for the participants cooperating
+    within that worker:
+
+    ```text
+    mapping   participant_id   participant_count
+    thread    0                1
+    wave      lane ID          wave size
+    block     thread ID        block size
+    ```
+
+    This uniform region interface lets a schedule express both independent
+    thread work and cooperative wave/block work without referring to concrete
+    GPU IDs. Target lowering selects the launch dimensions and materializes
+    the participant values.
+
+    ```mlir
+    sparsewave.position_parallel %worker_count mapping = "wave" {
+    ^bb0(%worker_id: index, %lane: index, %wave_size: index):
+      sparsewave.position_collapse %worker_id in lower (%zero, %zero)
+          upper (%rows, %columns) order = [0, 1] {
+      ^bb1(%row: index, %column: index):
+        // Cooperatively process one collapsed point.
+        sparsewave.yield
+      }
+      sparsewave.yield
+    }
+    ```
+
+    `worker_count` may be zero. A rounded-up launch can contain extra hardware
+    units, but only logical workers in `[0, worker_count)` execute the region.
+  }];
+
+  let arguments = (ins Index:$workerCount, StrAttr:$mapping);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = [{
+    $workerCount `mapping` `=` $mapping $body attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    FailureOr<PositionMapping> getMappingKind() {
+      return symbolizePositionMapping(getMapping());
+    }
   }];
 
   let hasVerifier = 1;

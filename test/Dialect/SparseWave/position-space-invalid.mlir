@@ -194,6 +194,62 @@ func.func @position_collapse_requires_two_axes(
 
 // -----
 
+func.func @position_parallel_invalid_mapping(%workerCount: index) {
+  // expected-error @+1 {{mapping must be 'thread', 'wave', or 'block', but got 'lane'}}
+  sparsewave.position_parallel %workerCount mapping = "lane" {
+  ^bb0(%worker: index, %participant: index, %participantCount: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_parallel_negative_worker_count() {
+  %workerCount = arith.constant -1 : index
+  // expected-error @+1 {{worker count must be nonnegative, but got -1}}
+  sparsewave.position_parallel %workerCount mapping = "thread" {
+  ^bb0(%worker: index, %participant: index, %participantCount: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_parallel_body_arguments(%workerCount: index) {
+  // expected-error @+1 {{body must have worker ID, participant ID, and participant count arguments, but got 2}}
+  sparsewave.position_parallel %workerCount mapping = "block" {
+  ^bb0(%worker: index, %participant: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_parallel_body_argument_type(%workerCount: index) {
+  // expected-error @+1 {{body arguments must have index type}}
+  sparsewave.position_parallel %workerCount mapping = "wave" {
+  ^bb0(%worker: index, %participant: i32, %participantCount: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
+func.func @position_parallel_must_not_yield_values(%workerCount: index) {
+  // expected-error @+1 {{body must yield no values}}
+  sparsewave.position_parallel %workerCount mapping = "thread" {
+  ^bb0(%worker: index, %participant: index, %participantCount: index):
+    sparsewave.yield %worker : index
+  }
+  return
+}
+
+// -----
+
 func.func @reversed_range() {
   %lower = arith.constant 9 : index
   %upper = arith.constant 4 : index

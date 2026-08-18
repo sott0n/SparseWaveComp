@@ -65,6 +65,19 @@ func.func @position_collapse(%workerId: index, %lower0: index, %lower1: index,
   return
 }
 
+// CHECK-LABEL: func.func @position_parallel(
+func.func @position_parallel(%workerCount: index,
+                             %output: memref<?x?xindex>) {
+  // CHECK: sparsewave.position_parallel %[[COUNT:.*]] mapping = "wave" {
+  // CHECK: ^bb0(%[[WORKER:.*]]: index, %[[LANE:.*]]: index, %[[WAVE_SIZE:.*]]: index):
+  sparsewave.position_parallel %workerCount mapping = "wave" {
+  ^bb0(%worker: index, %lane: index, %waveSize: index):
+    memref.store %lane, %output[%worker, %waveSize] : memref<?x?xindex>
+    sparsewave.yield
+  }
+  return
+}
+
 // CHECK-LABEL: func.func @static_valid_partition(
 func.func @static_valid_partition() {
   %lower = arith.constant 0 : index

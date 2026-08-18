@@ -244,6 +244,7 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   sparseWaveOptions.blockSize = options.spmvBlockSize;
   sparseWaveOptions.waveSize =
       static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
+  sparseWaveOptions.positionBlockSize = options.positionBlockSize;
   sparseWaveOptions.spmmMapping = options.spmmMapping;
   sparseWaveOptions.spmmBlockSize = options.spmmBlockSize;
   sparseWaveOptions.spmmTileSize = options.spmmTileSize;

@@ -120,6 +120,11 @@ struct SparseWaveToAMDGPUPipelineOptions
       llvm::cl::desc("Number of GPU threads in each SpMV block."),
       llvm::cl::init(256)};
 
+  PassOptions::Option<int64_t> positionBlockSize{
+      *this, "position-block-size",
+      llvm::cl::desc("Number of GPU threads in each position-parallel block."),
+      llvm::cl::init(256)};
+
   PassOptions::Option<std::string> spmmMapping{
       *this, "spmm-mapping", llvm::cl::desc("SpMM work mapping strategy."),
       llvm::cl::init("thread-per-output")};

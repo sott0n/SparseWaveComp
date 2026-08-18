@@ -15,6 +15,7 @@
 
 #include "llvm/ADT/SmallVector.h"
 
+#include <cassert>
 #include <limits>
 
 namespace mlir::sparsewave {
@@ -59,6 +60,95 @@ gpu::LaunchOp buildOutputInitialization(PatternRewriter &rewriter, Location loc,
   gpu::TerminatorOp::create(rewriter, loc);
   return initialization.launch;
 }
+
+class PositionParallelPattern : public OpRewritePattern<PositionParallelOp> {
+public:
+  PositionParallelPattern(MLIRContext *context, int64_t blockSize,
+                          int64_t waveSize)
+      : OpRewritePattern<PositionParallelOp>(context), blockSize(blockSize),
+        waveSize(waveSize) {}
+
+  LogicalResult matchAndRewrite(PositionParallelOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value blockSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, blockSize);
+    Value workerId;
+    Value participantId;
+    Value participantCount;
+    Value workerIsActive;
+    gpu::LaunchOp launch;
+    FailureOr<PositionMapping> mapping = op.getMappingKind();
+    assert(succeeded(mapping) && "expected a verified position mapping");
+
+    switch (*mapping) {
+    case PositionMapping::Thread: {
+      LinearThreadWorkDistribution distribution =
+          buildLinearThreadWorkDistribution(rewriter, loc, op.getWorkerCount(),
+                                            one, blockSizeValue);
+      launch = distribution.launch;
+      workerId = distribution.workUnit;
+      participantId = zero;
+      participantCount = one;
+      workerIsActive = distribution.workUnitIsActive;
+      break;
+    }
+    case PositionMapping::Wave: {
+      Value waveSizeValue =
+          arith::ConstantIndexOp::create(rewriter, loc, waveSize);
+      Value wavesPerBlockValue =
+          arith::ConstantIndexOp::create(rewriter, loc, blockSize / waveSize);
+      WaveWorkDistribution distribution = buildWaveWorkDistribution(
+          rewriter, loc, op.getWorkerCount(), one, blockSizeValue,
+          waveSizeValue, wavesPerBlockValue);
+      launch = distribution.launch;
+      workerId = distribution.workUnit;
+      participantId = distribution.lane;
+      participantCount = waveSizeValue;
+      workerIsActive = distribution.workUnitIsActive;
+      break;
+    }
+    case PositionMapping::Block: {
+      Value gridSize =
+          arith::MaxUIOp::create(rewriter, loc, op.getWorkerCount(), one);
+      launch = gpu::LaunchOp::create(rewriter, loc, gridSize, one, one,
+                                     blockSizeValue, one, one);
+      rewriter.setInsertionPointToStart(&launch.getBody().front());
+      workerId = launch.getBlockIds().x;
+      participantId = launch.getThreadIds().x;
+      participantCount = launch.getBlockSize().x;
+      workerIsActive =
+          arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
+                                workerId, op.getWorkerCount());
+      break;
+    }
+    }
+
+    auto guard = scf::IfOp::create(rewriter, loc, workerIsActive,
+                                   /*withElseRegion=*/false);
+    Block *thenBody = &guard.getThenRegion().front();
+
+    auto sparseYield = cast<YieldOp>(op.getBody().front().getTerminator());
+    rewriter.setInsertionPoint(sparseYield);
+    scf::YieldOp::create(rewriter, sparseYield.getLoc());
+    rewriter.eraseOp(sparseYield);
+    rewriter.eraseOp(thenBody->getTerminator());
+    rewriter.mergeBlocks(&op.getBody().front(), thenBody,
+                         ValueRange{workerId, participantId, participantCount});
+
+    rewriter.setInsertionPointToEnd(&launch.getBody().front());
+    gpu::TerminatorOp::create(rewriter, loc);
+    propagateKernelName(op, launch);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  int64_t blockSize;
+  int64_t waveSize;
+};
 
 class ThreadPerNonzeroCOOSpMVPattern : public OpRewritePattern<COOSpMVOp> {
 public:
@@ -1356,6 +1446,14 @@ public:
       signalPassFailure();
       return;
     }
+    if (positionBlockSize < 1 || positionBlockSize > 1024) {
+      getOperation().emitError()
+          << "position-parallel block size must be between 1 and 1024, but "
+             "got "
+          << positionBlockSize.getValue();
+      signalPassFailure();
+      return;
+    }
     if (spmmBlockSize < 1 || spmmBlockSize > 1024) {
       getOperation().emitError()
           << "SpMM block size must be between 1 and 1024, but got "
@@ -1431,7 +1529,31 @@ public:
       return;
     }
 
+    bool hasPositionWaveMapping = false;
+    getOperation().walk([&](PositionParallelOp op) {
+      FailureOr<PositionMapping> mapping = op.getMappingKind();
+      hasPositionWaveMapping |=
+          succeeded(mapping) && *mapping == PositionMapping::Wave;
+    });
+    if (hasPositionWaveMapping && waveSize != 32 && waveSize != 64) {
+      getOperation().emitError()
+          << "wave position mapping requires a wave size of 32 or 64, but got "
+          << waveSize.getValue();
+      signalPassFailure();
+      return;
+    }
+    if (hasPositionWaveMapping && positionBlockSize % waveSize != 0) {
+      getOperation().emitError()
+          << "wave position mapping requires the position block size to be a "
+             "multiple of the wave size, but got "
+          << positionBlockSize.getValue() << " and " << waveSize.getValue();
+      signalPassFailure();
+      return;
+    }
+
     RewritePatternSet patterns(&getContext());
+    patterns.add<PositionParallelPattern>(&getContext(), positionBlockSize,
+                                          waveSize);
     patterns.add<ThreadPerNonzeroCOOSpMVPattern>(&getContext(), blockSize);
     patterns.add<ThreadPerRowSDDMMPattern>(&getContext(), sddmmBlockSize);
     patterns.add<ThreadPerRowCSRRowReducePattern>(&getContext(),
