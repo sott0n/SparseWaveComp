@@ -1,5 +1,7 @@
 #include "SparseGPUUtils.h"
 
+#include "sparsewave/Dialect/SparseWave/IR/SparseWaveOps.h"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -96,6 +98,19 @@ SmallVector<Value> buildCSRPositionTraversal(OpBuilder &builder, Location loc,
         scf::YieldOp::create(loopBuilder, loopLoc, nextValues);
       });
   return SmallVector<Value>(loop.getResults());
+}
+
+CSRSpMVProduct buildCSRSpMVProduct(OpBuilder &builder, Location loc,
+                                   Value rowOffsets, Value columnIndices,
+                                   Value values, Value vector, Value position) {
+  auto coordinates = CSRCoordinatesOp::create(
+      builder, loc, builder.getIndexType(), builder.getIndexType(), rowOffsets,
+      columnIndices, position);
+  Value sparseValue = memref::LoadOp::create(builder, loc, values, position);
+  Value vectorValue =
+      memref::LoadOp::create(builder, loc, vector, coordinates.getColumn());
+  Value product = arith::MulFOp::create(builder, loc, sparseValue, vectorValue);
+  return {coordinates.getRow(), product};
 }
 
 SmallVector<Value>

@@ -263,18 +263,12 @@ public:
         rewriter, loc, partition.getBegin(), partition.getEnd(), oneIndex,
         ValueRange{},
         [&](OpBuilder &builder, Location bodyLoc, Value position, ValueRange) {
-          auto coordinates = CSRCoordinatesOp::create(
-              builder, bodyLoc, builder.getIndexType(), builder.getIndexType(),
-              op.getRowOffsets(), op.getColumnIndices(), position);
-          Value sparseValue = memref::LoadOp::create(builder, bodyLoc,
-                                                     op.getValues(), position);
-          Value vectorValue = memref::LoadOp::create(
-              builder, bodyLoc, op.getVector(), coordinates.getColumn());
-          Value product =
-              arith::MulFOp::create(builder, bodyLoc, sparseValue, vectorValue);
+          CSRSpMVProduct element = buildCSRSpMVProduct(
+              builder, bodyLoc, op.getRowOffsets(), op.getColumnIndices(),
+              op.getValues(), op.getVector(), position);
           memref::AtomicRMWOp::create(
-              builder, bodyLoc, arith::AtomicRMWKind::addf, product,
-              op.getOutput(), ValueRange{coordinates.getRow()});
+              builder, bodyLoc, arith::AtomicRMWKind::addf, element.product,
+              op.getOutput(), ValueRange{element.row});
           scf::YieldOp::create(builder, bodyLoc);
         });
 
@@ -345,17 +339,11 @@ public:
     auto entry = scf::IfOp::create(
         rewriter, loc, active,
         [&](OpBuilder &builder, Location bodyLoc) {
-          auto coordinates = CSRCoordinatesOp::create(
-              builder, bodyLoc, builder.getIndexType(), builder.getIndexType(),
-              op.getRowOffsets(), op.getColumnIndices(), position);
-          Value sparseValue = memref::LoadOp::create(builder, bodyLoc,
-                                                     op.getValues(), position);
-          Value vectorValue = memref::LoadOp::create(
-              builder, bodyLoc, op.getVector(), coordinates.getColumn());
-          Value product =
-              arith::MulFOp::create(builder, bodyLoc, sparseValue, vectorValue);
+          CSRSpMVProduct element = buildCSRSpMVProduct(
+              builder, bodyLoc, op.getRowOffsets(), op.getColumnIndices(),
+              op.getValues(), op.getVector(), position);
           scf::YieldOp::create(builder, bodyLoc,
-                               ValueRange{coordinates.getRow(), product});
+                               ValueRange{element.row, element.product});
         },
         [&](OpBuilder &builder, Location bodyLoc) {
           scf::YieldOp::create(builder, bodyLoc, ValueRange{zeroIndex, zero});
