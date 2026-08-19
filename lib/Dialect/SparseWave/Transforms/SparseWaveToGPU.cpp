@@ -301,8 +301,6 @@ public:
     Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
     Value blockSizeValue =
         arith::ConstantIndexOp::create(rewriter, loc, blockSize);
-    Value waveSizeValue =
-        arith::ConstantIndexOp::create(rewriter, loc, waveSize);
     Value wavesPerBlockValue =
         arith::ConstantIndexOp::create(rewriter, loc, blockSize / waveSize);
     Value outputSize =
@@ -319,18 +317,23 @@ public:
                                   zero, oneIndex, blockSizeValue);
 
     rewriter.setInsertionPointAfter(initialization);
-    LinearThreadWorkDistribution distribution =
-        buildLinearThreadWorkDistribution(rewriter, loc, nonzeroCount, oneIndex,
-                                          blockSizeValue);
-    Value thread = distribution.launch.getThreadIds().x;
-    Value waveInBlock =
-        arith::DivUIOp::create(rewriter, loc, thread, waveSizeValue);
-    Value lane = arith::RemUIOp::create(rewriter, loc, thread, waveSizeValue);
-    Value waveBase = arith::MulIOp::create(
-        rewriter, loc, distribution.launch.getBlockIds().x, wavesPerBlockValue);
-    Value wave = arith::AddIOp::create(rewriter, loc, waveBase, waveInBlock);
-    Value waveCount = arith::MulIOp::create(
-        rewriter, loc, distribution.launch.getGridSize().x, wavesPerBlockValue);
+    Value requiredBlocks =
+        arith::CeilDivUIOp::create(rewriter, loc, nonzeroCount, blockSizeValue);
+    Value gridSize =
+        arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
+    Value waveCount =
+        arith::MulIOp::create(rewriter, loc, gridSize, wavesPerBlockValue);
+    auto parallel =
+        PositionParallelOp::create(rewriter, loc, waveCount, "wave",
+                                   rewriter.getI64IntegerAttr(blockSize));
+    Block *parallelBody =
+        rewriter.createBlock(&parallel.getBody(), parallel.getBody().end(),
+                             {rewriter.getIndexType(), rewriter.getIndexType(),
+                              rewriter.getIndexType()},
+                             {loc, loc, loc});
+    rewriter.setInsertionPointToStart(parallelBody);
+    Value wave = parallelBody->getArgument(0);
+    Value lane = parallelBody->getArgument(1);
     auto partition = PositionSpaceOp::create(
         rewriter, loc, rewriter.getIndexType(), rewriter.getIndexType(),
         zeroIndex, nonzeroCount, wave, waveCount);
@@ -371,8 +374,7 @@ public:
                         scf::YieldOp::create(builder, bodyLoc);
                       });
 
-    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
-    gpu::TerminatorOp::create(rewriter, loc);
+    YieldOp::create(rewriter, loc);
     rewriter.eraseOp(op);
     return success();
   }

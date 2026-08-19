@@ -143,21 +143,25 @@
 // POS-LOWER-NOT: sparsewave.spmv
 
 // SEGMENT-LABEL: func.func @spmv(
+// SEGMENT: %[[WAVE_SIZE:.*]] = arith.constant 32 : index
 // SEGMENT: %[[ZERO:.*]] = arith.constant 0 : index
 // SEGMENT: %[[ONE:.*]] = arith.constant 1 : index
 // SEGMENT: %[[BLOCK_SIZE:.*]] = arith.constant 128 : index
-// SEGMENT: %[[WAVE_SIZE:.*]] = arith.constant 32 : index
 // SEGMENT: %[[WAVES_PER_BLOCK:.*]] = arith.constant 4 : index
 // SEGMENT: %[[OUTPUT_SIZE:.*]] = memref.dim %{{.*}}, %[[ZERO]]
 // SEGMENT-NEXT: %[[NNZ:.*]] = memref.dim %{{.*}}, %[[ZERO]]
 // SEGMENT: gpu.launch
 // SEGMENT: gpu.terminator
+// SEGMENT: %[[REQUIRED_BLOCKS:.*]] = arith.ceildivui %[[NNZ]], %[[BLOCK_SIZE]]
+// SEGMENT: %[[GRID_SIZE:.*]] = arith.maxui %[[REQUIRED_BLOCKS]], %[[ONE]]
+// SEGMENT: %[[WAVE_COUNT:.*]] = arith.muli %[[GRID_SIZE]], %[[WAVES_PER_BLOCK]]
 // SEGMENT: gpu.launch
 // SEGMENT: %[[WAVE_IN_BLOCK:.*]] = arith.divui %{{.*}}, %[[WAVE_SIZE]]
 // SEGMENT: %[[LANE:.*]] = arith.remui %{{.*}}, %[[WAVE_SIZE]]
 // SEGMENT: %[[WAVE_BASE:.*]] = arith.muli %{{.*}}, %[[WAVES_PER_BLOCK]]
 // SEGMENT: %[[POSITION_WORKER:.*]] = arith.addi %[[WAVE_BASE]], %[[WAVE_IN_BLOCK]]
-// SEGMENT: %[[WAVE_COUNT:.*]] = arith.muli %{{.*}}, %[[WAVES_PER_BLOCK]]
+// SEGMENT: %[[WORKER_ACTIVE:.*]] = arith.cmpi ult, %[[POSITION_WORKER]], %[[WAVE_COUNT]]
+// SEGMENT: scf.if %[[WORKER_ACTIVE]]
 // SEGMENT: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space %[[ZERO]] to %[[NNZ]] partition %[[POSITION_WORKER]] of %[[WAVE_COUNT]]
 // SEGMENT: %[[POSITION:.*]] = arith.addi %[[BEGIN]], %[[LANE]]
 // SEGMENT: %[[ACTIVE:.*]] = arith.cmpi ult, %[[POSITION]], %[[END]]
