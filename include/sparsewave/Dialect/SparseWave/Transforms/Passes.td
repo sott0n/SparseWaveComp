@@ -133,7 +133,10 @@ def ScheduleSparseWavePosition
     Rewrites sparsewave.position_reduce into explicit position scheduling
     operations. The pass is independent of the operator and storage format
     that produced each keyed contribution. Thread mapping splits the position
-    range into configurable sequential chunks and uses atomic accumulation.
+    range into configurable sequential chunks. It can either atomically
+    accumulate every position or combine adjacent equal-key contributions
+    locally before atomic accumulation. For CSR positions, the segmented form
+    also carries the recovered row across the chunk.
     Wave mapping uses balanced position-space partitions and first combines
     adjacent equal keys with a segmented reduction.
   }];
@@ -149,7 +152,10 @@ def ScheduleSparseWavePosition
            "Number of target lanes in a scheduled wave">,
     Option<"threadChunkSize", "thread-chunk-size", "int64_t",
            /*default=*/"1",
-           "Number of consecutive positions processed by each thread worker">
+           "Number of consecutive positions processed by each thread worker">,
+    Option<"threadReduction", "thread-reduction", "std::string",
+           /*default=*/"\"atomic\"",
+           "Thread chunk reduction strategy: atomic or segmented">
   ];
   let dependentDialects = [
     "arith::ArithDialect",

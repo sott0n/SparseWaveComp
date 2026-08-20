@@ -11,7 +11,7 @@ be included as CSR baselines.
 
 | Runner | Format | Format selection and parameters | GPU mappings |
 | --- | --- | --- | --- |
-| SpMV | CSR | `--formats=csr`; `--position-chunk-sizes` selects consecutive positions processed by each `thread-per-position` worker | `thread-per-row`, `thread-per-position`, `wave-per-position`, `wave-per-row`, `block-per-row` |
+| SpMV | CSR | `--formats=csr`; `--position-chunk-sizes` selects consecutive positions processed by each `thread-per-position` worker; `--position-reductions=atomic,segmented` compares per-position atomics with chunk-local segmented sums | `thread-per-row`, `thread-per-position`, `wave-per-position`, `wave-per-row`, `block-per-row` |
 | SpMV | COO | `--formats=coo` | `thread-per-nonzero` |
 | SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths | `thread-per-output`, `wave-per-row-tile` |
 | SpMM | BSR | `--formats=bsr`; `--bsr-block-sizes` selects square storage block sizes | `thread-per-output` |
@@ -61,14 +61,18 @@ python3 benchmark/run_spmv_benchmark.py \
   --nnz-per-row=4,32,256 \
   --distributions=uniform,skewed \
   --position-chunk-sizes=1,2,4,8 \
+  --position-reductions=atomic,segmented \
   --rocsparse
 ```
 
 The `chunk` result column is the split factor. A value of one is the original
 one-position-per-thread schedule; larger values trade parallel worker count for
-sequential reuse within each thread. Reorder and collapse are not included in
-this one-dimensional SpMV ablation because they do not change its iteration
-order or shape.
+sequential reuse within each thread. `atomic` independently recovers and
+updates every position. `segmented` recovers the first CSR row once, carries
+the row across the chunk, and emits an atomic update only when the row changes
+or the chunk ends. Reorder and collapse are not included in this
+one-dimensional SpMV ablation because they do not change its iteration order
+or shape.
 
 Each recorded result contains its workload definition, measurement method,
 environment, reproduction commands, performance data, and interpretation:

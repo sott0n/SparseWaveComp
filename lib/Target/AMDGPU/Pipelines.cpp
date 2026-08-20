@@ -251,6 +251,7 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
     scheduleOptions.waveSize =
         static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
     scheduleOptions.threadChunkSize = options.spmvPositionChunkSize;
+    scheduleOptions.threadReduction = options.spmvPositionReduction;
     pm.addPass(createScheduleSparseWavePosition(scheduleOptions));
   }
 

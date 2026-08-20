@@ -126,6 +126,11 @@ struct SparseWaveToAMDGPUPipelineOptions
           "Number of consecutive SpMV positions processed by each thread."),
       llvm::cl::init(1)};
 
+  PassOptions::Option<std::string> spmvPositionReduction{
+      *this, "spmv-position-reduction",
+      llvm::cl::desc("Reduction strategy for thread-per-position SpMV chunks."),
+      llvm::cl::init("atomic")};
+
   PassOptions::Option<int64_t> positionBlockSize{
       *this, "position-block-size",
       llvm::cl::desc("Number of GPU threads in each position-parallel block."),

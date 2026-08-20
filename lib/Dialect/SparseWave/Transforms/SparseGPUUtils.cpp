@@ -103,14 +103,15 @@ SmallVector<Value> buildCSRPositionTraversal(OpBuilder &builder, Location loc,
 CSRSpMVProduct buildCSRSpMVProduct(OpBuilder &builder, Location loc,
                                    Value rowOffsets, Value columnIndices,
                                    Value values, Value vector, Value position) {
-  auto coordinates = CSRCoordinatesOp::create(
-      builder, loc, builder.getIndexType(), builder.getIndexType(), rowOffsets,
-      columnIndices, position);
+  Value row = CSRRowAtPositionOp::create(builder, loc, builder.getIndexType(),
+                                         rowOffsets, position);
+  Value columnValue =
+      memref::LoadOp::create(builder, loc, columnIndices, position);
+  Value column = castToIndex(builder, loc, columnValue);
   Value sparseValue = memref::LoadOp::create(builder, loc, values, position);
-  Value vectorValue =
-      memref::LoadOp::create(builder, loc, vector, coordinates.getColumn());
+  Value vectorValue = memref::LoadOp::create(builder, loc, vector, column);
   Value product = arith::MulFOp::create(builder, loc, sparseValue, vectorValue);
-  return {coordinates.getRow(), product};
+  return {row, product};
 }
 
 SmallVector<Value>

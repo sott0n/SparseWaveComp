@@ -186,6 +186,17 @@ func.func @coordinates_index(%rowOffsets: memref<?xindex>,
   return %row, %column : index, index
 }
 
+// CHECK-LABEL: func.func @row_at_position(
+// CHECK: scf.while
+// CHECK-NOT: sparsewave.csr_row_at_position
+// CHECK: return %{{.*}} : index
+func.func @row_at_position(%rowOffsets: memref<?xi32>, %position: index)
+    -> index {
+  %row = sparsewave.csr_row_at_position %rowOffsets at %position
+      : memref<?xi32>
+  return %row : index
+}
+
 // FOLD-LABEL: func.func @partition_remainder(
 // FOLD: %[[BEGIN:.*]] = arith.constant 13 : index
 // FOLD: %[[END:.*]] = arith.constant 15 : index

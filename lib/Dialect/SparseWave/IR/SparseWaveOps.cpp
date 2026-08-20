@@ -747,6 +747,29 @@ LogicalResult PositionParallelOp::verify() {
   return success();
 }
 
+LogicalResult CSRRowAtPositionOp::verify() {
+  MemRefType rowOffsetsType = getRowOffsets().getType();
+  if (failed(verifyRank(*this, rowOffsetsType, 1, "row offsets")))
+    return failure();
+  Type indexType = rowOffsetsType.getElementType();
+  if (!indexType.isIntOrIndex())
+    return emitOpError()
+           << "row offsets must have integer or index elements, but got "
+           << indexType;
+
+  int64_t rowOffsetsSize = rowOffsetsType.getDimSize(0);
+  if (!ShapedType::isDynamic(rowOffsetsSize) && rowOffsetsSize < 2)
+    return emitOpError()
+           << "row offsets must contain at least two elements, but got "
+           << rowOffsetsSize;
+
+  std::optional<int64_t> position = matchConstantIndex(getPosition());
+  if (position && *position < 0)
+    return emitOpError() << "position must be nonnegative, but got "
+                         << *position;
+  return success();
+}
+
 LogicalResult CSRCoordinatesOp::verify() {
   MemRefType rowOffsetsType = getRowOffsets().getType();
   MemRefType columnIndicesType = getColumnIndices().getType();

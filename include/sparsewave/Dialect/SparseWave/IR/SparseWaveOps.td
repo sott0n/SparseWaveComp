@@ -658,6 +658,34 @@ def SparseWave_PositionSpaceOp : SparseWave_Op<"position_space", [Pure]> {
   let hasVerifier = 1;
 }
 
+def SparseWave_CSRRowAtPositionOp : SparseWave_Op<"csr_row_at_position"> {
+  let summary = "Recover a CSR row from a stored position";
+  let description = [{
+    `sparsewave.csr_row_at_position` maps a stored position in flattened CSR
+    storage back to its logical row. Keeping row recovery separate from the
+    column-index load allows a sequential position schedule to recover the
+    first row once and carry it across subsequent positions.
+
+    Example:
+
+    ```mlir
+    %row = sparsewave.csr_row_at_position %row_offsets at %position
+        : memref<?xi32>
+    ```
+  }];
+
+  let arguments = (ins
+      Arg<AnyMemRef, "CSR row offsets", [MemRead]>:$rowOffsets,
+      Index:$position);
+  let results = (outs Index:$row);
+
+  let assemblyFormat = [{
+    $rowOffsets `at` $position attr-dict `:` type($rowOffsets)
+  }];
+
+  let hasVerifier = 1;
+}
+
 def SparseWave_CSRCoordinatesOp : SparseWave_Op<"csr_coordinates"> {
   let summary = "Recover CSR coordinates from a stored position";
   let description = [{

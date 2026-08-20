@@ -322,6 +322,17 @@ class SpMVBenchmarkTest(unittest.TestCase):
         ):
             BENCHMARK.parse_positive_int_list("1,0,4")
 
+    def test_position_reduction_parser(self):
+        self.assertEqual(
+            BENCHMARK.parse_position_reductions("atomic,segmented"),
+            ["atomic", "segmented"],
+        )
+        with self.assertRaisesRegex(
+            BENCHMARK.argparse.ArgumentTypeError,
+            "unknown position reductions",
+        ):
+            BENCHMARK.parse_position_reductions("tree")
+
     def test_distribution_parser_rejects_duplicates(self):
         with self.assertRaisesRegex(
             BENCHMARK.argparse.ArgumentTypeError, "duplicate distributions"
@@ -446,6 +457,7 @@ gpu.binary @compute [#gpu.object<bin = "\7FELF\02">]
             },
             resources=resources,
             position_chunk_size=4,
+            position_reduction="segmented",
         )
         self.assertEqual(result["gnnz_per_sec"], 0.016)
         self.assertEqual(result["gflops"], 0.032)
@@ -453,6 +465,7 @@ gpu.binary @compute [#gpu.object<bin = "\7FELF\02">]
         self.assertEqual(result["lds_bytes"], 128)
         self.assertEqual(result["max_workgroup_size"], 64)
         self.assertEqual(result["position_chunk_size"], 4)
+        self.assertEqual(result["position_reduction"], "segmented")
 
     def test_empty_gpu_resources_cover_result_columns(self):
         resources = BENCHMARK.common.empty_gpu_resources()

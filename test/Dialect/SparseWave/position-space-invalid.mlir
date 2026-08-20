@@ -8,6 +8,16 @@ func.func @nonpositive_split_factor(%position: index) {
 
 // -----
 
+func.func @csr_row_at_position_requires_offsets(%position: index) {
+  %rowOffsets = memref.alloc() : memref<1xi32>
+  // expected-error @+1 {{row offsets must contain at least two elements, but got 1}}
+  %row = sparsewave.csr_row_at_position %rowOffsets at %position
+      : memref<1xi32>
+  return
+}
+
+// -----
+
 func.func @negative_split_position() {
   %position = arith.constant -1 : index
   // expected-error @+1 {{position must be nonnegative, but got -1}}

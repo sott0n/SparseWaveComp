@@ -22,6 +22,7 @@ FORMAT_MAPPINGS = {
     "coo": ("thread-per-nonzero",),
 }
 DISTRIBUTIONS = ("uniform", "alternating", "skewed")
+POSITION_REDUCTIONS = ("atomic", "segmented")
 DISTRIBUTION_PERIODS = {
     "uniform": 1,
     "alternating": 2,
@@ -34,6 +35,7 @@ RESULT_COLUMNS = (
     "format",
     "mapping",
     "position_chunk_size",
+    "position_reduction",
     "algorithm",
     "block_size",
     "wave_size",
@@ -69,7 +71,13 @@ RESULT_FLOAT_FIELDS = (
 )
 MATRIX_REPORT = common.BenchmarkReport(
     details=("matrix", "rows", "columns", "nnz"),
-    dimensions=("format", "block_size", "mapping", "position_chunk_size"),
+    dimensions=(
+        "format",
+        "block_size",
+        "mapping",
+        "position_chunk_size",
+        "position_reduction",
+    ),
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("mapping", "thread-per-row"),
     baseline_group=("block_size",),
@@ -82,6 +90,7 @@ MATRIX_ROCSPARSE_REPORT = common.BenchmarkReport(
         "block_size",
         "mapping",
         "position_chunk_size",
+        "position_reduction",
     ),
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("implementation", "rocsparse"),
@@ -96,6 +105,7 @@ SYNTHETIC_REPORT = common.BenchmarkReport(
         "block_size",
         "mapping",
         "position_chunk_size",
+        "position_reduction",
     ),
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("mapping", "thread-per-row"),
@@ -111,6 +121,7 @@ SYNTHETIC_ROCSPARSE_REPORT = common.BenchmarkReport(
         "block_size",
         "mapping",
         "position_chunk_size",
+        "position_reduction",
     ),
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("implementation", "rocsparse"),
@@ -118,7 +129,13 @@ SYNTHETIC_ROCSPARSE_REPORT = common.BenchmarkReport(
 )
 MATRIX_RESOURCE_REPORT = common.BenchmarkReport(
     details=(),
-    dimensions=("format", "block_size", "mapping", "position_chunk_size"),
+    dimensions=(
+        "format",
+        "block_size",
+        "mapping",
+        "position_chunk_size",
+        "position_reduction",
+    ),
     metrics=common.GPU_RESOURCE_METRICS,
 )
 SYNTHETIC_RESOURCE_REPORT = common.BenchmarkReport(
@@ -130,6 +147,7 @@ SYNTHETIC_RESOURCE_REPORT = common.BenchmarkReport(
         "block_size",
         "mapping",
         "position_chunk_size",
+        "position_reduction",
     ),
     metrics=MATRIX_RESOURCE_REPORT.metrics,
 )
@@ -181,6 +199,25 @@ def parse_formats(value):
     if len(values) != len(set(values)):
         raise argparse.ArgumentTypeError(
             f"duplicate sparse formats are not allowed: {values}"
+        )
+    return values
+
+
+def parse_position_reductions(value):
+    values = [item.strip() for item in value.split(",") if item.strip()]
+    invalid = [item for item in values if item not in POSITION_REDUCTIONS]
+    if not values:
+        raise argparse.ArgumentTypeError(
+            "expected at least one position reduction"
+        )
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            f"unknown position reductions {invalid}; "
+            f"expected {POSITION_REDUCTIONS}"
+        )
+    if len(values) != len(set(values)):
+        raise argparse.ArgumentTypeError(
+            f"duplicate position reductions are not allowed: {values}"
         )
     return values
 
@@ -427,6 +464,7 @@ def result_row(
     preprocess_us=None,
     conversion_us=None,
     position_chunk_size=None,
+    position_reduction=None,
 ):
     shape = workload["shape"]
     nnz = shape["nnz"]
@@ -438,6 +476,7 @@ def result_row(
         "format": sparse_format,
         "mapping": mapping,
         "position_chunk_size": position_chunk_size,
+        "position_reduction": position_reduction,
         "algorithm": "default" if implementation == "rocsparse" else "",
         "block_size": block_size,
         "wave_size": (
@@ -490,6 +529,7 @@ def build_metadata(args, repository, commands):
             ),
             "formats": args.formats,
             "position_chunk_sizes": args.position_chunk_sizes,
+            "position_reductions": args.position_reductions,
             "commands": commands,
         }
     )
@@ -597,6 +637,15 @@ def parse_arguments(argv):
             "thread-per-position mapping."
         ),
     )
+    parser.add_argument(
+        "--position-reductions",
+        type=parse_position_reductions,
+        default=parse_position_reductions("atomic"),
+        help=(
+            "Comma-separated reduction strategies for each CSR "
+            "thread-per-position chunk: atomic,segmented."
+        ),
+    )
     common.add_common_arguments(parser, repository)
     args = parser.parse_args(argv)
 
@@ -681,81 +730,104 @@ def main(argv=None):
                             else (None,)
                         )
                         for chunk_size in chunk_sizes:
-                            kernels_per_dispatch, compute_binary_index = (
-                                sparsewave_kernel_layout(sparse_format, mapping)
+                            reductions = (
+                                args.position_reductions
+                                if chunk_size is not None
+                                else (None,)
                             )
-                            case_directory = (
-                                workspace.artifact_root
-                                / workload["key"]
-                                / sparse_format
-                                / f"block-{block_size}"
-                                / mapping
-                            )
-                            pipeline_options = ()
-                            if chunk_size is not None:
-                                case_directory /= f"chunk-{chunk_size}"
-                                pipeline_options = (
-                                    "spmv-position-chunk-size="
-                                    f"{chunk_size}",
+                            for position_reduction in reductions:
+                                kernels_per_dispatch, compute_binary_index = (
+                                    sparsewave_kernel_layout(
+                                        sparse_format, mapping
+                                    )
                                 )
-                            timing, compile_command, profile_command = (
-                                common.run_case(
-                                    args,
-                                    source_text,
-                                    case_directory,
-                                    "spmv",
-                                    (
-                                        mapping
-                                        if sparse_format == "csr"
-                                        else "thread-per-row"
-                                    ),
-                                    block_size,
-                                    sparse_binaries.get(sparse_format),
-                                    pipeline_options=pipeline_options,
-                                    sparse_format=sparse_format,
-                                    kernels_per_dispatch=kernels_per_dispatch,
+                                case_directory = (
+                                    workspace.artifact_root
+                                    / workload["key"]
+                                    / sparse_format
+                                    / f"block-{block_size}"
+                                    / mapping
                                 )
-                            )
-                            resources, resource_command = (
-                                common.inspect_gpu_resources(
-                                    args,
-                                    case_directory / "compiled.mlir",
-                                    case_directory / "kernel.hsaco",
-                                    "spmv_kernel",
-                                    args.wave_size,
-                                    block_size,
-                                    binary_index=compute_binary_index,
+                                pipeline_options = ()
+                                if chunk_size is not None:
+                                    case_directory /= f"chunk-{chunk_size}"
+                                    case_directory /= position_reduction
+                                    pipeline_options = (
+                                        "spmv-position-chunk-size="
+                                        f"{chunk_size}",
+                                        "spmv-position-reduction="
+                                        f"{position_reduction}",
+                                    )
+                                timing, compile_command, profile_command = (
+                                    common.run_case(
+                                        args,
+                                        source_text,
+                                        case_directory,
+                                        "spmv",
+                                        (
+                                            mapping
+                                            if sparse_format == "csr"
+                                            else "thread-per-row"
+                                        ),
+                                        block_size,
+                                        sparse_binaries.get(sparse_format),
+                                        pipeline_options=pipeline_options,
+                                        sparse_format=sparse_format,
+                                        kernels_per_dispatch=(
+                                            kernels_per_dispatch
+                                        ),
+                                    )
                                 )
-                            )
-                            results.append(
-                                result_row(
-                                    args,
-                                    mapping,
-                                    block_size,
-                                    workload,
-                                    timing,
-                                    resources,
-                                    sparse_format=sparse_format,
-                                    conversion_us=conversion_us.get(
-                                        sparse_format
-                                    ),
-                                    position_chunk_size=chunk_size,
+                                resources, resource_command = (
+                                    common.inspect_gpu_resources(
+                                        args,
+                                        case_directory / "compiled.mlir",
+                                        case_directory / "kernel.hsaco",
+                                        "spmv_kernel",
+                                        args.wave_size,
+                                        block_size,
+                                        binary_index=compute_binary_index,
+                                    )
                                 )
-                            )
-                            commands.append(
-                                {
-                                    "matrix": workload["matrix"],
-                                    "distribution": workload["distribution"],
-                                    "nnz_per_row": workload["nnz_per_row"],
-                                    "format": sparse_format,
-                                    "block_size": block_size,
-                                    "mapping": mapping,
-                                    "position_chunk_size": chunk_size,
-                                    "compile": compile_command,
-                                    "resources": resource_command,
-                                    "profile": profile_command,
-                                }
-                            )
+                                results.append(
+                                    result_row(
+                                        args,
+                                        mapping,
+                                        block_size,
+                                        workload,
+                                        timing,
+                                        resources,
+                                        sparse_format=sparse_format,
+                                        conversion_us=conversion_us.get(
+                                            sparse_format
+                                        ),
+                                        position_chunk_size=chunk_size,
+                                        position_reduction=(
+                                            position_reduction
+                                        ),
+                                    )
+                                )
+                                commands.append(
+                                    {
+                                        "matrix": workload["matrix"],
+                                        "distribution": workload[
+                                            "distribution"
+                                        ],
+                                        "nnz_per_row": workload[
+                                            "nnz_per_row"
+                                        ],
+                                        "format": sparse_format,
+                                        "block_size": block_size,
+                                        "mapping": mapping,
+                                        "position_chunk_size": chunk_size,
+                                        "position_reduction": (
+                                            position_reduction
+                                        ),
+                                        "compile": compile_command,
+                                        "resources": resource_command,
+                                        "profile": profile_command,
+                                    }
+                                )
             if args.rocsparse:
                 timing, preprocess_us, profile_command = (
                     common.run_rocsparse_case(

@@ -222,6 +222,68 @@ public:
   }
 };
 
+Value buildCSRRowSearch(OpBuilder &builder, Location loc, Value rowOffsets,
+                        Value position) {
+  Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+  Value one = arith::ConstantIndexOp::create(builder, loc, 1);
+  Value two = arith::ConstantIndexOp::create(builder, loc, 2);
+  Value rowOffsetsSize = memref::DimOp::create(builder, loc, rowOffsets, zero);
+
+  // Search [1, rowOffsetsSize) for the first offset greater than position.
+  // Starting at one makes the final predecessor a valid CSR row index.
+  auto search = scf::WhileOp::create(
+      builder, loc, TypeRange{builder.getIndexType(), builder.getIndexType()},
+      ValueRange{one, rowOffsetsSize});
+
+  SmallVector<Location> argumentLocations(2, loc);
+  Block *before = builder.createBlock(
+      &search.getBefore(), {}, search.getResultTypes(), argumentLocations);
+  builder.setInsertionPointToStart(before);
+  Value lower = before->getArgument(0);
+  Value upper = before->getArgument(1);
+  Value continueSearch = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::ult, lower, upper);
+  scf::ConditionOp::create(builder, loc, continueSearch,
+                           before->getArguments());
+
+  Block *after = builder.createBlock(
+      &search.getAfter(), {}, search.getResultTypes(), argumentLocations);
+  builder.setInsertionPointToStart(after);
+  lower = after->getArgument(0);
+  upper = after->getArgument(1);
+  Value distance = arith::SubIOp::create(builder, loc, upper, lower);
+  Value midpoint = arith::AddIOp::create(
+      builder, loc, lower, arith::DivUIOp::create(builder, loc, distance, two));
+  Value offsetValue =
+      memref::LoadOp::create(builder, loc, rowOffsets, ValueRange{midpoint});
+  Value offset = castToIndex(builder, loc, offsetValue);
+  Value offsetAtOrBeforePosition = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::ule, offset, position);
+  Value nextLower = arith::SelectOp::create(
+      builder, loc, offsetAtOrBeforePosition,
+      arith::AddIOp::create(builder, loc, midpoint, one), lower);
+  Value nextUpper = arith::SelectOp::create(
+      builder, loc, offsetAtOrBeforePosition, upper, midpoint);
+  scf::YieldOp::create(builder, loc, ValueRange{nextLower, nextUpper});
+
+  builder.setInsertionPointAfter(search);
+  return arith::SubIOp::create(builder, loc, search.getResult(0), one);
+}
+
+class LowerCSRRowAtPositionPattern
+    : public OpRewritePattern<CSRRowAtPositionOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(CSRRowAtPositionOp op,
+                                PatternRewriter &rewriter) const override {
+    Value row = buildCSRRowSearch(rewriter, op.getLoc(), op.getRowOffsets(),
+                                  op.getPosition());
+    rewriter.replaceOp(op, row);
+    return success();
+  }
+};
+
 class LowerCSRCoordinatesPattern : public OpRewritePattern<CSRCoordinatesOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
@@ -229,54 +291,8 @@ public:
   LogicalResult matchAndRewrite(CSRCoordinatesOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    Value two = arith::ConstantIndexOp::create(rewriter, loc, 2);
-    Value rowOffsetsSize =
-        memref::DimOp::create(rewriter, loc, op.getRowOffsets(), zero);
-
-    // Search [1, rowOffsetsSize) for the first offset greater than position.
-    // Starting at one makes the final predecessor a valid CSR row index.
-    auto search = scf::WhileOp::create(
-        rewriter, loc,
-        TypeRange{rewriter.getIndexType(), rewriter.getIndexType()},
-        ValueRange{one, rowOffsetsSize});
-
-    OpBuilder::InsertionGuard guard(rewriter);
-    SmallVector<Location> argumentLocations(2, loc);
-    Block *before = rewriter.createBlock(
-        &search.getBefore(), {}, search.getResultTypes(), argumentLocations);
-    rewriter.setInsertionPointToStart(before);
-    Value lower = before->getArgument(0);
-    Value upper = before->getArgument(1);
-    Value continueSearch = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::ult, lower, upper);
-    scf::ConditionOp::create(rewriter, loc, continueSearch,
-                             before->getArguments());
-
-    Block *after = rewriter.createBlock(
-        &search.getAfter(), {}, search.getResultTypes(), argumentLocations);
-    rewriter.setInsertionPointToStart(after);
-    lower = after->getArgument(0);
-    upper = after->getArgument(1);
-    Value distance = arith::SubIOp::create(rewriter, loc, upper, lower);
-    Value midpoint = arith::AddIOp::create(
-        rewriter, loc, lower,
-        arith::DivUIOp::create(rewriter, loc, distance, two));
-    Value offsetValue = memref::LoadOp::create(
-        rewriter, loc, op.getRowOffsets(), ValueRange{midpoint});
-    Value offset = castToIndex(rewriter, loc, offsetValue);
-    Value offsetAtOrBeforePosition = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::ule, offset, op.getPosition());
-    Value nextLower = arith::SelectOp::create(
-        rewriter, loc, offsetAtOrBeforePosition,
-        arith::AddIOp::create(rewriter, loc, midpoint, one), lower);
-    Value nextUpper = arith::SelectOp::create(
-        rewriter, loc, offsetAtOrBeforePosition, upper, midpoint);
-    scf::YieldOp::create(rewriter, loc, ValueRange{nextLower, nextUpper});
-
-    rewriter.setInsertionPointAfter(search);
-    Value row = arith::SubIOp::create(rewriter, loc, search.getResult(0), one);
+    Value row =
+        buildCSRRowSearch(rewriter, loc, op.getRowOffsets(), op.getPosition());
     Value columnValue = memref::LoadOp::create(
         rewriter, loc, op.getColumnIndices(), ValueRange{op.getPosition()});
     Value column = castToIndex(rewriter, loc, columnValue);
@@ -296,8 +312,8 @@ public:
     RewritePatternSet patterns(&getContext());
     patterns.add<LowerPositionSplitPattern, LowerPositionForPattern,
                  LowerPositionReorderPattern, LowerPositionCollapsePattern,
-                 LowerPositionSpacePattern, LowerCSRCoordinatesPattern>(
-        &getContext());
+                 LowerPositionSpacePattern, LowerCSRRowAtPositionPattern,
+                 LowerCSRCoordinatesPattern>(&getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
   }

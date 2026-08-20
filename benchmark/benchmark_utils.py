@@ -1134,6 +1134,9 @@ REPORT_COLUMNS = {
     "position_chunk_size": TableColumn(
         "chunk", "position_chunk_size", 5, "d"
     ),
+    "position_reduction": TableColumn(
+        "reduction", "position_reduction", 9, alignment="<"
+    ),
     "tile_size": TableColumn("tile", "tile_size", 4, "d"),
     "mapping": TableColumn("mapping", "mapping", 18, alignment="<"),
     "median_us": TableColumn("median", "median_us", 11, ".2f", " us"),

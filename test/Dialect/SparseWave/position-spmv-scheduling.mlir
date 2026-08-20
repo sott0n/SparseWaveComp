@@ -8,6 +8,9 @@
 // RUN:   --pass-pipeline='builtin.module(decompose-position-spmv,schedule-sparsewave-position{mapping=thread block-size=128 thread-chunk-size=4})' \
 // RUN:   | FileCheck %s --check-prefix=CHUNK
 // RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(decompose-position-spmv,schedule-sparsewave-position{mapping=thread block-size=128 thread-chunk-size=4 thread-reduction=segmented})' \
+// RUN:   | FileCheck %s --check-prefix=SEGMENTED
+// RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(decompose-position-spmv,schedule-sparsewave-position{mapping=wave block-size=128 wave-size=32})' \
 // RUN:   | FileCheck %s --check-prefix=WAVE
 
@@ -16,7 +19,8 @@
 // DECOMPOSE-NOT: sparsewave.position_parallel
 // DECOMPOSE: sparsewave.position_reduce %{{.*}} to %{{.*}} into %{{.*}} kind = "sum" {
 // DECOMPOSE: ^bb0(%[[POSITION:.*]]: index):
-// DECOMPOSE: %[[ROW:.*]], %{{.*}} = sparsewave.csr_coordinates %{{.*}}, %{{.*}} at %[[POSITION]]
+// DECOMPOSE: %[[ROW:.*]] = sparsewave.csr_row_at_position %{{.*}} at %[[POSITION]]
+// DECOMPOSE: memref.load %{{.*}}[%[[POSITION]]]
 // DECOMPOSE: %[[PRODUCT:.*]] = arith.mulf
 // DECOMPOSE: sparsewave.yield %[[ROW]], %[[PRODUCT]] : index, f32
 // DECOMPOSE-NOT: sparsewave.spmv
@@ -29,7 +33,7 @@
 // THREAD-NEXT: ^bb0(%[[WORKER:[^,]+]]: index
 // THREAD: sparsewave.position_for %[[WORKER]] in %{{.*}} to %{{.*}} by 1
 // THREAD-NEXT: ^bb0(%[[POSITION:.*]]: index, %{{.*}}: index):
-// THREAD: sparsewave.csr_coordinates %{{.*}}, %{{.*}} at %[[POSITION]]
+// THREAD: sparsewave.csr_row_at_position %{{.*}} at %[[POSITION]]
 // THREAD: memref.atomic_rmw addf
 // THREAD-NOT: sparsewave.spmv
 
@@ -39,8 +43,17 @@
 // CHUNK-NEXT: ^bb0(%[[WORKER:[^,]+]]: index
 // CHUNK: sparsewave.position_for %[[WORKER]] in %{{.*}} to %{{.*}} by 4
 // CHUNK-NEXT: ^bb0(%[[POSITION:.*]]: index, %{{.*}}: index):
-// CHUNK: sparsewave.csr_coordinates %{{.*}}, %{{.*}} at %[[POSITION]]
+// CHUNK: sparsewave.csr_row_at_position %{{.*}} at %[[POSITION]]
 // CHUNK: memref.atomic_rmw addf
+
+// SEGMENTED-LABEL: func.func @spmv(
+// SEGMENTED-COUNT-1: sparsewave.csr_row_at_position
+// SEGMENTED: scf.for
+// SEGMENTED: scf.while
+// SEGMENTED: arith.addf
+// SEGMENTED: scf.if
+// SEGMENTED: memref.atomic_rmw addf
+// SEGMENTED: memref.atomic_rmw addf
 
 // WAVE-LABEL: func.func @spmv(
 // WAVE-NOT: gpu.launch
@@ -51,7 +64,7 @@
 // WAVE: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space
 // WAVE-SAME: partition %[[WAVE]] of %[[WAVES]]
 // WAVE: %[[POSITION:.*]] = arith.addi %[[BEGIN]], %[[LANE]]
-// WAVE: sparsewave.csr_coordinates %{{.*}}, %{{.*}} at %[[POSITION]]
+// WAVE: sparsewave.csr_row_at_position %{{.*}} at %[[POSITION]]
 // WAVE: gpu.shuffle up
 // WAVE: memref.atomic_rmw addf
 // WAVE-NOT: sparsewave.spmv

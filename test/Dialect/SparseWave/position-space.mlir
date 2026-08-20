@@ -9,6 +9,10 @@ func.func @position_space(
   %begin, %end = sparsewave.position_space %lower to %upper
       partition %workerId of %workerCount : index
 
+  // CHECK: sparsewave.csr_row_at_position
+  %recoveredRow = sparsewave.csr_row_at_position %rowOffsets at %begin
+      : memref<?xi32>
+
   // CHECK: sparsewave.csr_coordinates
   %row, %column = sparsewave.csr_coordinates
       %rowOffsets, %columnIndices at %begin : memref<?xi32>, memref<?xi32>
