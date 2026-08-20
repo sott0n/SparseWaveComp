@@ -11,7 +11,7 @@ be included as CSR baselines.
 
 | Runner | Format | Format selection and parameters | GPU mappings |
 | --- | --- | --- | --- |
-| SpMV | CSR | `--formats=csr` | `thread-per-row`, `thread-per-position`, `wave-per-position`, `wave-per-row`, `block-per-row` |
+| SpMV | CSR | `--formats=csr`; `--position-chunk-sizes` selects consecutive positions processed by each `thread-per-position` worker | `thread-per-row`, `thread-per-position`, `wave-per-position`, `wave-per-row`, `block-per-row` |
 | SpMV | COO | `--formats=coo` | `thread-per-nonzero` |
 | SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths | `thread-per-output`, `wave-per-row-tile` |
 | SpMM | BSR | `--formats=bsr`; `--bsr-block-sizes` selects square storage block sizes | `thread-per-output` |
@@ -50,6 +50,25 @@ python3 benchmark/run_spmm_benchmark.py \
   --block-size=64 \
   --tile-size=4
 ```
+
+A TACO-style position split ablation can compare multiple thread chunk factors
+against the row, wave-position, and rocSPARSE baselines in one run:
+
+```sh
+python3 benchmark/run_spmv_benchmark.py \
+  --rows=65536 \
+  --columns=65536 \
+  --nnz-per-row=4,32,256 \
+  --distributions=uniform,skewed \
+  --position-chunk-sizes=1,2,4,8 \
+  --rocsparse
+```
+
+The `chunk` result column is the split factor. A value of one is the original
+one-position-per-thread schedule; larger values trade parallel worker count for
+sequential reuse within each thread. Reorder and collapse are not included in
+this one-dimensional SpMV ablation because they do not change its iteration
+order or shape.
 
 Each recorded result contains its workload definition, measurement method,
 environment, reproduction commands, performance data, and interpretation:

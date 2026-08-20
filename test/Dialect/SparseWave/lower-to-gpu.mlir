@@ -120,14 +120,13 @@
 // POS: gpu.terminator
 // POS: %[[REQUIRED_BLOCKS:.*]] = arith.ceildivui %[[NNZ]], %[[BLOCK_SIZE]]
 // POS: %[[GRID_SIZE:.*]] = arith.maxui %[[REQUIRED_BLOCKS]], %[[ONE]]
-// POS: %[[WORKER_COUNT:.*]] = arith.muli %[[GRID_SIZE]], %[[BLOCK_SIZE]]
 // POS: gpu.launch
 // POS: %[[WORKER_BASE:.*]] = arith.muli %{{.*}}, %{{.*}}
 // POS-NEXT: %[[WORKER:.*]] = arith.addi %[[WORKER_BASE]], %{{.*}}
-// POS: %[[ACTIVE:.*]] = arith.cmpi ult, %[[WORKER]], %[[WORKER_COUNT]]
+// POS: %[[ACTIVE:.*]] = arith.cmpi ult, %[[WORKER]], %[[NNZ]]
 // POS: scf.if %[[ACTIVE]]
-// POS: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space %[[ZERO]] to %[[NNZ]] partition %[[WORKER]] of %[[WORKER_COUNT]]
-// POS: scf.for %[[POSITION_VALUE:.*]] = %[[BEGIN]] to %[[END]] step %[[ONE]]
+// POS: sparsewave.position_for %[[WORKER]] in %[[ZERO]] to %[[NNZ]] by 1
+// POS-NEXT: ^bb0(%[[POSITION_VALUE:.*]]: index, %{{.*}}: index):
 // POS: %[[ROW:.*]], %[[COLUMN:.*]] = sparsewave.csr_coordinates %{{.*}}, %{{.*}} at %[[POSITION_VALUE]]
 // POS: %[[SPARSE_VALUE:.*]] = memref.load %{{.*}}[%[[POSITION_VALUE]]]
 // POS: %[[VECTOR_VALUE:.*]] = memref.load %{{.*}}[%[[COLUMN]]]
@@ -137,6 +136,7 @@
 
 // POS-LOWER-LABEL: func.func @spmv(
 // POS-LOWER-NOT: sparsewave.position_space
+// POS-LOWER-NOT: sparsewave.position_for
 // POS-LOWER-NOT: sparsewave.csr_coordinates
 // POS-LOWER: scf.while
 // POS-LOWER: memref.atomic_rmw addf

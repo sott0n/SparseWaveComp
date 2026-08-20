@@ -33,6 +33,7 @@ RESULT_COLUMNS = (
     "implementation",
     "format",
     "mapping",
+    "position_chunk_size",
     "algorithm",
     "block_size",
     "wave_size",
@@ -68,14 +69,20 @@ RESULT_FLOAT_FIELDS = (
 )
 MATRIX_REPORT = common.BenchmarkReport(
     details=("matrix", "rows", "columns", "nnz"),
-    dimensions=("format", "block_size", "mapping"),
+    dimensions=("format", "block_size", "mapping", "position_chunk_size"),
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("mapping", "thread-per-row"),
     baseline_group=("block_size",),
 )
 MATRIX_ROCSPARSE_REPORT = common.BenchmarkReport(
     details=("matrix", "rows", "columns", "nnz"),
-    dimensions=("implementation", "format", "block_size", "mapping"),
+    dimensions=(
+        "implementation",
+        "format",
+        "block_size",
+        "mapping",
+        "position_chunk_size",
+    ),
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("implementation", "rocsparse"),
     baseline_group=(),
@@ -88,6 +95,7 @@ SYNTHETIC_REPORT = common.BenchmarkReport(
         "format",
         "block_size",
         "mapping",
+        "position_chunk_size",
     ),
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("mapping", "thread-per-row"),
@@ -102,6 +110,7 @@ SYNTHETIC_ROCSPARSE_REPORT = common.BenchmarkReport(
         "format",
         "block_size",
         "mapping",
+        "position_chunk_size",
     ),
     metrics=("median_us", "p95_us", "gnnz_per_sec"),
     baseline=("implementation", "rocsparse"),
@@ -109,7 +118,7 @@ SYNTHETIC_ROCSPARSE_REPORT = common.BenchmarkReport(
 )
 MATRIX_RESOURCE_REPORT = common.BenchmarkReport(
     details=(),
-    dimensions=("format", "block_size", "mapping"),
+    dimensions=("format", "block_size", "mapping", "position_chunk_size"),
     metrics=common.GPU_RESOURCE_METRICS,
 )
 SYNTHETIC_RESOURCE_REPORT = common.BenchmarkReport(
@@ -120,6 +129,7 @@ SYNTHETIC_RESOURCE_REPORT = common.BenchmarkReport(
         "format",
         "block_size",
         "mapping",
+        "position_chunk_size",
     ),
     metrics=MATRIX_RESOURCE_REPORT.metrics,
 )
@@ -416,6 +426,7 @@ def result_row(
     implementation="sparsewave",
     preprocess_us=None,
     conversion_us=None,
+    position_chunk_size=None,
 ):
     shape = workload["shape"]
     nnz = shape["nnz"]
@@ -426,6 +437,7 @@ def result_row(
         "implementation": implementation,
         "format": sparse_format,
         "mapping": mapping,
+        "position_chunk_size": position_chunk_size,
         "algorithm": "default" if implementation == "rocsparse" else "",
         "block_size": block_size,
         "wave_size": (
@@ -477,6 +489,7 @@ def build_metadata(args, repository, commands):
                 else None
             ),
             "formats": args.formats,
+            "position_chunk_sizes": args.position_chunk_sizes,
             "commands": commands,
         }
     )
@@ -575,6 +588,15 @@ def parse_arguments(argv):
         type=parse_distributions,
         default=parse_distributions("uniform,alternating,skewed"),
     )
+    parser.add_argument(
+        "--position-chunk-sizes",
+        type=parse_positive_int_list,
+        default=parse_positive_int_list("1"),
+        help=(
+            "Comma-separated TACO-style split factors for the CSR "
+            "thread-per-position mapping."
+        ),
+    )
     common.add_common_arguments(parser, repository)
     args = parser.parse_args(argv)
 
@@ -652,69 +674,88 @@ def main(argv=None):
                 )
                 for block_size in args.block_sizes:
                     for mapping in FORMAT_MAPPINGS[sparse_format]:
-                        kernels_per_dispatch, compute_binary_index = (
-                            sparsewave_kernel_layout(sparse_format, mapping)
+                        chunk_sizes = (
+                            args.position_chunk_sizes
+                            if sparse_format == "csr"
+                            and mapping == "thread-per-position"
+                            else (None,)
                         )
-                        case_directory = (
-                            workspace.artifact_root
-                            / workload["key"]
-                            / sparse_format
-                            / f"block-{block_size}"
-                            / mapping
-                        )
-                        timing, compile_command, profile_command = (
-                            common.run_case(
-                                args,
-                                source_text,
-                                case_directory,
-                                "spmv",
-                                (
-                                    mapping
-                                    if sparse_format == "csr"
-                                    else "thread-per-row"
-                                ),
-                                block_size,
-                                sparse_binaries.get(sparse_format),
-                                sparse_format=sparse_format,
-                                kernels_per_dispatch=kernels_per_dispatch,
+                        for chunk_size in chunk_sizes:
+                            kernels_per_dispatch, compute_binary_index = (
+                                sparsewave_kernel_layout(sparse_format, mapping)
                             )
-                        )
-                        resources, resource_command = (
-                            common.inspect_gpu_resources(
-                                args,
-                                case_directory / "compiled.mlir",
-                                case_directory / "kernel.hsaco",
-                                "spmv_kernel",
-                                args.wave_size,
-                                block_size,
-                                binary_index=compute_binary_index,
+                            case_directory = (
+                                workspace.artifact_root
+                                / workload["key"]
+                                / sparse_format
+                                / f"block-{block_size}"
+                                / mapping
                             )
-                        )
-                        results.append(
-                            result_row(
-                                args,
-                                mapping,
-                                block_size,
-                                workload,
-                                timing,
-                                resources,
-                                sparse_format=sparse_format,
-                                conversion_us=conversion_us.get(sparse_format),
+                            pipeline_options = ()
+                            if chunk_size is not None:
+                                case_directory /= f"chunk-{chunk_size}"
+                                pipeline_options = (
+                                    "spmv-position-chunk-size="
+                                    f"{chunk_size}",
+                                )
+                            timing, compile_command, profile_command = (
+                                common.run_case(
+                                    args,
+                                    source_text,
+                                    case_directory,
+                                    "spmv",
+                                    (
+                                        mapping
+                                        if sparse_format == "csr"
+                                        else "thread-per-row"
+                                    ),
+                                    block_size,
+                                    sparse_binaries.get(sparse_format),
+                                    pipeline_options=pipeline_options,
+                                    sparse_format=sparse_format,
+                                    kernels_per_dispatch=kernels_per_dispatch,
+                                )
                             )
-                        )
-                        commands.append(
-                            {
-                                "matrix": workload["matrix"],
-                                "distribution": workload["distribution"],
-                                "nnz_per_row": workload["nnz_per_row"],
-                                "format": sparse_format,
-                                "block_size": block_size,
-                                "mapping": mapping,
-                                "compile": compile_command,
-                                "resources": resource_command,
-                                "profile": profile_command,
-                            }
-                        )
+                            resources, resource_command = (
+                                common.inspect_gpu_resources(
+                                    args,
+                                    case_directory / "compiled.mlir",
+                                    case_directory / "kernel.hsaco",
+                                    "spmv_kernel",
+                                    args.wave_size,
+                                    block_size,
+                                    binary_index=compute_binary_index,
+                                )
+                            )
+                            results.append(
+                                result_row(
+                                    args,
+                                    mapping,
+                                    block_size,
+                                    workload,
+                                    timing,
+                                    resources,
+                                    sparse_format=sparse_format,
+                                    conversion_us=conversion_us.get(
+                                        sparse_format
+                                    ),
+                                    position_chunk_size=chunk_size,
+                                )
+                            )
+                            commands.append(
+                                {
+                                    "matrix": workload["matrix"],
+                                    "distribution": workload["distribution"],
+                                    "nnz_per_row": workload["nnz_per_row"],
+                                    "format": sparse_format,
+                                    "block_size": block_size,
+                                    "mapping": mapping,
+                                    "position_chunk_size": chunk_size,
+                                    "compile": compile_command,
+                                    "resources": resource_command,
+                                    "profile": profile_command,
+                                }
+                            )
             if args.rocsparse:
                 timing, preprocess_us, profile_command = (
                     common.run_rocsparse_case(

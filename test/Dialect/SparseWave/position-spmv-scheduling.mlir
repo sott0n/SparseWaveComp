@@ -5,6 +5,9 @@
 // RUN:   --pass-pipeline='builtin.module(decompose-position-spmv,schedule-sparsewave-position{mapping=thread block-size=128})' \
 // RUN:   | FileCheck %s --check-prefix=THREAD
 // RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(decompose-position-spmv,schedule-sparsewave-position{mapping=thread block-size=128 thread-chunk-size=4})' \
+// RUN:   | FileCheck %s --check-prefix=CHUNK
+// RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(decompose-position-spmv,schedule-sparsewave-position{mapping=wave block-size=128 wave-size=32})' \
 // RUN:   | FileCheck %s --check-prefix=WAVE
 
@@ -24,12 +27,20 @@
 // THREAD: memref.store
 // THREAD: sparsewave.position_parallel %[[WORKERS:.*]] mapping = "thread" block_size = 128 {
 // THREAD-NEXT: ^bb0(%[[WORKER:[^,]+]]: index
-// THREAD: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space
-// THREAD-SAME: partition %[[WORKER]] of %[[WORKERS]]
-// THREAD: scf.for %[[POSITION:.*]] = %[[BEGIN]] to %[[END]]
+// THREAD: sparsewave.position_for %[[WORKER]] in %{{.*}} to %{{.*}} by 1
+// THREAD-NEXT: ^bb0(%[[POSITION:.*]]: index, %{{.*}}: index):
 // THREAD: sparsewave.csr_coordinates %{{.*}}, %{{.*}} at %[[POSITION]]
 // THREAD: memref.atomic_rmw addf
 // THREAD-NOT: sparsewave.spmv
+
+// CHUNK-LABEL: func.func @spmv(
+// CHUNK: %[[COUNT:.*]] = arith.ceildivui %{{.*}}, %{{.*}} : index
+// CHUNK: sparsewave.position_parallel %[[COUNT]] mapping = "thread" block_size = 128 {
+// CHUNK-NEXT: ^bb0(%[[WORKER:[^,]+]]: index
+// CHUNK: sparsewave.position_for %[[WORKER]] in %{{.*}} to %{{.*}} by 4
+// CHUNK-NEXT: ^bb0(%[[POSITION:.*]]: index, %{{.*}}: index):
+// CHUNK: sparsewave.csr_coordinates %{{.*}}, %{{.*}} at %[[POSITION]]
+// CHUNK: memref.atomic_rmw addf
 
 // WAVE-LABEL: func.func @spmv(
 // WAVE-NOT: gpu.launch

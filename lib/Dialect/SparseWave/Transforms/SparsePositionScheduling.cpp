@@ -56,16 +56,17 @@ KeyedContribution cloneContributionBody(OpBuilder &builder,
 
 class ThreadPositionReducePattern : public OpRewritePattern<PositionReduceOp> {
 public:
-  ThreadPositionReducePattern(MLIRContext *context, int64_t blockSize)
-      : OpRewritePattern<PositionReduceOp>(context), blockSize(blockSize) {}
+  ThreadPositionReducePattern(MLIRContext *context, int64_t blockSize,
+                              int64_t chunkSize)
+      : OpRewritePattern<PositionReduceOp>(context), blockSize(blockSize),
+        chunkSize(chunkSize) {}
 
   LogicalResult matchAndRewrite(PositionReduceOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    Value blockSizeValue =
-        arith::ConstantIndexOp::create(rewriter, loc, blockSize);
+    Value chunkSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, chunkSize);
     Value outputSize =
         memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
     Type valueType =
@@ -78,12 +79,8 @@ public:
     rewriter.setInsertionPointAfter(initialization);
     Value positionCount =
         arith::SubIOp::create(rewriter, loc, op.getUpper(), op.getLower());
-    Value requiredBlocks = arith::CeilDivUIOp::create(
-        rewriter, loc, positionCount, blockSizeValue);
-    Value gridSize =
-        arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
-    Value workerCount =
-        arith::MulIOp::create(rewriter, loc, gridSize, blockSizeValue);
+    Value workerCount = arith::CeilDivUIOp::create(rewriter, loc, positionCount,
+                                                   chunkSizeValue);
     auto parallel =
         PositionParallelOp::create(rewriter, loc, workerCount, "thread",
                                    rewriter.getI64IntegerAttr(blockSize));
@@ -94,20 +91,20 @@ public:
                              {loc, loc, loc});
     rewriter.setInsertionPointToStart(body);
     Value worker = body->getArgument(0);
-    auto partition = PositionSpaceOp::create(
-        rewriter, loc, rewriter.getIndexType(), rewriter.getIndexType(),
-        op.getLower(), op.getUpper(), worker, workerCount);
-    scf::ForOp::create(
-        rewriter, loc, partition.getBegin(), partition.getEnd(), oneIndex,
-        ValueRange{},
-        [&](OpBuilder &builder, Location bodyLoc, Value position, ValueRange) {
-          KeyedContribution contribution =
-              cloneContributionBody(builder, op, position);
-          memref::AtomicRMWOp::create(
-              builder, bodyLoc, arith::AtomicRMWKind::addf, contribution.value,
-              op.getOutput(), ValueRange{contribution.key});
-          scf::YieldOp::create(builder, bodyLoc);
-        });
+    auto chunk =
+        PositionForOp::create(rewriter, loc, op.getLower(), op.getUpper(),
+                              worker, rewriter.getI64IntegerAttr(chunkSize));
+    Block *chunkBody = rewriter.createBlock(
+        &chunk.getBody(), chunk.getBody().end(),
+        {rewriter.getIndexType(), rewriter.getIndexType()}, {loc, loc});
+    rewriter.setInsertionPointToStart(chunkBody);
+    KeyedContribution contribution =
+        cloneContributionBody(rewriter, op, chunkBody->getArgument(0));
+    memref::AtomicRMWOp::create(rewriter, loc, arith::AtomicRMWKind::addf,
+                                contribution.value, op.getOutput(),
+                                ValueRange{contribution.key});
+    YieldOp::create(rewriter, loc);
+    rewriter.setInsertionPointAfter(chunk);
     YieldOp::create(rewriter, loc);
     rewriter.eraseOp(op);
     return success();
@@ -115,6 +112,7 @@ public:
 
 private:
   int64_t blockSize;
+  int64_t chunkSize;
 };
 
 class WavePositionReducePattern : public OpRewritePattern<PositionReduceOp> {
@@ -239,10 +237,24 @@ public:
       signalPassFailure();
       return;
     }
+    if (threadChunkSize < 1) {
+      getOperation().emitError()
+          << "thread position chunk size must be positive, but got "
+          << threadChunkSize.getValue();
+      signalPassFailure();
+      return;
+    }
+    if (mapping == "wave" && threadChunkSize != 1) {
+      getOperation().emitError()
+          << "thread position chunk size applies only to thread mapping";
+      signalPassFailure();
+      return;
+    }
 
     RewritePatternSet patterns(&getContext());
     if (mapping == "thread")
-      patterns.add<ThreadPositionReducePattern>(&getContext(), blockSize);
+      patterns.add<ThreadPositionReducePattern>(&getContext(), blockSize,
+                                                threadChunkSize);
     else
       patterns.add<WavePositionReducePattern>(&getContext(), blockSize,
                                               waveSize);

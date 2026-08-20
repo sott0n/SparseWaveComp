@@ -26,6 +26,12 @@
 // RUN:   --schedule-sparsewave-position='mapping=wave block-size=48' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-POSITION-BLOCK-SIZE
 // RUN: not sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='thread-chunk-size=0' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-POSITION-CHUNK-SIZE
+// RUN: not sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=wave thread-chunk-size=2' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-WAVE-CHUNK-SIZE
+// RUN: not sparsewave-opt %s \
 // RUN:   --convert-sparsewave-to-gpu='mapping=block-per-row wave-size=64' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-BLOCK-WAVE-SIZE
 // RUN: not sparsewave-opt %s \
@@ -86,6 +92,8 @@
 // INVALID-POSITION-SCHEDULE-BLOCK-SIZE: position block size must be between 1 and 1024
 // INVALID-POSITION-WAVE-SIZE: wave position mapping currently requires Wave32, but got 64
 // INVALID-POSITION-BLOCK-SIZE: wave position mapping requires the block size to be a multiple of 32, but got 48
+// INVALID-POSITION-CHUNK-SIZE: thread position chunk size must be positive, but got 0
+// INVALID-WAVE-CHUNK-SIZE: thread position chunk size applies only to thread mapping
 // INVALID-BLOCK-WAVE-SIZE: block-per-row currently requires Wave32, but got wave size 64
 // INVALID-BLOCK-BLOCK-SIZE: block-per-row requires the SpMV block size to be a multiple of 32, but got 48
 // INVALID-SPMM-MAPPING: unsupported SpMM mapping strategy 'unknown';

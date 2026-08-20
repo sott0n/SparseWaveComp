@@ -130,11 +130,12 @@ def ScheduleSparseWavePosition
     : Pass<"schedule-sparsewave-position", "::mlir::ModuleOp"> {
   let summary = "Schedule keyed sparse position reductions";
   let description = [{
-    Rewrites sparsewave.position_reduce into explicit
-    sparsewave.position_parallel and sparsewave.position_space operations.
-    The pass is independent of the operator and storage format that produced
-    each keyed contribution. Thread mapping uses atomic accumulation, while
-    wave mapping first combines adjacent equal keys with a segmented reduction.
+    Rewrites sparsewave.position_reduce into explicit position scheduling
+    operations. The pass is independent of the operator and storage format
+    that produced each keyed contribution. Thread mapping splits the position
+    range into configurable sequential chunks and uses atomic accumulation.
+    Wave mapping uses balanced position-space partitions and first combines
+    adjacent equal keys with a segmented reduction.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",
@@ -145,7 +146,10 @@ def ScheduleSparseWavePosition
            "Number of target threads in each scheduled block">,
     Option<"waveSize", "wave-size", "int64_t",
            /*default=*/"32",
-           "Number of target lanes in a scheduled wave">
+           "Number of target lanes in a scheduled wave">,
+    Option<"threadChunkSize", "thread-chunk-size", "int64_t",
+           /*default=*/"1",
+           "Number of consecutive positions processed by each thread worker">
   ];
   let dependentDialects = [
     "arith::ArithDialect",

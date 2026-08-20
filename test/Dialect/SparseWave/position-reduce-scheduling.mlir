@@ -13,7 +13,7 @@
 // THREAD: sparsewave.position_parallel %{{.*}} mapping = "thread" block_size = 64 {
 // THREAD: memref.store
 // THREAD: sparsewave.position_parallel %{{.*}} mapping = "thread" block_size = 64 {
-// THREAD: sparsewave.position_space
+// THREAD: sparsewave.position_for %{{.*}} in %{{.*}} to %{{.*}} by 1
 // THREAD: arith.remui
 // THREAD: memref.load
 // THREAD: memref.atomic_rmw addf

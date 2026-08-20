@@ -1131,6 +1131,9 @@ REPORT_COLUMNS = {
     "nnz_per_row": TableColumn("NNZ/row", "nnz_per_row", 7, "d"),
     "rhs_cols": TableColumn("RHS cols", "rhs_cols", 8, "d"),
     "block_size": TableColumn("block", "block_size", 5, "d"),
+    "position_chunk_size": TableColumn(
+        "chunk", "position_chunk_size", 5, "d"
+    ),
     "tile_size": TableColumn("tile", "tile_size", 4, "d"),
     "mapping": TableColumn("mapping", "mapping", 18, alignment="<"),
     "median_us": TableColumn("median", "median_us", 11, ".2f", " us"),
