@@ -7,7 +7,7 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 def SparseWave_YieldOp : SparseWave_Op<"yield", [Pure, Terminator,
     ParentOneOf<["SDDMMOp", "CSRRowwiseMapOp", "PositionForOp",
                  "PositionReorderOp", "PositionCollapseOp",
-                 "PositionParallelOp"]>]> {
+                 "PositionParallelOp", "PositionReduceOp"]>]> {
   let summary = "Yield from a SparseWave region";
   let arguments = (ins Variadic<AnyType>:$results);
   let builders = [OpBuilder<(ins), [{ build($_builder, $_state, ValueRange()); }]>];
@@ -573,6 +573,46 @@ def SparseWave_PositionParallelOp : SparseWave_Op<"position_parallel",
     FailureOr<PositionMapping> getMappingKind() {
       return symbolizePositionMapping(getMapping());
     }
+  }];
+
+  let hasVerifier = 1;
+}
+
+def SparseWave_PositionReduceOp : SparseWave_Op<"position_reduce",
+    [SingleBlockImplicitTerminator<"YieldOp">, RecursiveMemoryEffects]> {
+  let summary = "Reduce values produced over a sparse position range";
+  let description = [{
+    `sparsewave.position_reduce` describes an operator-independent keyed
+    reduction over a half-open range of stored sparse positions. Its region
+    receives one position and yields an index key and a floating-point value.
+    Values with the same key are reduced into the corresponding element of the
+    output memref.
+
+    The operation expresses reduction semantics without choosing how positions
+    are distributed. A scheduling pass may map the range to independent
+    threads or cooperating waves and select the corresponding atomic or
+    segmented reduction implementation.
+
+    ```mlir
+    sparsewave.position_reduce %lower to %upper into %output kind = "sum" {
+    ^bb0(%position: index):
+      %key, %value = // derive a keyed contribution from %position
+      sparsewave.yield %key, %value : index, f32
+    } : index, memref<?xf32>
+    ```
+
+    `kind = "sum"` zero-initializes the output before accumulating values.
+  }];
+
+  let arguments = (ins Index:$lower, Index:$upper,
+                       Arg<AnyMemRef, "dense reduction output",
+                           [MemWrite]>:$output,
+                       StrAttr:$kind);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = [{
+    $lower `to` $upper `into` $output `kind` `=` $kind $body attr-dict `:`
+    type($lower) `,` type($output)
   }];
 
   let hasVerifier = 1;

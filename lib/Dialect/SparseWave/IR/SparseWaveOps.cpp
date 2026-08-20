@@ -613,6 +613,43 @@ LogicalResult PositionSpaceOp::verify() {
   return success();
 }
 
+LogicalResult PositionReduceOp::verify() {
+  if (getKind() != "sum")
+    return emitOpError() << "kind must be 'sum', but got '" << getKind() << "'";
+
+  MemRefType outputType = getOutput().getType();
+  if (failed(verifyRank(*this, outputType, 1, "output")))
+    return failure();
+  Type valueType = outputType.getElementType();
+  if (!isa<FloatType>(valueType))
+    return emitOpError() << "output must have floating-point elements, but got "
+                         << valueType;
+
+  std::optional<int64_t> lower = matchConstantIndex(getLower());
+  std::optional<int64_t> upper = matchConstantIndex(getUpper());
+  if (lower && *lower < 0)
+    return emitOpError() << "lower bound must be nonnegative, but got "
+                         << *lower;
+  if (upper && *upper < 0)
+    return emitOpError() << "upper bound must be nonnegative, but got "
+                         << *upper;
+  if (lower && upper && *lower > *upper)
+    return emitOpError() << "lower bound must not exceed upper bound, but got "
+                         << *lower << " and " << *upper;
+
+  Block &body = getBody().front();
+  if (body.getNumArguments() != 1 || !body.getArgument(0).getType().isIndex())
+    return emitOpError() << "body must have one index position argument";
+  auto yield = dyn_cast<YieldOp>(body.getTerminator());
+  if (!yield || yield.getResults().size() != 2 ||
+      !yield.getResults()[0].getType().isIndex() ||
+      yield.getResults()[1].getType() != valueType)
+    return emitOpError()
+           << "body must yield an index key and one value of type "
+           << valueType;
+  return success();
+}
+
 LogicalResult PositionSplitOp::verify() {
   int64_t factor = getFactorAttr().getInt();
   if (factor <= 0)

@@ -21,6 +21,20 @@ BENCHMARK = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BENCHMARK)
 
 
+def lowering_argument(mapping):
+    options = f"mapping={mapping} block-size=128 wave-size=32"
+    if mapping in {"thread-per-position", "wave-per-position"}:
+        position_mapping = mapping.removesuffix("-per-position")
+        return (
+            "--pass-pipeline=builtin.module("
+            "decompose-position-spmv,"
+            f"schedule-sparsewave-position{{mapping={position_mapping} "
+            "block-size=128 wave-size=32},"
+            "convert-sparsewave-to-gpu{position-block-size=128 wave-size=32})"
+        )
+    return f"--convert-sparsewave-to-gpu={options}"
+
+
 class SpMVBenchmarkTest(unittest.TestCase):
     def setUp(self):
         TEMPORARY_ROOT.mkdir(parents=True, exist_ok=True)
@@ -45,10 +59,7 @@ class SpMVBenchmarkTest(unittest.TestCase):
                     [
                         SPARSEWAVE_OPT,
                         str(source),
-                        (
-                            "--convert-sparsewave-to-gpu="
-                            f"mapping={mapping} block-size=128 wave-size=32"
-                        ),
+                        lowering_argument(mapping),
                     ],
                     check=True,
                     capture_output=True,
@@ -219,10 +230,7 @@ class SpMVBenchmarkTest(unittest.TestCase):
                 [
                     SPARSEWAVE_OPT,
                     str(source),
-                    (
-                        "--convert-sparsewave-to-gpu="
-                        f"mapping={mapping} block-size=128 wave-size=32"
-                    ),
+                    lowering_argument(mapping),
                 ],
                 check=True,
                 capture_output=True,

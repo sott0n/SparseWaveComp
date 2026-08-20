@@ -237,10 +237,27 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   pm.addNestedPass<func::FuncOp>(createSCFToControlFlowPass());
   pm.addPass(memref::createExpandStridedMetadataPass());
 
-  // Map SparseWave operations to GPU work. Each operation has an independent
-  // block size because its GPU work unit differs.
+  // Decompose position-space SpMV into a generic keyed reduction, then apply
+  // an operator-independent position schedule. Row-space mappings are handled
+  // directly by the GPU pass.
+  bool usesPositionSpMV = options.spmvMapping == "thread-per-position" ||
+                          options.spmvMapping == "wave-per-position";
+  if (usesPositionSpMV) {
+    pm.addPass(createDecomposePositionSpMV());
+    ScheduleSparseWavePositionOptions scheduleOptions;
+    scheduleOptions.mapping =
+        options.spmvMapping == "thread-per-position" ? "thread" : "wave";
+    scheduleOptions.blockSize = options.spmvBlockSize;
+    scheduleOptions.waveSize =
+        static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
+    pm.addPass(createScheduleSparseWavePosition(scheduleOptions));
+  }
+
+  // Map SparseWave operations and explicit logical workers to GPU work. Each
+  // operation has an independent block size because its GPU work unit differs.
   ConvertSparseWaveToGPUOptions sparseWaveOptions;
-  sparseWaveOptions.mapping = options.spmvMapping;
+  sparseWaveOptions.mapping =
+      usesPositionSpMV ? "thread-per-row" : options.spmvMapping.getValue();
   sparseWaveOptions.blockSize = options.spmvBlockSize;
   sparseWaveOptions.waveSize =
       static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));

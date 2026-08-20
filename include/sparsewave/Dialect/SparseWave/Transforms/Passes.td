@@ -110,6 +110,52 @@ def LowerSparseWavePositionSpace
   ];
 }
 
+def DecomposePositionSpMV
+    : Pass<"decompose-position-spmv", "::mlir::ModuleOp"> {
+  let summary = "Decompose CSR SpMV into a keyed position reduction";
+  let description = [{
+    Rewrites sparsewave.spmv into sparsewave.position_reduce. The resulting
+    operator-independent reduction region recovers each stored position's CSR
+    coordinates and yields the output row together with the matrix-vector
+    product. No parallel mapping or GPU launch strategy is selected.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "memref::MemRefDialect",
+    "sparsewave::SparseWaveDialect"
+  ];
+}
+
+def ScheduleSparseWavePosition
+    : Pass<"schedule-sparsewave-position", "::mlir::ModuleOp"> {
+  let summary = "Schedule keyed sparse position reductions";
+  let description = [{
+    Rewrites sparsewave.position_reduce into explicit
+    sparsewave.position_parallel and sparsewave.position_space operations.
+    The pass is independent of the operator and storage format that produced
+    each keyed contribution. Thread mapping uses atomic accumulation, while
+    wave mapping first combines adjacent equal keys with a segmented reduction.
+  }];
+  let options = [
+    Option<"mapping", "mapping", "std::string",
+           /*default=*/"\"thread\"",
+           "Position worker mapping strategy">,
+    Option<"blockSize", "block-size", "int64_t",
+           /*default=*/"256",
+           "Number of target threads in each scheduled block">,
+    Option<"waveSize", "wave-size", "int64_t",
+           /*default=*/"32",
+           "Number of target lanes in a scheduled wave">
+  ];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "gpu::GPUDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "sparsewave::SparseWaveDialect"
+  ];
+}
+
 def ConvertSparseWaveToGPU
     : Pass<"convert-sparsewave-to-gpu", "::mlir::ModuleOp"> {
   let summary = "Map SparseWave operations to GPU launches";
@@ -120,10 +166,9 @@ def ConvertSparseWaveToGPU
     sparsewave.position_parallel by mapping its logical workers and
     participants to threads, waves, or blocks.
     CSR SpMV can assign one GPU thread, one GPU wave, or one GPU block to each
-    matrix row. It can also partition the stored-position space across threads
-    or waves, recover CSR coordinates, and atomically accumulate the output.
-    The wave position mapping uses a segmented scan to combine products from
-    the same row before the atomic update. COO SpMV
+    matrix row. Position-space reductions are first made explicit by
+    schedule-sparsewave-position, then this pass maps their logical parallel
+    workers to the GPU. COO SpMV
     assigns one thread to each nonzero and atomically accumulates the output.
     CSR SpMM can assign one GPU thread to each dense
     output element or one GPU wave to a CSR row and a tile of dense output
@@ -135,7 +180,7 @@ def ConvertSparseWaveToGPU
   let options = [
     Option<"mapping", "mapping", "std::string",
            /*default=*/"\"thread-per-row\"",
-           "SpMV work mapping strategy">,
+           "Row-space SpMV work mapping strategy">,
     Option<"blockSize", "block-size", "int64_t",
            /*default=*/"256",
            "Number of GPU threads in each one-dimensional block">,

@@ -9,13 +9,13 @@
 // RUN:   --convert-sparsewave-to-gpu='mapping=block-per-row block-size=128 wave-size=32' \
 // RUN:   | FileCheck %s --check-prefix=BLOCK
 // RUN: sparsewave-opt %s \
-// RUN:   --convert-sparsewave-to-gpu='mapping=thread-per-position block-size=128' \
+// RUN:   --pass-pipeline='builtin.module(decompose-position-spmv,schedule-sparsewave-position{mapping=thread block-size=128},convert-sparsewave-to-gpu{position-block-size=128})' \
 // RUN:   | FileCheck %s --check-prefix=POS
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(convert-sparsewave-to-gpu{mapping=thread-per-position block-size=128},lower-sparsewave-position-space)' \
+// RUN:   --pass-pipeline='builtin.module(decompose-position-spmv,schedule-sparsewave-position{mapping=thread block-size=128},convert-sparsewave-to-gpu{position-block-size=128},lower-sparsewave-position-space)' \
 // RUN:   | FileCheck %s --check-prefix=POS-LOWER
 // RUN: sparsewave-opt %s \
-// RUN:   --convert-sparsewave-to-gpu='mapping=wave-per-position block-size=128 wave-size=32' \
+// RUN:   --pass-pipeline='builtin.module(decompose-position-spmv,schedule-sparsewave-position{mapping=wave block-size=128 wave-size=32},convert-sparsewave-to-gpu{position-block-size=128 wave-size=32})' \
 // RUN:   | FileCheck %s --check-prefix=SEGMENT
 
 // CHECK-LABEL: func.func @spmv(
@@ -110,11 +110,11 @@
 // BLOCK-NOT: sparsewave.spmv
 
 // POS-LABEL: func.func @spmv(
-// POS: %[[ZERO:.*]] = arith.constant 0 : index
-// POS: %[[ONE:.*]] = arith.constant 1 : index
-// POS: %[[BLOCK_SIZE:.*]] = arith.constant 128 : index
-// POS: %[[OUTPUT_SIZE:.*]] = memref.dim %{{.*}}, %[[ZERO]]
-// POS-NEXT: %[[NNZ:.*]] = memref.dim %{{.*}}, %[[ZERO]]
+// POS-DAG: %[[ZERO:.*]] = arith.constant 0 : index
+// POS-DAG: %[[ONE:.*]] = arith.constant 1 : index
+// POS-DAG: %[[BLOCK_SIZE:.*]] = arith.constant 128 : index
+// POS: %[[NNZ:.*]] = memref.dim %{{.*}}, %[[ZERO]]
+// POS-NEXT: %[[OUTPUT_SIZE:.*]] = memref.dim %{{.*}}, %[[ZERO]]
 // POS: gpu.launch
 // POS: memref.store
 // POS: gpu.terminator
@@ -143,13 +143,13 @@
 // POS-LOWER-NOT: sparsewave.spmv
 
 // SEGMENT-LABEL: func.func @spmv(
-// SEGMENT: %[[WAVE_SIZE:.*]] = arith.constant 32 : index
-// SEGMENT: %[[ZERO:.*]] = arith.constant 0 : index
-// SEGMENT: %[[ONE:.*]] = arith.constant 1 : index
-// SEGMENT: %[[BLOCK_SIZE:.*]] = arith.constant 128 : index
-// SEGMENT: %[[WAVES_PER_BLOCK:.*]] = arith.constant 4 : index
-// SEGMENT: %[[OUTPUT_SIZE:.*]] = memref.dim %{{.*}}, %[[ZERO]]
-// SEGMENT-NEXT: %[[NNZ:.*]] = memref.dim %{{.*}}, %[[ZERO]]
+// SEGMENT-DAG: %[[WAVE_SIZE:.*]] = arith.constant 32 : index
+// SEGMENT-DAG: %[[ZERO:.*]] = arith.constant 0 : index
+// SEGMENT-DAG: %[[ONE:.*]] = arith.constant 1 : index
+// SEGMENT-DAG: %[[BLOCK_SIZE:.*]] = arith.constant 128 : index
+// SEGMENT-DAG: %[[WAVES_PER_BLOCK:.*]] = arith.constant 4 : index
+// SEGMENT: %[[NNZ:.*]] = memref.dim %{{.*}}, %[[ZERO]]
+// SEGMENT-NEXT: %[[OUTPUT_SIZE:.*]] = memref.dim %{{.*}}, %[[ZERO]]
 // SEGMENT: gpu.launch
 // SEGMENT: gpu.terminator
 // SEGMENT: %[[REQUIRED_BLOCKS:.*]] = arith.ceildivui %[[NNZ]], %[[BLOCK_SIZE]]

@@ -1,8 +1,10 @@
 add_mlir_library(SparseWaveTransforms
   LinalgSparseToSparseWave.cpp
   PrepareGPUBarePtrABI.cpp
+  PositionSpMVDecomposition.cpp
   SparseLoweringUtils.cpp
   SparsePositionToSCF.cpp
+  SparsePositionScheduling.cpp
   SparseGPUUtils.cpp
   SparseWaveToGPU.cpp
   TorchToSparseWave.cpp

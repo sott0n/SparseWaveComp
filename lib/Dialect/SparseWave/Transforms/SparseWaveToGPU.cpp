@@ -213,165 +213,6 @@ private:
   int64_t blockSize;
 };
 
-class ThreadPerPositionCSRSpMVPattern : public OpRewritePattern<SpMVOp> {
-public:
-  ThreadPerPositionCSRSpMVPattern(MLIRContext *context, int64_t blockSize)
-      : OpRewritePattern<SpMVOp>(context), blockSize(blockSize) {}
-
-  LogicalResult matchAndRewrite(SpMVOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    Value blockSizeValue =
-        arith::ConstantIndexOp::create(rewriter, loc, blockSize);
-    Value outputSize =
-        memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
-    Value nonzeroCount =
-        memref::DimOp::create(rewriter, loc, op.getValues(), zeroIndex);
-    auto valueType =
-        cast<MemRefType>(op.getValues().getType()).getElementType();
-    Value zero = arith::ConstantOp::create(rewriter, loc,
-                                           rewriter.getZeroAttr(valueType));
-
-    gpu::LaunchOp initialization =
-        buildOutputInitialization(rewriter, loc, op.getOutput(), outputSize,
-                                  zero, oneIndex, blockSizeValue);
-
-    rewriter.setInsertionPointAfter(initialization);
-    Value requiredBlocks =
-        arith::CeilDivUIOp::create(rewriter, loc, nonzeroCount, blockSizeValue);
-    Value gridSize =
-        arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
-    Value workerCount =
-        arith::MulIOp::create(rewriter, loc, gridSize, blockSizeValue);
-    auto parallel =
-        PositionParallelOp::create(rewriter, loc, workerCount, "thread",
-                                   rewriter.getI64IntegerAttr(blockSize));
-    Block *parallelBody =
-        rewriter.createBlock(&parallel.getBody(), parallel.getBody().end(),
-                             {rewriter.getIndexType(), rewriter.getIndexType(),
-                              rewriter.getIndexType()},
-                             {loc, loc, loc});
-    rewriter.setInsertionPointToStart(parallelBody);
-    Value worker = parallelBody->getArgument(0);
-    auto partition = PositionSpaceOp::create(
-        rewriter, loc, rewriter.getIndexType(), rewriter.getIndexType(),
-        zeroIndex, nonzeroCount, worker, workerCount);
-
-    scf::ForOp::create(
-        rewriter, loc, partition.getBegin(), partition.getEnd(), oneIndex,
-        ValueRange{},
-        [&](OpBuilder &builder, Location bodyLoc, Value position, ValueRange) {
-          CSRSpMVProduct element = buildCSRSpMVProduct(
-              builder, bodyLoc, op.getRowOffsets(), op.getColumnIndices(),
-              op.getValues(), op.getVector(), position);
-          memref::AtomicRMWOp::create(
-              builder, bodyLoc, arith::AtomicRMWKind::addf, element.product,
-              op.getOutput(), ValueRange{element.row});
-          scf::YieldOp::create(builder, bodyLoc);
-        });
-
-    YieldOp::create(rewriter, loc);
-    rewriter.eraseOp(op);
-    return success();
-  }
-
-private:
-  int64_t blockSize;
-};
-
-class WavePerPositionCSRSpMVPattern : public OpRewritePattern<SpMVOp> {
-public:
-  WavePerPositionCSRSpMVPattern(MLIRContext *context, int64_t blockSize,
-                                int64_t waveSize)
-      : OpRewritePattern<SpMVOp>(context), blockSize(blockSize),
-        waveSize(waveSize) {}
-
-  LogicalResult matchAndRewrite(SpMVOp op,
-                                PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    Value blockSizeValue =
-        arith::ConstantIndexOp::create(rewriter, loc, blockSize);
-    Value wavesPerBlockValue =
-        arith::ConstantIndexOp::create(rewriter, loc, blockSize / waveSize);
-    Value outputSize =
-        memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
-    Value nonzeroCount =
-        memref::DimOp::create(rewriter, loc, op.getValues(), zeroIndex);
-    auto valueType =
-        cast<MemRefType>(op.getValues().getType()).getElementType();
-    Value zero = arith::ConstantOp::create(rewriter, loc,
-                                           rewriter.getZeroAttr(valueType));
-
-    gpu::LaunchOp initialization =
-        buildOutputInitialization(rewriter, loc, op.getOutput(), outputSize,
-                                  zero, oneIndex, blockSizeValue);
-
-    rewriter.setInsertionPointAfter(initialization);
-    Value requiredBlocks =
-        arith::CeilDivUIOp::create(rewriter, loc, nonzeroCount, blockSizeValue);
-    Value gridSize =
-        arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
-    Value waveCount =
-        arith::MulIOp::create(rewriter, loc, gridSize, wavesPerBlockValue);
-    auto parallel =
-        PositionParallelOp::create(rewriter, loc, waveCount, "wave",
-                                   rewriter.getI64IntegerAttr(blockSize));
-    Block *parallelBody =
-        rewriter.createBlock(&parallel.getBody(), parallel.getBody().end(),
-                             {rewriter.getIndexType(), rewriter.getIndexType(),
-                              rewriter.getIndexType()},
-                             {loc, loc, loc});
-    rewriter.setInsertionPointToStart(parallelBody);
-    Value wave = parallelBody->getArgument(0);
-    Value lane = parallelBody->getArgument(1);
-    auto partition = PositionSpaceOp::create(
-        rewriter, loc, rewriter.getIndexType(), rewriter.getIndexType(),
-        zeroIndex, nonzeroCount, wave, waveCount);
-    Value position =
-        arith::AddIOp::create(rewriter, loc, partition.getBegin(), lane);
-    Value active = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::ult, position, partition.getEnd());
-
-    auto entry = scf::IfOp::create(
-        rewriter, loc, active,
-        [&](OpBuilder &builder, Location bodyLoc) {
-          CSRSpMVProduct element = buildCSRSpMVProduct(
-              builder, bodyLoc, op.getRowOffsets(), op.getColumnIndices(),
-              op.getValues(), op.getVector(), position);
-          scf::YieldOp::create(builder, bodyLoc,
-                               ValueRange{element.row, element.product});
-        },
-        [&](OpBuilder &builder, Location bodyLoc) {
-          scf::YieldOp::create(builder, bodyLoc, ValueRange{zeroIndex, zero});
-        });
-    Value row = entry.getResult(0);
-    Value rowKey =
-        arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), row);
-    WaveSegmentedReduction reduction = buildWavePrefixSegmentedReduction(
-        rewriter, loc, rowKey, entry.getResult(1), active, waveSize);
-    scf::IfOp::create(rewriter, loc, reduction.segmentEnd,
-                      [&](OpBuilder &builder, Location bodyLoc) {
-                        memref::AtomicRMWOp::create(
-                            builder, bodyLoc, arith::AtomicRMWKind::addf,
-                            reduction.inclusiveValue, op.getOutput(),
-                            ValueRange{row});
-                        scf::YieldOp::create(builder, bodyLoc);
-                      });
-
-    YieldOp::create(rewriter, loc);
-    rewriter.eraseOp(op);
-    return success();
-  }
-
-private:
-  int64_t blockSize;
-  int64_t waveSize;
-};
-
 class ThreadPerRowSpMVPattern : public OpRewritePattern<SpMVOp> {
 public:
   ThreadPerRowSpMVPattern(MLIRContext *context, int64_t blockSize)
@@ -1421,13 +1262,12 @@ public:
       ConvertSparseWaveToGPU>::ConvertSparseWaveToGPUBase;
 
   void runOnOperation() override {
-    if (mapping != "thread-per-row" && mapping != "thread-per-position" &&
-        mapping != "wave-per-position" && mapping != "wave-per-row" &&
+    if (mapping != "thread-per-row" && mapping != "wave-per-row" &&
         mapping != "block-per-row") {
       getOperation().emitError()
           << "unsupported SpMV mapping strategy '" << mapping
-          << "'; expected 'thread-per-row', 'thread-per-position', "
-             "'wave-per-position', 'wave-per-row', or 'block-per-row'";
+          << "'; expected 'thread-per-row', 'wave-per-row', or "
+             "'block-per-row'";
       signalPassFailure();
       return;
     }
@@ -1511,9 +1351,8 @@ public:
       signalPassFailure();
       return;
     }
-    bool usesWaveCooperation = mapping == "wave-per-position" ||
-                               mapping == "wave-per-row" ||
-                               mapping == "block-per-row";
+    bool usesWaveCooperation =
+        mapping == "wave-per-row" || mapping == "block-per-row";
     if (usesWaveCooperation && waveSize != 32) {
       getOperation().emitError()
           << mapping << " currently requires Wave32, but got wave size "
@@ -1576,11 +1415,6 @@ public:
                                               waveSize, spmmTileSize);
     if (mapping == "thread-per-row")
       patterns.add<ThreadPerRowSpMVPattern>(&getContext(), blockSize);
-    else if (mapping == "thread-per-position")
-      patterns.add<ThreadPerPositionCSRSpMVPattern>(&getContext(), blockSize);
-    else if (mapping == "wave-per-position")
-      patterns.add<WavePerPositionCSRSpMVPattern>(&getContext(), blockSize,
-                                                  waveSize);
     else if (mapping == "wave-per-row")
       patterns.add<WavePerRowSpMVPattern>(&getContext(), blockSize, waveSize);
     else
