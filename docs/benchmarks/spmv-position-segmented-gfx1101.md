@@ -89,10 +89,10 @@ below 1.0x mean that segmentation is slower.
 Chunk 1 cannot combine two products, so segmentation provides no reduction in
 dynamic atomic updates and is up to 5% slower from its additional control
 flow. Larger chunks expose reuse: when a chunk remains in one row, one atomic
-update replaces one update per position. Chunk 8 is best for every medium- and
-long-row workload. Uniform four-entry rows select chunk 4 because it exactly
-matches the row length; a chunk of 8 crosses two rows and still requires two
-segment flushes.
+update replaces one update per position. Within the original 1-to-8 range,
+chunk 8 is best for every medium- and long-row workload. Uniform four-entry
+rows select chunk 4 because it exactly matches the row length; a chunk of 8
+crosses two rows and still requires two segment flushes.
 
 ## Mapping comparison
 
@@ -150,9 +150,69 @@ size despite the additional boundary branch.
 The remaining gap to row-owned mappings comes from work that segmentation
 cannot remove: position workers must still recover their starting row, chunks
 can split one row across multiple workers, and different workers still issue
-atomics to the same output row. Larger chunks and carrying the next row
-boundary in SSA registers are useful follow-up experiments, but should remain
-explicit scheduling choices rather than replacing the current mappings.
+atomics to the same output row. The larger-chunk follow-up below evaluates how
+far chunk-local reuse can reduce this overhead.
+
+## Larger-chunk and boundary-tracking follow-up
+
+A follow-up at SparseWave commit
+`25fdc86a8fffb11c176703e8923aacf17691abdf` extended the segmented sweep to
+chunk sizes 8, 16, 32, and 64. The hardware, software, matrix shapes, block
+sizes, warmup, and iteration counts were unchanged. All 288 measured
+configurations passed CPU-reference validation.
+
+The table compares chunk 8 with the best chunk in the extended range. Block
+size is selected independently for both columns, and speedup is the chunk-8
+median divided by the best median.
+
+| Distribution | Mean | Chunk 8 median / p95 | Best median / p95 | Speedup |
+| --- | ---: | ---: | ---: | ---: |
+| uniform | 4 | 18.50 / 18.76 us | 18.50 / 18.76 us (c8) | 1.00x |
+| uniform | 32 | 73.22 / 73.76 us | 73.22 / 73.76 us (c8) | 1.00x |
+| uniform | 256 | 2,503.76 / 2,517.10 us | 1,284.33 / 1,296.20 us (c16) | 1.95x |
+| alternating | 4 | 17.96 / 50.76 us | 17.96 / 50.76 us (c8) | 1.00x |
+| alternating | 32 | 99.60 / 100.20 us | 99.60 / 100.20 us (c8) | 1.00x |
+| alternating | 256 | 3,939.50 / 3,960.91 us | 1,732.39 / 1,745.45 us (c16) | 2.27x |
+| skewed | 4 | 25.24 / 25.72 us | 25.24 / 25.72 us (c8) | 1.00x |
+| skewed | 32 | 359.61 / 367.52 us | 208.84 / 213.04 us (c16) | 1.72x |
+| skewed | 256 | 8,716.05 / 8,942.64 us | 2,378.54 / 2,428.90 us (c32) | 3.66x |
+
+Chunk 8 remains best for short rows and for uniform or alternating 32-entry
+rows. Chunk 16 improves every 256-entry workload and the skewed 32-entry
+workload. Chunk 32 is best only for skewed 256-entry rows; chunk 64 is never
+best. Larger chunks therefore help while their reduced row searches and
+atomic flushes outweigh the loss of workers and the longer sequential loop in
+each thread. They are a scheduling choice derived from row structure, not a
+generally beneficial replacement for smaller chunks.
+
+The chunk size is a runtime loop bound rather than an unroll factor. Chunks 8,
+16, 32, and 64 consequently have the same static kernel shape and use 20 VGPRs
+and 25 SGPRs, with no spills, LDS, or scratch memory. The performance turnover
+at chunks 32 and 64 is therefore caused by the dynamic work balance rather
+than register pressure or code-size growth.
+
+This follow-up also compared the current boundary-carry implementation with
+commit `9442e76`, which loaded `rowOffsets[row + 1]` whenever the row-advance
+condition was checked. Across the 36 workload-and-chunk combinations, after
+selecting the best block size, carrying the boundary produced a median 1.03x
+speedup. Twenty-two comparisons improved by more than 2%, nine stayed within
+2%, and five regressed by more than 2%. The full sweeps ran sequentially and
+included timing variation in unrelated mappings, so these values establish a
+direction rather than a precise performance claim.
+
+For the uniform-256, block-128 kernel, the static ISA difference is:
+
+| Boundary handling | Instructions | Global-load sites | Scalar branches | VGPR | SGPR |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| reload on each check | 525 | 10 | 15 | 20 | 25 |
+| carry next boundary | 523 | 11 | 16 | 20 | 25 |
+
+The carried form has one more static load site because the initial load and
+row-advance load are separate instructions. Dynamically, the latter executes
+only when advancing to another row instead of on every same-row condition
+check. It also adds a branch while removing two static instructions. The IR
+change eliminates redundant dynamic loads, but an interleaved repeated A/B
+benchmark is needed before attributing a stable kernel speedup to it.
 
 ## Reproduction
 
@@ -168,6 +228,23 @@ python3 benchmark/run_spmv_benchmark.py \
   --position-chunk-sizes=1,2,4,8 \
   --position-reductions=atomic,segmented \
   --rocsparse \
+  --block-sizes=64,128,256,512 \
+  --warmup=10 \
+  --iterations=50 \
+  --keep-artifacts
+```
+
+Run the larger-chunk follow-up with:
+
+```sh
+python3 benchmark/run_spmv_benchmark.py \
+  --chip=gfx1101 \
+  --rows=65536 \
+  --columns=65536 \
+  --nnz-per-row=4,32,256 \
+  --distributions=uniform,alternating,skewed \
+  --position-chunk-sizes=8,16,32,64 \
+  --position-reductions=segmented \
   --block-sizes=64,128,256,512 \
   --warmup=10 \
   --iterations=50 \
