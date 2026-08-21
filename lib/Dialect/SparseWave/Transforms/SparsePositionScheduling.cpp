@@ -23,6 +23,11 @@ struct KeyedContribution {
   Value value;
 };
 
+struct CSRRowState {
+  Value row;
+  Value nextBoundary;
+};
+
 PositionParallelOp buildOutputInitialization(PatternRewriter &rewriter,
                                              Location loc, Value output,
                                              Value outputSize, Value zero,
@@ -86,33 +91,45 @@ KeyedContribution cloneContributionBodyWithCSRRow(OpBuilder &builder,
           mapping.lookup(yield.getResults()[1])};
 }
 
-Value buildNextCSRRow(OpBuilder &builder, Location loc, Value rowOffsets,
-                      Value row, Value position) {
+Value loadNextCSRRowBoundary(OpBuilder &builder, Location loc, Value rowOffsets,
+                             Value row) {
   Value one = arith::ConstantIndexOp::create(builder, loc, 1);
-  auto advance = scf::WhileOp::create(builder, loc,
-                                      TypeRange{builder.getIndexType()}, row);
-  SmallVector<Location> argumentLocations(1, loc);
+  Value nextRow = arith::AddIOp::create(builder, loc, row, one);
+  Value boundaryValue =
+      memref::LoadOp::create(builder, loc, rowOffsets, nextRow);
+  return castToIndex(builder, loc, boundaryValue);
+}
+
+CSRRowState buildNextCSRRowState(OpBuilder &builder, Location loc,
+                                 Value rowOffsets, Value row,
+                                 Value nextBoundary, Value position) {
+  Type indexType = builder.getIndexType();
+  Value one = arith::ConstantIndexOp::create(builder, loc, 1);
+  auto advance =
+      scf::WhileOp::create(builder, loc, TypeRange{indexType, indexType},
+                           ValueRange{row, nextBoundary});
+  SmallVector<Location> argumentLocations(2, loc);
   Block *before = builder.createBlock(
       &advance.getBefore(), {}, advance.getResultTypes(), argumentLocations);
   builder.setInsertionPointToStart(before);
   Value currentRow = before->getArgument(0);
-  Value nextRow = arith::AddIOp::create(builder, loc, currentRow, one);
-  Value boundaryValue =
-      memref::LoadOp::create(builder, loc, rowOffsets, nextRow);
-  Value boundary = castToIndex(builder, loc, boundaryValue);
+  Value currentBoundary = before->getArgument(1);
   Value crossesBoundary = arith::CmpIOp::create(
-      builder, loc, arith::CmpIPredicate::ule, boundary, position);
-  scf::ConditionOp::create(builder, loc, crossesBoundary, currentRow);
+      builder, loc, arith::CmpIPredicate::ule, currentBoundary, position);
+  scf::ConditionOp::create(builder, loc, crossesBoundary,
+                           ValueRange{currentRow, currentBoundary});
 
   Block *after = builder.createBlock(
       &advance.getAfter(), {}, advance.getResultTypes(), argumentLocations);
   builder.setInsertionPointToStart(after);
   currentRow = after->getArgument(0);
   Value advancedRow = arith::AddIOp::create(builder, loc, currentRow, one);
-  scf::YieldOp::create(builder, loc, advancedRow);
+  Value advancedBoundary =
+      loadNextCSRRowBoundary(builder, loc, rowOffsets, advancedRow);
+  scf::YieldOp::create(builder, loc, ValueRange{advancedRow, advancedBoundary});
 
   builder.setInsertionPointAfter(advance);
-  return advance.getResult(0);
+  return {advance.getResult(0), advance.getResult(1)};
 }
 
 class ThreadPositionReducePattern : public OpRewritePattern<PositionReduceOp> {
@@ -238,20 +255,27 @@ public:
     }
 
     Value nextPosition = arith::AddIOp::create(rewriter, loc, begin, oneIndex);
+    SmallVector<Value> reductionInitializers{first.key, first.value};
+    if (csrRecovery) {
+      Value firstBoundary = loadNextCSRRowBoundary(
+          rewriter, loc, csrRecovery->getRowOffsets(), first.key);
+      reductionInitializers.push_back(firstBoundary);
+    }
     auto reduction = scf::ForOp::create(
-        rewriter, loc, nextPosition, end, oneIndex,
-        ValueRange{first.key, first.value},
+        rewriter, loc, nextPosition, end, oneIndex, reductionInitializers,
         [&](OpBuilder &builder, Location bodyLoc, Value position,
             ValueRange iterArgs) {
           Value currentKey = iterArgs[0];
           Value currentValue = iterArgs[1];
+          Value nextBoundary;
           KeyedContribution contribution;
           if (csrRecovery) {
-            Value row =
-                buildNextCSRRow(builder, bodyLoc, csrRecovery->getRowOffsets(),
-                                currentKey, position);
+            CSRRowState rowState = buildNextCSRRowState(
+                builder, bodyLoc, csrRecovery->getRowOffsets(), currentKey,
+                iterArgs[2], position);
             contribution = cloneContributionBodyWithCSRRow(
-                builder, op, position, *csrRecovery, row);
+                builder, op, position, *csrRecovery, rowState.row);
+            nextBoundary = rowState.nextBoundary;
           } else {
             contribution = cloneContributionBody(builder, op, position);
           }
@@ -273,8 +297,10 @@ public:
               });
           Value nextValue = arith::SelectOp::create(
               builder, bodyLoc, sameKey, combined, contribution.value);
-          scf::YieldOp::create(builder, bodyLoc,
-                               ValueRange{contribution.key, nextValue});
+          SmallVector<Value> nextState{contribution.key, nextValue};
+          if (csrRecovery)
+            nextState.push_back(nextBoundary);
+          scf::YieldOp::create(builder, bodyLoc, nextState);
         });
     memref::AtomicRMWOp::create(rewriter, loc, arith::AtomicRMWKind::addf,
                                 reduction.getResult(1), op.getOutput(),

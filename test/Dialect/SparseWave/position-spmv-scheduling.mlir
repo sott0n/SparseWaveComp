@@ -47,9 +47,18 @@
 // CHUNK: memref.atomic_rmw addf
 
 // SEGMENTED-LABEL: func.func @spmv(
-// SEGMENTED-COUNT-1: sparsewave.csr_row_at_position
-// SEGMENTED: scf.for
-// SEGMENTED: scf.while
+// SEGMENTED-SAME: %[[OFFSETS:[^ :,]+]]: memref<?xi32>
+// SEGMENTED-COUNT-1: %[[FIRST_ROW:.*]] = sparsewave.csr_row_at_position %[[OFFSETS]]
+// SEGMENTED: %[[BOUNDARY_INDEX:.*]] = arith.addi %[[FIRST_ROW]], %{{.*}} : index
+// SEGMENTED: %[[BOUNDARY_RAW:.*]] = memref.load %[[OFFSETS]][%[[BOUNDARY_INDEX]]]
+// SEGMENTED: %[[BOUNDARY:.*]] = arith.index_cast %[[BOUNDARY_RAW]]
+// SEGMENTED: %{{.*}}:3 = scf.for
+// SEGMENTED-SAME: iter_args(%{{.*}} = %[[FIRST_ROW]], %{{.*}} = %{{.*}}, %{{.*}} = %[[BOUNDARY]])
+// SEGMENTED: scf.while (%{{.*}} = %{{.*}}, %[[CURRENT_BOUNDARY:.*]] = %{{.*}})
+// SEGMENTED-NOT: memref.load %[[OFFSETS]]
+// SEGMENTED: arith.cmpi ule, %[[CURRENT_BOUNDARY]], %{{.*}} : index
+// SEGMENTED: } do {
+// SEGMENTED: memref.load %[[OFFSETS]]
 // SEGMENTED: arith.addf
 // SEGMENTED: scf.if
 // SEGMENTED: memref.atomic_rmw addf
