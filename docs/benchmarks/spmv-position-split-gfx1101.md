@@ -125,7 +125,9 @@ schedules.
 The next optimization should carry the recovered CSR row across positions in
 a chunk and combine consecutive products for the same row before issuing an
 atomic update. The current implementation and measurements provide the
-split-only ablation baseline for that change.
+split-only ablation baseline for that change. The follow-up
+[segmented position reduction study](spmv-position-segmented-gfx1101.md)
+evaluates that optimization.
 
 ## Reproduction
 

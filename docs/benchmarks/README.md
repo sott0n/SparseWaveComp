@@ -86,6 +86,9 @@ environment, reproduction commands, performance data, and interpretation:
 - [gfx1101 SpMV position-split ablation](spmv-position-split-gfx1101.md)
   isolates thread chunk factors across row-length distributions and explains
   their performance using generated ISA and GPU resources.
+- [gfx1101 SpMV segmented position reduction](spmv-position-segmented-gfx1101.md)
+  compares per-position atomics with chunk-local row carry and aggregation,
+  including an ablation across row distributions and chunk sizes.
 - [gfx1101 SpMM tile-size sweep](spmm-tile-size-sweep-gfx1101.md) compares
   thread-per-output and wave-per-row-tile mappings across RHS widths and tile
   sizes.
