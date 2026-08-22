@@ -11,6 +11,8 @@ import benchmark_utils as common
 
 BASELINE_MAPPING = "thread-per-output"
 TILED_MAPPING = "wave-per-row-tile"
+POSITION_MAPPING = "thread-per-position"
+MAPPINGS = (BASELINE_MAPPING, TILED_MAPPING, POSITION_MAPPING)
 FORMATS = ("csr", "bsr")
 RESULT_COLUMNS = (
     "chip",
@@ -22,6 +24,7 @@ RESULT_COLUMNS = (
     "block_size",
     "wave_size",
     "tile_size",
+    "position_chunk_size",
     "storage_block_size",
     "rows",
     "input_cols",
@@ -67,6 +70,7 @@ REPORT = common.BenchmarkReport(
         "storage_block_size",
         "block_size",
         "tile_size",
+        "position_chunk_size",
         "mapping",
     ),
     metrics=("median_us", "p95_us", "gproducts_per_sec", "gflops"),
@@ -80,6 +84,7 @@ ROCSPARSE_REPORT = common.BenchmarkReport(
         "storage_block_size",
         "block_size",
         "tile_size",
+        "position_chunk_size",
         "mapping",
     ),
     metrics=("median_us", "p95_us", "gproducts_per_sec", "gflops"),
@@ -94,6 +99,7 @@ RESOURCE_REPORT = common.BenchmarkReport(
         "storage_block_size",
         "block_size",
         "tile_size",
+        "position_chunk_size",
         "mapping",
     ),
     metrics=common.GPU_RESOURCE_METRICS,
@@ -157,11 +163,38 @@ def parse_formats(value):
     return values
 
 
-def benchmark_cases(block_sizes, tile_sizes):
+def parse_mappings(value):
+    values = [item.strip() for item in value.split(",") if item.strip()]
+    invalid = [item for item in values if item not in MAPPINGS]
+    if not values:
+        raise argparse.ArgumentTypeError("expected at least one SpMM mapping")
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            f"unknown SpMM mappings {invalid}; expected {MAPPINGS}"
+        )
+    if len(values) != len(set(values)):
+        raise argparse.ArgumentTypeError(
+            f"duplicate SpMM mappings are not allowed: {values}"
+        )
+    return values
+
+
+def benchmark_cases(block_sizes, tile_sizes, position_chunk_sizes, mappings):
     for block_size in block_sizes:
-        yield BASELINE_MAPPING, block_size, None
-        for tile_size in tile_sizes:
-            yield TILED_MAPPING, block_size, tile_size
+        if BASELINE_MAPPING in mappings:
+            yield BASELINE_MAPPING, block_size, None, None
+        if TILED_MAPPING in mappings:
+            for tile_size in tile_sizes:
+                yield TILED_MAPPING, block_size, tile_size, None
+        if POSITION_MAPPING in mappings:
+            for chunk_size in position_chunk_sizes:
+                yield POSITION_MAPPING, block_size, None, chunk_size
+
+
+def sparsewave_kernel_layout(mapping):
+    if mapping == POSITION_MAPPING:
+        return 2, 1
+    return 1, 0
 
 
 def result_row(
@@ -169,6 +202,7 @@ def result_row(
     mapping,
     block_size,
     tile_size,
+    position_chunk_size,
     rhs_columns,
     timing,
     resources,
@@ -193,6 +227,7 @@ def result_row(
             args.wave_size if implementation == "sparsewave" else None
         ),
         "tile_size": tile_size,
+        "position_chunk_size": position_chunk_size,
         "storage_block_size": (
             bsr_data["block_size"] if bsr_data is not None else None
         ),
@@ -235,6 +270,8 @@ def build_metadata(args, repository, commands):
         {
             "rhs_columns": args.rhs_columns,
             "tile_sizes": args.tile_sizes,
+            "position_chunk_sizes": args.position_chunk_sizes,
+            "mappings": args.mappings,
             "formats": args.formats,
             "bsr_block_sizes": args.bsr_block_sizes,
             "matrix": str(args.matrix),
@@ -276,6 +313,7 @@ def print_results(args, results):
                 and row["rhs_cols"] == args.rhs_columns[0]
                 and row["block_size"] == args.block_sizes[0]
                 and row["tile_size"] is None
+                and row["mapping"] == BASELINE_MAPPING
             ],
         )
 
@@ -286,12 +324,13 @@ def validate_paths(args):
         needs_benchmark_utils=True,
         needs_resource_inspector=True,
     )
-    common.validate_block_sizes(
-        args, require_wave_multiple="csr" in args.formats
+    uses_tiled_mapping = (
+        "csr" in args.formats and TILED_MAPPING in args.mappings
     )
-    if "csr" in args.formats and args.wave_size != 32:
+    common.validate_block_sizes(args, require_wave_multiple=uses_tiled_mapping)
+    if uses_tiled_mapping and args.wave_size != 32:
         raise ValueError("wave-per-row-tile currently requires wave size 32")
-    if "csr" in args.formats and any(
+    if uses_tiled_mapping and any(
         tile_size > 32 for tile_size in args.tile_sizes
     ):
         raise ValueError("tile sizes must not exceed 32")
@@ -335,6 +374,15 @@ def parse_arguments(argv):
         help="Comma-separated square BSR storage block sizes.",
     )
     parser.add_argument(
+        "--mappings",
+        type=parse_mappings,
+        default=list(MAPPINGS),
+        help=(
+            "Comma-separated CSR mappings: thread-per-output,"
+            "wave-per-row-tile,thread-per-position."
+        ),
+    )
+    parser.add_argument(
         "--rhs-columns",
         type=common.parse_positive_int_list,
         default=common.parse_positive_int_list("8,16,32,64,128"),
@@ -355,6 +403,15 @@ def parse_arguments(argv):
         dest="tile_sizes",
         type=lambda value: [common.positive_int(value)],
         help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--position-chunk-sizes",
+        type=common.parse_positive_int_list,
+        default=common.parse_positive_int_list("1,4,8"),
+        help=(
+            "Comma-separated consecutive position-column pairs processed "
+            "by each thread-per-position worker."
+        ),
     )
     common.add_common_arguments(parser, repository)
     args = parser.parse_args(argv)
@@ -406,8 +463,11 @@ def main(argv=None):
                     rhs_columns,
                     args.warmup + args.iterations,
                 )
-                for mapping, block_size, tile_size in benchmark_cases(
-                    args.block_sizes, args.tile_sizes
+                for mapping, block_size, tile_size, chunk_size in benchmark_cases(
+                    args.block_sizes,
+                    args.tile_sizes,
+                    args.position_chunk_sizes,
+                    args.mappings,
                 ):
                     case_directory = (
                         workspace.artifact_root
@@ -420,6 +480,14 @@ def main(argv=None):
                     if tile_size is not None:
                         case_directory /= f"tile-{tile_size}"
                         pipeline_options = (f"spmm-tile-size={tile_size}",)
+                    if chunk_size is not None:
+                        case_directory /= f"chunk-{chunk_size}"
+                        pipeline_options = (
+                            f"spmm-position-chunk-size={chunk_size}",
+                        )
+                    kernels_per_dispatch, compute_binary_index = (
+                        sparsewave_kernel_layout(mapping)
+                    )
                     timing, compile_command, profile_command = common.run_case(
                         args,
                         source_text,
@@ -429,6 +497,7 @@ def main(argv=None):
                         block_size,
                         csr_binary,
                         pipeline_options=pipeline_options,
+                        kernels_per_dispatch=kernels_per_dispatch,
                     )
                     resources, resource_command = common.inspect_gpu_resources(
                         args,
@@ -437,6 +506,7 @@ def main(argv=None):
                         "spmm_kernel",
                         args.wave_size,
                         block_size,
+                        binary_index=compute_binary_index,
                     )
                     results.append(
                         result_row(
@@ -444,6 +514,7 @@ def main(argv=None):
                             mapping,
                             block_size,
                             tile_size,
+                            chunk_size,
                             rhs_columns,
                             timing,
                             resources,
@@ -457,6 +528,7 @@ def main(argv=None):
                             "block_size": block_size,
                             "mapping": mapping,
                             "tile_size": tile_size,
+                            "position_chunk_size": chunk_size,
                             "compile": compile_command,
                             "resources": resource_command,
                             "profile": profile_command,
@@ -503,6 +575,7 @@ def main(argv=None):
                             BASELINE_MAPPING,
                             block_size,
                             None,
+                            None,
                             rhs_columns,
                             timing,
                             resources,
@@ -540,6 +613,7 @@ def main(argv=None):
                     result_row(
                         args,
                         "default",
+                        None,
                         None,
                         None,
                         rhs_columns,

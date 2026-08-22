@@ -150,6 +150,13 @@ struct SparseWaveToAMDGPUPipelineOptions
       llvm::cl::desc("Number of output columns in each SpMM wave tile."),
       llvm::cl::init(4)};
 
+  PassOptions::Option<int64_t> spmmPositionChunkSize{
+      *this, "spmm-position-chunk-size",
+      llvm::cl::desc(
+          "Number of consecutive SpMM position-column pairs processed by "
+          "each thread."),
+      llvm::cl::init(1)};
+
   PassOptions::Option<int64_t> sddmmBlockSize{
       *this, "sddmm-block-size",
       llvm::cl::desc("Number of GPU threads in each SDDMM block."),

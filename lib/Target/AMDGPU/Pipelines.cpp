@@ -255,6 +255,21 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
     pm.addPass(createScheduleSparseWavePosition(scheduleOptions));
   }
 
+  // Collapse CSR positions and RHS columns into an operator-independent keyed
+  // reduction before applying the same thread position scheduler used by
+  // SpMV. Each contribution is accumulated atomically because adjacent
+  // position-column pairs do not generally share an output key.
+  bool usesPositionSpMM = options.spmmMapping == "thread-per-position";
+  if (usesPositionSpMM) {
+    pm.addPass(createDecomposePositionSpMM());
+    ScheduleSparseWavePositionOptions scheduleOptions;
+    scheduleOptions.mapping = "thread";
+    scheduleOptions.blockSize = options.spmmBlockSize;
+    scheduleOptions.threadChunkSize = options.spmmPositionChunkSize;
+    scheduleOptions.threadReduction = "atomic";
+    pm.addPass(createScheduleSparseWavePosition(scheduleOptions));
+  }
+
   // Map SparseWave operations and explicit logical workers to GPU work. Each
   // operation has an independent block size because its GPU work unit differs.
   ConvertSparseWaveToGPUOptions sparseWaveOptions;
@@ -264,7 +279,8 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   sparseWaveOptions.waveSize =
       static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
   sparseWaveOptions.positionBlockSize = options.positionBlockSize;
-  sparseWaveOptions.spmmMapping = options.spmmMapping;
+  sparseWaveOptions.spmmMapping =
+      usesPositionSpMM ? "thread-per-output" : options.spmmMapping.getValue();
   sparseWaveOptions.spmmBlockSize = options.spmmBlockSize;
   sparseWaveOptions.spmmTileSize = options.spmmTileSize;
   sparseWaveOptions.sddmmBlockSize = options.sddmmBlockSize;
@@ -276,6 +292,13 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   // Materialize target-independent sparse position partitions and coordinate
   // recovery after GPU worker identities have been assigned.
   pm.addPass(createLowerSparseWavePositionSpace());
+  if (usesPositionSpMM) {
+    // SpMM decomposition introduces a flattened output view after the earlier
+    // host cleanup. Expand that view and its affine address arithmetic before
+    // outlining and host LLVM lowering.
+    pm.addPass(memref::createExpandStridedMetadataPass());
+    pm.addPass(createLowerAffinePass());
+  }
   if (options.prepareGPUBarePtrABI)
     pm.addPass(createPrepareGPUBarePtrABI());
   if (options.sinkLaunchIndexComputations)

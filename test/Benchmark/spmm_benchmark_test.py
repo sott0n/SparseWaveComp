@@ -133,6 +133,7 @@ class SpMMBenchmarkTest(unittest.TestCase):
             mapping="thread-per-output",
             block_size=64,
             tile_size=None,
+            position_chunk_size=None,
             rhs_columns=8,
             timing={
                 "min_us": 1.0,
@@ -210,19 +211,68 @@ amdhsa.kernels:
             BENCHMARK.common.validate_gpu_resources(resources, 32, 256)
 
     def test_benchmark_cases_run_each_baseline_once(self):
-        cases = list(BENCHMARK.benchmark_cases([64, 128], [1, 4, 8]))
+        cases = list(
+            BENCHMARK.benchmark_cases(
+                [64, 128],
+                [1, 4, 8],
+                [1, 4],
+                list(BENCHMARK.MAPPINGS),
+            )
+        )
         self.assertEqual(
             cases,
             [
-                ("thread-per-output", 64, None),
-                ("wave-per-row-tile", 64, 1),
-                ("wave-per-row-tile", 64, 4),
-                ("wave-per-row-tile", 64, 8),
-                ("thread-per-output", 128, None),
-                ("wave-per-row-tile", 128, 1),
-                ("wave-per-row-tile", 128, 4),
-                ("wave-per-row-tile", 128, 8),
+                ("thread-per-output", 64, None, None),
+                ("wave-per-row-tile", 64, 1, None),
+                ("wave-per-row-tile", 64, 4, None),
+                ("wave-per-row-tile", 64, 8, None),
+                ("thread-per-position", 64, None, 1),
+                ("thread-per-position", 64, None, 4),
+                ("thread-per-output", 128, None, None),
+                ("wave-per-row-tile", 128, 1, None),
+                ("wave-per-row-tile", 128, 4, None),
+                ("wave-per-row-tile", 128, 8, None),
+                ("thread-per-position", 128, None, 1),
+                ("thread-per-position", 128, None, 4),
             ],
+        )
+
+    def test_position_mapping_uses_initialization_and_compute_kernels(self):
+        self.assertEqual(
+            BENCHMARK.sparsewave_kernel_layout("thread-per-position"),
+            (2, 1),
+        )
+        self.assertEqual(
+            BENCHMARK.sparsewave_kernel_layout("thread-per-output"),
+            (1, 0),
+        )
+
+    def test_position_spmm_pipeline_lowers(self):
+        rendered = BENCHMARK.render_mlir(
+            SCRIPT.parent / "spmm.mlir.in",
+            self.matrix,
+            rhs_columns=4,
+            dispatches=3,
+        )
+        source = TEMPORARY_ROOT / "position-spmm.mlir"
+        source.write_text(rendered, encoding="utf-8")
+        subprocess.run(
+            [
+                SPARSEWAVE_OPT,
+                str(source),
+                (
+                    "--pass-pipeline=builtin.module("
+                    "decompose-position-spmm,"
+                    "schedule-sparsewave-position{mapping=thread "
+                    "block-size=64 thread-chunk-size=4},"
+                    "convert-sparsewave-to-gpu{"
+                    "spmm-mapping=thread-per-output "
+                    "spmm-block-size=64 position-block-size=64})"
+                ),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
         )
 
     def test_wave_mapping_validation(self):
@@ -239,6 +289,8 @@ amdhsa.kernels:
             block_sizes=[64, 1024],
             wave_size=32,
             tile_sizes=[1, 4, 32],
+            position_chunk_sizes=[1, 4, 8],
+            mappings=list(BENCHMARK.MAPPINGS),
             bsr_block_sizes=[2, 4, 8],
             formats=["csr", "bsr"],
             matrix_data=self.matrix,
@@ -253,6 +305,7 @@ amdhsa.kernels:
             BENCHMARK.validate_paths(args)
 
         args.formats = ["bsr"]
+        args.mappings = ["thread-per-position"]
         args.wave_size = 64
         args.tile_sizes = [33]
         BENCHMARK.validate_paths(args)
@@ -261,6 +314,14 @@ amdhsa.kernels:
         self.assertEqual(BENCHMARK.parse_formats("csr,bsr"), ["csr", "bsr"])
         with self.assertRaisesRegex(argparse.ArgumentTypeError, "unknown"):
             BENCHMARK.parse_formats("ell")
+
+    def test_mapping_options_are_validated(self):
+        self.assertEqual(
+            BENCHMARK.parse_mappings("thread-per-position"),
+            ["thread-per-position"],
+        )
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "unknown"):
+            BENCHMARK.parse_mappings("block-per-row")
 
 
 if __name__ == "__main__":

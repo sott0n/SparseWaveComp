@@ -126,6 +126,23 @@ def DecomposePositionSpMV
   ];
 }
 
+def DecomposePositionSpMM
+    : Pass<"decompose-position-spmm", "::mlir::ModuleOp"> {
+  let summary = "Decompose CSR SpMM into a keyed position reduction";
+  let description = [{
+    Rewrites sparsewave.spmm into sparsewave.position_reduce. The sparse
+    position and dense output-column axes are collapsed into one linear
+    iteration space. The reduction region recovers both axes and yields the
+    flattened output coordinate together with the sparse-dense product. No
+    parallel mapping or GPU launch strategy is selected.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "memref::MemRefDialect",
+    "sparsewave::SparseWaveDialect"
+  ];
+}
+
 def ScheduleSparseWavePosition
     : Pass<"schedule-sparsewave-position", "::mlir::ModuleOp"> {
   let summary = "Schedule keyed sparse position reductions";
