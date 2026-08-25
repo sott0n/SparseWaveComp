@@ -28,6 +28,7 @@ public:
         memref::DimOp::create(rewriter, loc, op.getValues(), zero);
     auto reduction = PositionReduceOp::create(
         rewriter, loc, ValueRange{zero}, ValueRange{nonzeroCount},
+        rewriter.getStrArrayAttr({"position"}),
         rewriter.getDenseI64ArrayAttr({0}), op.getOutput(), "sum");
     Block *body =
         rewriter.createBlock(&reduction.getBody(), reduction.getBody().end(),

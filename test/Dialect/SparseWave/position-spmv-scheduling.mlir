@@ -17,7 +17,7 @@
 // DECOMPOSE-LABEL: func.func @spmv(
 // DECOMPOSE-NOT: gpu.launch
 // DECOMPOSE-NOT: sparsewave.position_parallel
-// DECOMPOSE: sparsewave.position_reduce lower(%{{.*}}) upper(%{{.*}}) order = [0] into %{{.*}} kind = "sum" {
+// DECOMPOSE: sparsewave.position_reduce lower(%{{.*}}) upper(%{{.*}}) axes = ["position"] order = [0] into %{{.*}} kind = "sum" {
 // DECOMPOSE: ^bb0(%[[POSITION:.*]]: index):
 // DECOMPOSE: %[[ROW:.*]] = sparsewave.csr_row_at_position %{{.*}} at %[[POSITION]]
 // DECOMPOSE: memref.load %{{.*}}[%[[POSITION]]]

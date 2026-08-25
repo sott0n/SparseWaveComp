@@ -286,7 +286,8 @@ amdhsa.kernels:
                 str(source),
                 (
                     "--pass-pipeline=builtin.module("
-                    "decompose-position-spmm{iteration-order=rhs-major},"
+                    "decompose-position-spmm,"
+                    "reorder-sparsewave-position{order=rhs,position},"
                     "schedule-sparsewave-position{mapping=thread "
                     "block-size=64 thread-chunk-size=4 "
                     "thread-reduction=segmented},"

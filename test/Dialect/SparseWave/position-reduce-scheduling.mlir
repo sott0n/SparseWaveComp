@@ -50,7 +50,8 @@ func.func @keyed_sum(%values: memref<?xf32>, %output: memref<?xf32>) {
   %zero = arith.constant 0 : index
   %keys = arith.constant 4 : index
   %upper = memref.dim %values, %zero : memref<?xf32>
-  sparsewave.position_reduce lower (%zero) upper (%upper) order = [0]
+  sparsewave.position_reduce lower (%zero) upper (%upper)
+      axes = ["position"] order = [0]
       into %output kind = "sum" {
   ^bb0(%position: index):
     %key = arith.remui %position, %keys : index
@@ -79,7 +80,7 @@ func.func @multi_axis_keyed_sum(%values: memref<?x?xf32>,
   %one = arith.constant 1 : index
   %columns = memref.dim %values, %one : memref<?x?xf32>
   sparsewave.position_reduce lower (%zero, %zero)
-      upper (%positions, %columns) order = [1, 0]
+      upper (%positions, %columns) axes = ["position", "rhs"] order = [1, 0]
       into %output kind = "sum" {
   ^bb0(%position: index, %column: index):
     %rowBase = arith.muli %position, %columns : index

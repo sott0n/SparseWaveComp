@@ -255,15 +255,21 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
     pm.addPass(createScheduleSparseWavePosition(scheduleOptions));
   }
 
-  // Reorder and collapse CSR positions and RHS columns into an
-  // operator-independent keyed reduction before applying the same thread
-  // position scheduler used by SpMV. Position-major preserves the original
-  // schedule; RHS-major exposes adjacent equal-key row segments.
+  // Decompose SpMM semantics into a canonical keyed reduction. A separate,
+  // operator-independent pass selects the logical axis order before applying
+  // the same position scheduler used by SpMV. Position-major preserves the
+  // original schedule; RHS-major exposes adjacent equal-key row segments.
   bool usesPositionSpMM = options.spmmMapping == "thread-per-position";
   if (usesPositionSpMM) {
-    DecomposePositionSpMMOptions decompositionOptions;
-    decompositionOptions.iterationOrder = options.spmmPositionOrder;
-    pm.addPass(createDecomposePositionSpMM(decompositionOptions));
+    pm.addPass(createDecomposePositionSpMM());
+    ReorderSparseWavePositionOptions reorderOptions;
+    if (options.spmmPositionOrder == "position-major")
+      reorderOptions.order = {"position", "rhs"};
+    else if (options.spmmPositionOrder == "rhs-major")
+      reorderOptions.order = {"rhs", "position"};
+    else
+      reorderOptions.order = {options.spmmPositionOrder};
+    pm.addPass(createReorderSparseWavePosition(reorderOptions));
     ScheduleSparseWavePositionOptions scheduleOptions;
     scheduleOptions.mapping = "thread";
     scheduleOptions.blockSize = options.spmmBlockSize;

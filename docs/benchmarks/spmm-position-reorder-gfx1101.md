@@ -25,21 +25,24 @@ rhsColumn = i / NNZ
 ```
 
 The SpMM decomposition does not emit these quotient and remainder operations
-itself. It creates a generic rank-2 keyed reduction:
+itself. It creates a generic rank-2 keyed reduction in canonical logical-axis
+order:
 
 ```text
 position_reduce
   lower = (0, 0)
   upper = (NNZ, rhsColumns)
-  order = (position, rhsColumn) or (rhsColumn, position)
+  axes = (position, rhs)
+  order = (position, rhs)
   body(position, rhsColumn) -> (outputKey, product)
 ```
 
-The operator-independent position scheduler computes the collapsed worker
-count and recovers logical coordinates from the order permutation. Rank-1
-SpMV and the rank-2 SpMM domain therefore use the same reduction and scheduling
-mechanism; only the operator-specific contribution body and selected axis
-order differ.
+The operator-independent reorder pass resolves scheduling names such as
+`(rhs, position)` to the numeric order permutation. The generic position
+scheduler then computes the collapsed worker count and recovers logical
+coordinates from that permutation. Rank-1 SpMV and the rank-2 SpMM domain
+therefore use the same reduction and scheduling mechanism; only the
+operator-specific contribution body and selected axis order differ.
 
 CSR stores positions from the same row consecutively. RHS-major ordering
 therefore makes contributions to `output[row, rhsColumn]` adjacent and allows

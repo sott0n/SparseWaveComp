@@ -18,10 +18,7 @@ namespace {
 
 class DecomposePositionSpMMPattern : public OpRewritePattern<SpMMOp> {
 public:
-  DecomposePositionSpMMPattern(MLIRContext *context, StringRef iterationOrder)
-      : OpRewritePattern<SpMMOp>(context),
-        order(iterationOrder == "rhs-major" ? SmallVector<int64_t>{1, 0}
-                                            : SmallVector<int64_t>{0, 1}) {}
+  using OpRewritePattern<SpMMOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(SpMMOp op,
                                 PatternRewriter &rewriter) const override {
@@ -43,7 +40,8 @@ public:
     auto reduction = PositionReduceOp::create(
         rewriter, loc, ValueRange{zero, zero},
         ValueRange{nonzeroCount, rhsColumnCount},
-        rewriter.getDenseI64ArrayAttr(order), flattenedOutput, "sum");
+        rewriter.getStrArrayAttr({"position", "rhs"}),
+        rewriter.getDenseI64ArrayAttr({0, 1}), flattenedOutput, "sum");
     Block *body = rewriter.createBlock(
         &reduction.getBody(), reduction.getBody().end(),
         {rewriter.getIndexType(), rewriter.getIndexType()}, {loc, loc});
@@ -71,9 +69,6 @@ public:
     rewriter.eraseOp(op);
     return success();
   }
-
-private:
-  SmallVector<int64_t> order;
 };
 
 class DecomposePositionSpMM
@@ -83,16 +78,8 @@ public:
       DecomposePositionSpMM>::DecomposePositionSpMMBase;
 
   void runOnOperation() override {
-    if (iterationOrder != "position-major" && iterationOrder != "rhs-major") {
-      getOperation().emitError()
-          << "unsupported position-space SpMM iteration order '"
-          << iterationOrder << "'; expected 'position-major' or 'rhs-major'";
-      signalPassFailure();
-      return;
-    }
-
     RewritePatternSet patterns(&getContext());
-    patterns.add<DecomposePositionSpMMPattern>(&getContext(), iterationOrder);
+    patterns.add<DecomposePositionSpMMPattern>(&getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       signalPassFailure();
       return;

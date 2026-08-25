@@ -131,21 +131,32 @@ def DecomposePositionSpMM
   let summary = "Decompose CSR SpMM into a keyed position reduction";
   let description = [{
     Rewrites sparsewave.spmm into a rank-2 sparsewave.position_reduce whose
-    logical axes are sparse position and dense output column. The selected
-    iteration order is recorded as a generic axis permutation; the reduction
-    region remains independent from collapse arithmetic and yields the
-    flattened output coordinate together with the sparse-dense product. No
-    parallel mapping or GPU launch strategy is selected.
+    logical axes are sparse position and dense output column in canonical
+    order. The reduction region remains independent from collapse arithmetic
+    and yields the flattened output coordinate together with the sparse-dense
+    product. Axis reordering, parallel mapping, and GPU launch strategy are
+    selected by later scheduling passes.
   }];
-  let options = [
-    Option<"iterationOrder", "iteration-order", "std::string",
-           /*default=*/"\"position-major\"",
-           "Collapsed iteration order: position-major or rhs-major">
-  ];
   let dependentDialects = [
     "arith::ArithDialect",
     "memref::MemRefDialect",
     "sparsewave::SparseWaveDialect"
+  ];
+}
+
+def ReorderSparseWavePosition
+    : Pass<"reorder-sparsewave-position", "::mlir::ModuleOp"> {
+  let summary = "Reorder logical axes of keyed position reductions";
+  let description = [{
+    Resolves an operator-independent list of logical axis names to a
+    permutation on every sparsewave.position_reduce. Bounds and region
+    arguments remain in logical axis order; only the order used to collapse
+    the iteration domain changes. This separates operator decomposition from
+    iteration-space scheduling.
+  }];
+  let options = [
+    ListOption<"order", "order", "std::string",
+               "Logical axis names from outermost to innermost">
   ];
 }
 

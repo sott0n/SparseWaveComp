@@ -3,6 +3,7 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -644,8 +645,22 @@ LogicalResult PositionReduceOp::verify() {
                                   /*minimumRank=*/1)))
     return failure();
 
-  Block &body = getBody().front();
   unsigned rank = getLower().size();
+  if (getAxes().size() != rank)
+    return emitOpError() << "must have one axis name per logical axis, but got "
+                         << getAxes().size() << " names for " << rank
+                         << " axes";
+  llvm::SmallSet<StringRef, 4> seenAxes;
+  for (Attribute attribute : getAxes()) {
+    StringRef axis = cast<StringAttr>(attribute).getValue();
+    if (axis.empty())
+      return emitOpError("axis names must not be empty");
+    if (!seenAxes.insert(axis).second)
+      return emitOpError() << "axis name '" << axis
+                           << "' must not appear more than once";
+  }
+
+  Block &body = getBody().front();
   if (body.getNumArguments() != rank)
     return emitOpError()
            << "body must have one argument per logical axis, but got "

@@ -585,11 +585,12 @@ def SparseWave_PositionReduceOp : SparseWave_Op<"position_reduce",
   let description = [{
     `sparsewave.position_reduce` describes an operator-independent keyed
     reduction over a rectangular logical position domain. Lower and upper
-    bounds are listed in logical axis order. The `order` permutation lists the
-    axes from outermost to innermost when the domain is collapsed for work
-    distribution, while region arguments remain in logical axis order. The
-    region yields an index key and a floating-point value. Values with the same
-    key are reduced into the corresponding element of the output memref.
+    bounds are listed in logical axis order. `axes` gives each logical axis a
+    stable scheduling name. The `order` permutation lists the axes from
+    outermost to innermost when the domain is collapsed for work distribution,
+    while region arguments remain in logical axis order. The region yields an
+    index key and a floating-point value. Values with the same key are reduced
+    into the corresponding element of the output memref.
 
     The operation expresses reduction semantics and target-independent axis
     order without choosing how collapsed workers are distributed. A scheduling
@@ -598,7 +599,8 @@ def SparseWave_PositionReduceOp : SparseWave_Op<"position_reduce",
 
     ```mlir
     sparsewave.position_reduce lower (%zero, %zero)
-        upper (%positions, %columns) order = [1, 0]
+        upper (%positions, %columns) axes = ["position", "rhs"]
+        order = [1, 0]
         into %output kind = "sum" {
     ^bb0(%position: index, %column: index):
       %key, %value = // derive a keyed contribution from both axes
@@ -610,6 +612,7 @@ def SparseWave_PositionReduceOp : SparseWave_Op<"position_reduce",
   }];
 
   let arguments = (ins Variadic<Index>:$lower, Variadic<Index>:$upper,
+                       StrArrayAttr:$axes,
                        DenseI64ArrayAttr:$order,
                        Arg<AnyMemRef, "dense reduction output",
                            [MemWrite]>:$output,
@@ -617,8 +620,9 @@ def SparseWave_PositionReduceOp : SparseWave_Op<"position_reduce",
   let regions = (region SizedRegion<1>:$body);
 
   let assemblyFormat = [{
-    `lower` `(` $lower `)` `upper` `(` $upper `)` `order` `=` $order
-    `into` $output `kind` `=` $kind $body attr-dict `:` type($output)
+    `lower` `(` $lower `)` `upper` `(` $upper `)` `axes` `=` $axes
+    `order` `=` $order `into` $output `kind` `=` $kind $body attr-dict
+    `:` type($output)
   }];
 
   let hasVerifier = 1;

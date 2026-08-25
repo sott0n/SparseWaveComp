@@ -2,20 +2,20 @@
 // RUN:   --decompose-position-spmm \
 // RUN:   | FileCheck %s --check-prefix=DECOMPOSE
 // RUN: sparsewave-opt %s \
-// RUN:   --decompose-position-spmm='iteration-order=rhs-major' \
+// RUN:   --pass-pipeline='builtin.module(decompose-position-spmm,reorder-sparsewave-position{order=rhs,position})' \
 // RUN:   | FileCheck %s --check-prefix=RHS-MAJOR
 // RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(decompose-position-spmm,schedule-sparsewave-position{mapping=thread block-size=128 thread-chunk-size=4})' \
 // RUN:   | FileCheck %s --check-prefix=THREAD
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(decompose-position-spmm{iteration-order=rhs-major},schedule-sparsewave-position{mapping=thread block-size=128 thread-chunk-size=4 thread-reduction=segmented})' \
+// RUN:   --pass-pipeline='builtin.module(decompose-position-spmm,reorder-sparsewave-position{order=rhs,position},schedule-sparsewave-position{mapping=thread block-size=128 thread-chunk-size=4 thread-reduction=segmented})' \
 // RUN:   | FileCheck %s --check-prefix=RHS-SEGMENTED
 
 // DECOMPOSE-LABEL: func.func @spmm(
 // DECOMPOSE: %[[NNZ:.*]] = memref.dim %{{.*}}, %{{.*}} : memref<?xf32>
 // DECOMPOSE: %[[RHS_COLS:.*]] = memref.dim %{{.*}}, %{{.*}} : memref<?x?xf32>
 // DECOMPOSE: %[[FLAT_OUTPUT:.*]] = memref.collapse_shape
-// DECOMPOSE: sparsewave.position_reduce lower(%{{.*}}, %{{.*}}) upper(%[[NNZ]], %[[RHS_COLS]]) order = [0, 1] into %[[FLAT_OUTPUT]] kind = "sum" {
+// DECOMPOSE: sparsewave.position_reduce lower(%{{.*}}, %{{.*}}) upper(%[[NNZ]], %[[RHS_COLS]]) axes = ["position", "rhs"] order = [0, 1] into %[[FLAT_OUTPUT]] kind = "sum" {
 // DECOMPOSE: ^bb0(%[[POSITION:.*]]: index, %[[OUTPUT_COL:.*]]: index):
 // DECOMPOSE: %[[ROW:.*]] = sparsewave.csr_row_at_position %{{.*}} at %[[POSITION]]
 // DECOMPOSE: memref.load %{{.*}}[%[[POSITION]]]
@@ -29,7 +29,7 @@
 // RHS-MAJOR-LABEL: func.func @spmm(
 // RHS-MAJOR: %[[NNZ:.*]] = memref.dim %{{.*}}, %{{.*}} : memref<?xf32>
 // RHS-MAJOR: %[[RHS_COLS:.*]] = memref.dim %{{.*}}, %{{.*}} : memref<?x?xf32>
-// RHS-MAJOR: sparsewave.position_reduce lower(%{{.*}}, %{{.*}}) upper(%[[NNZ]], %[[RHS_COLS]]) order = [1, 0]
+// RHS-MAJOR: sparsewave.position_reduce lower(%{{.*}}, %{{.*}}) upper(%[[NNZ]], %[[RHS_COLS]]) axes = ["position", "rhs"] order = [1, 0]
 // RHS-MAJOR: ^bb0(%[[POSITION:.*]]: index, %[[OUTPUT_COL:.*]]: index):
 // RHS-MAJOR: sparsewave.csr_row_at_position %{{.*}} at %[[POSITION]]
 // RHS-MAJOR: memref.load %{{.*}}[%{{.*}}, %[[OUTPUT_COL]]]
