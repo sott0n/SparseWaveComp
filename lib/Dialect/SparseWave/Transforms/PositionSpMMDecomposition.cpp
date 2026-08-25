@@ -18,7 +18,10 @@ namespace {
 
 class DecomposePositionSpMMPattern : public OpRewritePattern<SpMMOp> {
 public:
-  using OpRewritePattern::OpRewritePattern;
+  DecomposePositionSpMMPattern(MLIRContext *context, StringRef iterationOrder)
+      : OpRewritePattern<SpMMOp>(context),
+        order(iterationOrder == "rhs-major" ? SmallVector<int64_t>{1, 0}
+                                            : SmallVector<int64_t>{0, 1}) {}
 
   LogicalResult matchAndRewrite(SpMMOp op,
                                 PatternRewriter &rewriter) const override {
@@ -34,24 +37,22 @@ public:
         memref::DimOp::create(rewriter, loc, op.getValues(), zero);
     Value rhsColumnCount =
         memref::DimOp::create(rewriter, loc, op.getRhs(), one);
-    Value iterationCount =
-        arith::MulIOp::create(rewriter, loc, nonzeroCount, rhsColumnCount);
-
     SmallVector<ReassociationIndices> reassociation{{0, 1}};
     Value flattenedOutput = memref::CollapseShapeOp::create(
         rewriter, loc, op.getOutput(), reassociation);
     auto reduction = PositionReduceOp::create(
-        rewriter, loc, zero, iterationCount, flattenedOutput, "sum");
-    Block *body =
-        rewriter.createBlock(&reduction.getBody(), reduction.getBody().end(),
-                             {rewriter.getIndexType()}, {loc});
+        rewriter, loc, ValueRange{zero, zero},
+        ValueRange{nonzeroCount, rhsColumnCount},
+        rewriter.getDenseI64ArrayAttr(order), flattenedOutput, "sum");
+    Block *body = rewriter.createBlock(
+        &reduction.getBody(), reduction.getBody().end(),
+        {rewriter.getIndexType(), rewriter.getIndexType()}, {loc, loc});
     rewriter.setInsertionPointToStart(body);
 
-    Value iteration = body->getArgument(0);
-    Value position =
-        arith::DivUIOp::create(rewriter, loc, iteration, rhsColumnCount);
-    Value outputColumn =
-        arith::RemUIOp::create(rewriter, loc, iteration, rhsColumnCount);
+    // The region always uses logical axis order. The generic position
+    // scheduler interprets the order permutation when collapsing the domain.
+    Value position = body->getArgument(0);
+    Value outputColumn = body->getArgument(1);
     Value row = CSRRowAtPositionOp::create(
         rewriter, loc, rewriter.getIndexType(), op.getRowOffsets(), position);
     Value columnValue =
@@ -70,6 +71,9 @@ public:
     rewriter.eraseOp(op);
     return success();
   }
+
+private:
+  SmallVector<int64_t> order;
 };
 
 class DecomposePositionSpMM
@@ -79,8 +83,16 @@ public:
       DecomposePositionSpMM>::DecomposePositionSpMMBase;
 
   void runOnOperation() override {
+    if (iterationOrder != "position-major" && iterationOrder != "rhs-major") {
+      getOperation().emitError()
+          << "unsupported position-space SpMM iteration order '"
+          << iterationOrder << "'; expected 'position-major' or 'rhs-major'";
+      signalPassFailure();
+      return;
+    }
+
     RewritePatternSet patterns(&getContext());
-    patterns.add<DecomposePositionSpMMPattern>(&getContext());
+    patterns.add<DecomposePositionSpMMPattern>(&getContext(), iterationOrder);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       signalPassFailure();
       return;

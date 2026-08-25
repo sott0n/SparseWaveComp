@@ -157,6 +157,16 @@ struct SparseWaveToAMDGPUPipelineOptions
           "each thread."),
       llvm::cl::init(1)};
 
+  PassOptions::Option<std::string> spmmPositionOrder{
+      *this, "spmm-position-order",
+      llvm::cl::desc("Position-space SpMM iteration order."),
+      llvm::cl::init("position-major")};
+
+  PassOptions::Option<std::string> spmmPositionReduction{
+      *this, "spmm-position-reduction",
+      llvm::cl::desc("Reduction strategy for thread-per-position SpMM chunks."),
+      llvm::cl::init("atomic")};
+
   PassOptions::Option<int64_t> sddmmBlockSize{
       *this, "sddmm-block-size",
       llvm::cl::desc("Number of GPU threads in each SDDMM block."),

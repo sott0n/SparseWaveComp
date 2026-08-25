@@ -28,6 +28,55 @@ struct CSRRowState {
   Value nextBoundary;
 };
 
+Value buildCollapsedIterationCount(OpBuilder &builder, Location loc,
+                                   PositionReduceOp reduction) {
+  Value count;
+  for (auto [lower, upper] :
+       llvm::zip(reduction.getLower(), reduction.getUpper())) {
+    Value extent;
+    if (matchPattern(lower, m_Zero()))
+      extent = upper;
+    else
+      extent = arith::SubIOp::create(builder, loc, upper, lower);
+    if (count)
+      count = arith::MulIOp::create(builder, loc, count, extent);
+    else
+      count = extent;
+  }
+  return count;
+}
+
+SmallVector<Value> buildLogicalCoordinates(OpBuilder &builder, Location loc,
+                                           PositionReduceOp reduction,
+                                           Value linearIteration) {
+  if (reduction.getLower().size() == 1) {
+    Value lower = reduction.getLower().front();
+    if (matchPattern(lower, m_Zero()))
+      return {linearIteration};
+    return {arith::AddIOp::create(builder, loc, lower, linearIteration)};
+  }
+
+  SmallVector<Value> coordinates(reduction.getLower().size());
+  Value remaining = linearIteration;
+  ArrayRef<int64_t> order = reduction.getOrder();
+  for (size_t orderIndex = order.size(); orderIndex > 0; --orderIndex) {
+    int64_t axis = order[orderIndex - 1];
+    Value offset = remaining;
+    if (orderIndex > 1) {
+      Value extent = arith::SubIOp::create(
+          builder, loc, reduction.getUpper()[axis], reduction.getLower()[axis]);
+      offset = arith::RemUIOp::create(builder, loc, remaining, extent);
+      remaining = arith::DivUIOp::create(builder, loc, remaining, extent);
+    }
+    Value lower = reduction.getLower()[axis];
+    if (matchPattern(lower, m_Zero()))
+      coordinates[axis] = offset;
+    else
+      coordinates[axis] = arith::AddIOp::create(builder, loc, lower, offset);
+  }
+  return coordinates;
+}
+
 PositionParallelOp buildOutputInitialization(PatternRewriter &rewriter,
                                              Location loc, Value output,
                                              Value outputSize, Value zero,
@@ -48,10 +97,12 @@ PositionParallelOp buildOutputInitialization(PatternRewriter &rewriter,
 
 KeyedContribution cloneContributionBody(OpBuilder &builder,
                                         PositionReduceOp reduction,
-                                        Value position) {
+                                        ValueRange coordinates) {
   Block &source = reduction.getBody().front();
   IRMapping mapping;
-  mapping.map(source.getArgument(0), position);
+  for (auto [argument, coordinate] :
+       llvm::zip(source.getArguments(), coordinates))
+    mapping.map(argument, coordinate);
   for (Operation &operation : source.without_terminator())
     builder.clone(operation, mapping);
   auto yield = cast<YieldOp>(source.getTerminator());
@@ -62,6 +113,8 @@ KeyedContribution cloneContributionBody(OpBuilder &builder,
 std::optional<CSRRowAtPositionOp>
 matchCSRRowRecovery(PositionReduceOp reduction) {
   Block &body = reduction.getBody().front();
+  if (body.getNumArguments() != 1)
+    return std::nullopt;
   auto yield = cast<YieldOp>(body.getTerminator());
   for (Operation &operation : body.without_terminator()) {
     auto recovery = dyn_cast<CSRRowAtPositionOp>(operation);
@@ -74,12 +127,14 @@ matchCSRRowRecovery(PositionReduceOp reduction) {
 
 KeyedContribution cloneContributionBodyWithCSRRow(OpBuilder &builder,
                                                   PositionReduceOp reduction,
-                                                  Value position,
+                                                  ValueRange coordinates,
                                                   CSRRowAtPositionOp recovery,
                                                   Value row) {
   Block &source = reduction.getBody().front();
   IRMapping mapping;
-  mapping.map(source.getArgument(0), position);
+  for (auto [argument, coordinate] :
+       llvm::zip(source.getArguments(), coordinates))
+    mapping.map(argument, coordinate);
   mapping.map(recovery.getRow(), row);
   for (Operation &operation : source.without_terminator()) {
     if (&operation == recovery.getOperation())
@@ -155,10 +210,9 @@ public:
         rewriter, loc, op.getOutput(), outputSize, zero, blockSize);
 
     rewriter.setInsertionPointAfter(initialization);
-    Value positionCount =
-        arith::SubIOp::create(rewriter, loc, op.getUpper(), op.getLower());
-    Value workerCount = arith::CeilDivUIOp::create(rewriter, loc, positionCount,
-                                                   chunkSizeValue);
+    Value iterationCount = buildCollapsedIterationCount(rewriter, loc, op);
+    Value workerCount = arith::CeilDivUIOp::create(
+        rewriter, loc, iterationCount, chunkSizeValue);
     auto parallel =
         PositionParallelOp::create(rewriter, loc, workerCount, "thread",
                                    rewriter.getI64IntegerAttr(blockSize));
@@ -170,14 +224,16 @@ public:
     rewriter.setInsertionPointToStart(body);
     Value worker = body->getArgument(0);
     auto chunk =
-        PositionForOp::create(rewriter, loc, op.getLower(), op.getUpper(),
-                              worker, rewriter.getI64IntegerAttr(chunkSize));
+        PositionForOp::create(rewriter, loc, zeroIndex, iterationCount, worker,
+                              rewriter.getI64IntegerAttr(chunkSize));
     Block *chunkBody = rewriter.createBlock(
         &chunk.getBody(), chunk.getBody().end(),
         {rewriter.getIndexType(), rewriter.getIndexType()}, {loc, loc});
     rewriter.setInsertionPointToStart(chunkBody);
+    SmallVector<Value> coordinates =
+        buildLogicalCoordinates(rewriter, loc, op, chunkBody->getArgument(0));
     KeyedContribution contribution =
-        cloneContributionBody(rewriter, op, chunkBody->getArgument(0));
+        cloneContributionBody(rewriter, op, coordinates);
     memref::AtomicRMWOp::create(rewriter, loc, arith::AtomicRMWKind::addf,
                                 contribution.value, op.getOutput(),
                                 ValueRange{contribution.key});
@@ -218,10 +274,9 @@ public:
         rewriter, loc, op.getOutput(), outputSize, zero, blockSize);
 
     rewriter.setInsertionPointAfter(initialization);
-    Value positionCount =
-        arith::SubIOp::create(rewriter, loc, op.getUpper(), op.getLower());
-    Value workerCount = arith::CeilDivUIOp::create(rewriter, loc, positionCount,
-                                                   chunkSizeValue);
+    Value iterationCount = buildCollapsedIterationCount(rewriter, loc, op);
+    Value workerCount = arith::CeilDivUIOp::create(
+        rewriter, loc, iterationCount, chunkSizeValue);
     auto parallel =
         PositionParallelOp::create(rewriter, loc, workerCount, "thread",
                                    rewriter.getI64IntegerAttr(blockSize));
@@ -234,24 +289,25 @@ public:
     Value worker = body->getArgument(0);
     Value chunkOffset =
         arith::MulIOp::create(rewriter, loc, worker, chunkSizeValue);
-    Value begin =
-        arith::AddIOp::create(rewriter, loc, op.getLower(), chunkOffset);
+    Value begin = chunkOffset;
     Value remaining =
-        arith::SubIOp::create(rewriter, loc, op.getUpper(), begin);
+        arith::SubIOp::create(rewriter, loc, iterationCount, begin);
     Value boundedSize =
         arith::MinUIOp::create(rewriter, loc, remaining, chunkSizeValue);
     Value end = arith::AddIOp::create(rewriter, loc, begin, boundedSize);
 
     std::optional<CSRRowAtPositionOp> csrRecovery = matchCSRRowRecovery(op);
+    SmallVector<Value> firstCoordinates =
+        buildLogicalCoordinates(rewriter, loc, op, begin);
     KeyedContribution first;
     if (csrRecovery) {
-      Value firstRow =
-          CSRRowAtPositionOp::create(rewriter, loc, rewriter.getIndexType(),
-                                     csrRecovery->getRowOffsets(), begin);
-      first = cloneContributionBodyWithCSRRow(rewriter, op, begin, *csrRecovery,
-                                              firstRow);
+      Value firstRow = CSRRowAtPositionOp::create(
+          rewriter, loc, rewriter.getIndexType(), csrRecovery->getRowOffsets(),
+          firstCoordinates[0]);
+      first = cloneContributionBodyWithCSRRow(rewriter, op, firstCoordinates,
+                                              *csrRecovery, firstRow);
     } else {
-      first = cloneContributionBody(rewriter, op, begin);
+      first = cloneContributionBody(rewriter, op, firstCoordinates);
     }
 
     Value nextPosition = arith::AddIOp::create(rewriter, loc, begin, oneIndex);
@@ -263,21 +319,23 @@ public:
     }
     auto reduction = scf::ForOp::create(
         rewriter, loc, nextPosition, end, oneIndex, reductionInitializers,
-        [&](OpBuilder &builder, Location bodyLoc, Value position,
+        [&](OpBuilder &builder, Location bodyLoc, Value linearIteration,
             ValueRange iterArgs) {
           Value currentKey = iterArgs[0];
           Value currentValue = iterArgs[1];
           Value nextBoundary;
+          SmallVector<Value> coordinates =
+              buildLogicalCoordinates(builder, bodyLoc, op, linearIteration);
           KeyedContribution contribution;
           if (csrRecovery) {
             CSRRowState rowState = buildNextCSRRowState(
                 builder, bodyLoc, csrRecovery->getRowOffsets(), currentKey,
-                iterArgs[2], position);
+                iterArgs[2], coordinates[0]);
             contribution = cloneContributionBodyWithCSRRow(
-                builder, op, position, *csrRecovery, rowState.row);
+                builder, op, coordinates, *csrRecovery, rowState.row);
             nextBoundary = rowState.nextBoundary;
           } else {
-            contribution = cloneContributionBody(builder, op, position);
+            contribution = cloneContributionBody(builder, op, coordinates);
           }
           Value sameKey =
               arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
@@ -341,10 +399,9 @@ public:
         rewriter, loc, op.getOutput(), outputSize, zero, blockSize);
 
     rewriter.setInsertionPointAfter(initialization);
-    Value positionCount =
-        arith::SubIOp::create(rewriter, loc, op.getUpper(), op.getLower());
+    Value iterationCount = buildCollapsedIterationCount(rewriter, loc, op);
     Value requiredBlocks = arith::CeilDivUIOp::create(
-        rewriter, loc, positionCount, blockSizeValue);
+        rewriter, loc, iterationCount, blockSizeValue);
     Value gridSize =
         arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
     Value waveCount =
@@ -362,16 +419,19 @@ public:
     Value lane = body->getArgument(1);
     auto partition = PositionSpaceOp::create(
         rewriter, loc, rewriter.getIndexType(), rewriter.getIndexType(),
-        op.getLower(), op.getUpper(), wave, waveCount);
-    Value position =
+        zeroIndex, iterationCount, wave, waveCount);
+    Value linearIteration =
         arith::AddIOp::create(rewriter, loc, partition.getBegin(), lane);
-    Value active = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::ult, position, partition.getEnd());
+    Value active =
+        arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
+                              linearIteration, partition.getEnd());
     auto entry = scf::IfOp::create(
         rewriter, loc, active,
         [&](OpBuilder &builder, Location bodyLoc) {
+          SmallVector<Value> coordinates =
+              buildLogicalCoordinates(builder, bodyLoc, op, linearIteration);
           KeyedContribution contribution =
-              cloneContributionBody(builder, op, position);
+              cloneContributionBody(builder, op, coordinates);
           scf::YieldOp::create(
               builder, bodyLoc,
               ValueRange{contribution.key, contribution.value});

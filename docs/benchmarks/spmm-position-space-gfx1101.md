@@ -8,8 +8,9 @@ than the existing row-owned mappings.
 
 ## Schedule
 
-The decomposition collapses the sparse-position and dense-column axes into one
-logical iteration space:
+The decomposition describes sparse-position and dense-column axes in a rank-2
+keyed reduction. The generic position scheduler collapses them into one logical
+worker space:
 
 ```text
 linear iteration i in [0, NNZ * rhsColumns)

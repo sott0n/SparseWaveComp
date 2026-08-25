@@ -579,40 +579,46 @@ def SparseWave_PositionParallelOp : SparseWave_Op<"position_parallel",
 }
 
 def SparseWave_PositionReduceOp : SparseWave_Op<"position_reduce",
-    [SingleBlockImplicitTerminator<"YieldOp">, RecursiveMemoryEffects]> {
-  let summary = "Reduce values produced over a sparse position range";
+    [AttrSizedOperandSegments, SingleBlockImplicitTerminator<"YieldOp">,
+     RecursiveMemoryEffects]> {
+  let summary = "Reduce values produced over a logical position domain";
   let description = [{
     `sparsewave.position_reduce` describes an operator-independent keyed
-    reduction over a half-open range of stored sparse positions. Its region
-    receives one position and yields an index key and a floating-point value.
-    Values with the same key are reduced into the corresponding element of the
-    output memref.
+    reduction over a rectangular logical position domain. Lower and upper
+    bounds are listed in logical axis order. The `order` permutation lists the
+    axes from outermost to innermost when the domain is collapsed for work
+    distribution, while region arguments remain in logical axis order. The
+    region yields an index key and a floating-point value. Values with the same
+    key are reduced into the corresponding element of the output memref.
 
-    The operation expresses reduction semantics without choosing how positions
-    are distributed. A scheduling pass may map the range to independent
-    threads or cooperating waves and select the corresponding atomic or
-    segmented reduction implementation.
+    The operation expresses reduction semantics and target-independent axis
+    order without choosing how collapsed workers are distributed. A scheduling
+    pass may map them to independent threads or cooperating waves and select
+    the corresponding atomic or segmented reduction implementation.
 
     ```mlir
-    sparsewave.position_reduce %lower to %upper into %output kind = "sum" {
-    ^bb0(%position: index):
-      %key, %value = // derive a keyed contribution from %position
+    sparsewave.position_reduce lower (%zero, %zero)
+        upper (%positions, %columns) order = [1, 0]
+        into %output kind = "sum" {
+    ^bb0(%position: index, %column: index):
+      %key, %value = // derive a keyed contribution from both axes
       sparsewave.yield %key, %value : index, f32
-    } : index, memref<?xf32>
+    } : memref<?xf32>
     ```
 
     `kind = "sum"` zero-initializes the output before accumulating values.
   }];
 
-  let arguments = (ins Index:$lower, Index:$upper,
+  let arguments = (ins Variadic<Index>:$lower, Variadic<Index>:$upper,
+                       DenseI64ArrayAttr:$order,
                        Arg<AnyMemRef, "dense reduction output",
                            [MemWrite]>:$output,
                        StrAttr:$kind);
   let regions = (region SizedRegion<1>:$body);
 
   let assemblyFormat = [{
-    $lower `to` $upper `into` $output `kind` `=` $kind $body attr-dict `:`
-    type($lower) `,` type($output)
+    `lower` `(` $lower `)` `upper` `(` $upper `)` `order` `=` $order
+    `into` $output `kind` `=` $kind $body attr-dict `:` type($output)
   }];
 
   let hasVerifier = 1;

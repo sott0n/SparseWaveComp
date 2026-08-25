@@ -13,6 +13,8 @@ BASELINE_MAPPING = "thread-per-output"
 TILED_MAPPING = "wave-per-row-tile"
 POSITION_MAPPING = "thread-per-position"
 MAPPINGS = (BASELINE_MAPPING, TILED_MAPPING, POSITION_MAPPING)
+POSITION_ORDERS = ("position-major", "rhs-major")
+POSITION_REDUCTIONS = ("atomic", "segmented")
 FORMATS = ("csr", "bsr")
 RESULT_COLUMNS = (
     "chip",
@@ -25,6 +27,8 @@ RESULT_COLUMNS = (
     "wave_size",
     "tile_size",
     "position_chunk_size",
+    "position_order",
+    "position_reduction",
     "storage_block_size",
     "rows",
     "input_cols",
@@ -71,6 +75,8 @@ REPORT = common.BenchmarkReport(
         "block_size",
         "tile_size",
         "position_chunk_size",
+        "position_order",
+        "position_reduction",
         "mapping",
     ),
     metrics=("median_us", "p95_us", "gproducts_per_sec", "gflops"),
@@ -85,6 +91,8 @@ ROCSPARSE_REPORT = common.BenchmarkReport(
         "block_size",
         "tile_size",
         "position_chunk_size",
+        "position_order",
+        "position_reduction",
         "mapping",
     ),
     metrics=("median_us", "p95_us", "gproducts_per_sec", "gflops"),
@@ -100,6 +108,8 @@ RESOURCE_REPORT = common.BenchmarkReport(
         "block_size",
         "tile_size",
         "position_chunk_size",
+        "position_order",
+        "position_reduction",
         "mapping",
     ),
     metrics=common.GPU_RESOURCE_METRICS,
@@ -179,16 +189,67 @@ def parse_mappings(value):
     return values
 
 
-def benchmark_cases(block_sizes, tile_sizes, position_chunk_sizes, mappings):
+def parse_position_orders(value):
+    values = [item.strip() for item in value.split(",") if item.strip()]
+    invalid = [item for item in values if item not in POSITION_ORDERS]
+    if not values:
+        raise argparse.ArgumentTypeError("expected at least one position order")
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            f"unknown position orders {invalid}; expected {POSITION_ORDERS}"
+        )
+    if len(values) != len(set(values)):
+        raise argparse.ArgumentTypeError(
+            f"duplicate position orders are not allowed: {values}"
+        )
+    return values
+
+
+def parse_position_reductions(value):
+    values = [item.strip() for item in value.split(",") if item.strip()]
+    invalid = [item for item in values if item not in POSITION_REDUCTIONS]
+    if not values:
+        raise argparse.ArgumentTypeError(
+            "expected at least one position reduction"
+        )
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            f"unknown position reductions {invalid}; "
+            f"expected {POSITION_REDUCTIONS}"
+        )
+    if len(values) != len(set(values)):
+        raise argparse.ArgumentTypeError(
+            f"duplicate position reductions are not allowed: {values}"
+        )
+    return values
+
+
+def benchmark_cases(
+    block_sizes,
+    tile_sizes,
+    position_chunk_sizes,
+    position_orders,
+    position_reductions,
+    mappings,
+):
     for block_size in block_sizes:
         if BASELINE_MAPPING in mappings:
-            yield BASELINE_MAPPING, block_size, None, None
+            yield BASELINE_MAPPING, block_size, None, None, None, None
         if TILED_MAPPING in mappings:
             for tile_size in tile_sizes:
-                yield TILED_MAPPING, block_size, tile_size, None
+                yield TILED_MAPPING, block_size, tile_size, None, None, None
         if POSITION_MAPPING in mappings:
             for chunk_size in position_chunk_sizes:
-                yield POSITION_MAPPING, block_size, None, chunk_size
+                for order in position_orders:
+                    for reduction in position_reductions:
+                        yield (
+                            POSITION_MAPPING,
+                            block_size,
+                            None,
+                            chunk_size,
+                            order,
+                            reduction,
+                        )
 
 
 def sparsewave_kernel_layout(mapping):
@@ -211,6 +272,8 @@ def result_row(
     conversion_us=None,
     implementation="sparsewave",
     preprocess_us=None,
+    position_order=None,
+    position_reduction=None,
 ):
     matrix = args.matrix_data
     products = matrix["nnz"] * rhs_columns
@@ -228,6 +291,8 @@ def result_row(
         ),
         "tile_size": tile_size,
         "position_chunk_size": position_chunk_size,
+        "position_order": position_order,
+        "position_reduction": position_reduction,
         "storage_block_size": (
             bsr_data["block_size"] if bsr_data is not None else None
         ),
@@ -271,6 +336,8 @@ def build_metadata(args, repository, commands):
             "rhs_columns": args.rhs_columns,
             "tile_sizes": args.tile_sizes,
             "position_chunk_sizes": args.position_chunk_sizes,
+            "position_orders": args.position_orders,
+            "position_reductions": args.position_reductions,
             "mappings": args.mappings,
             "formats": args.formats,
             "bsr_block_sizes": args.bsr_block_sizes,
@@ -413,6 +480,24 @@ def parse_arguments(argv):
             "by each thread-per-position worker."
         ),
     )
+    parser.add_argument(
+        "--position-orders",
+        type=parse_position_orders,
+        default=parse_position_orders("position-major,rhs-major"),
+        help=(
+            "Comma-separated collapsed iteration orders for "
+            "thread-per-position: position-major,rhs-major."
+        ),
+    )
+    parser.add_argument(
+        "--position-reductions",
+        type=parse_position_reductions,
+        default=parse_position_reductions("atomic,segmented"),
+        help=(
+            "Comma-separated reduction strategies for "
+            "thread-per-position: atomic,segmented."
+        ),
+    )
     common.add_common_arguments(parser, repository)
     args = parser.parse_args(argv)
     common.configure_common_arguments(args)
@@ -463,10 +548,19 @@ def main(argv=None):
                     rhs_columns,
                     args.warmup + args.iterations,
                 )
-                for mapping, block_size, tile_size, chunk_size in benchmark_cases(
+                for (
+                    mapping,
+                    block_size,
+                    tile_size,
+                    chunk_size,
+                    position_order,
+                    position_reduction,
+                ) in benchmark_cases(
                     args.block_sizes,
                     args.tile_sizes,
                     args.position_chunk_sizes,
+                    args.position_orders,
+                    args.position_reductions,
                     args.mappings,
                 ):
                     case_directory = (
@@ -481,9 +575,14 @@ def main(argv=None):
                         case_directory /= f"tile-{tile_size}"
                         pipeline_options = (f"spmm-tile-size={tile_size}",)
                     if chunk_size is not None:
-                        case_directory /= f"chunk-{chunk_size}"
+                        case_directory /= (
+                            f"chunk-{chunk_size}"
+                            f"-{position_order}-{position_reduction}"
+                        )
                         pipeline_options = (
                             f"spmm-position-chunk-size={chunk_size}",
+                            f"spmm-position-order={position_order}",
+                            f"spmm-position-reduction={position_reduction}",
                         )
                     kernels_per_dispatch, compute_binary_index = (
                         sparsewave_kernel_layout(mapping)
@@ -519,6 +618,8 @@ def main(argv=None):
                             timing,
                             resources,
                             conversion_us=csr_conversion_us,
+                            position_order=position_order,
+                            position_reduction=position_reduction,
                         )
                     )
                     commands.append(
@@ -529,6 +630,8 @@ def main(argv=None):
                             "mapping": mapping,
                             "tile_size": tile_size,
                             "position_chunk_size": chunk_size,
+                            "position_order": position_order,
+                            "position_reduction": position_reduction,
                             "compile": compile_command,
                             "resources": resource_command,
                             "profile": profile_command,

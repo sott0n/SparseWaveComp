@@ -130,12 +130,18 @@ def DecomposePositionSpMM
     : Pass<"decompose-position-spmm", "::mlir::ModuleOp"> {
   let summary = "Decompose CSR SpMM into a keyed position reduction";
   let description = [{
-    Rewrites sparsewave.spmm into sparsewave.position_reduce. The sparse
-    position and dense output-column axes are collapsed into one linear
-    iteration space. The reduction region recovers both axes and yields the
+    Rewrites sparsewave.spmm into a rank-2 sparsewave.position_reduce whose
+    logical axes are sparse position and dense output column. The selected
+    iteration order is recorded as a generic axis permutation; the reduction
+    region remains independent from collapse arithmetic and yields the
     flattened output coordinate together with the sparse-dense product. No
     parallel mapping or GPU launch strategy is selected.
   }];
+  let options = [
+    Option<"iterationOrder", "iteration-order", "std::string",
+           /*default=*/"\"position-major\"",
+           "Collapsed iteration order: position-major or rhs-major">
+  ];
   let dependentDialects = [
     "arith::ArithDialect",
     "memref::MemRefDialect",
@@ -149,13 +155,15 @@ def ScheduleSparseWavePosition
   let description = [{
     Rewrites sparsewave.position_reduce into explicit position scheduling
     operations. The pass is independent of the operator and storage format
-    that produced each keyed contribution. Thread mapping splits the position
-    range into configurable sequential chunks. It can either atomically
-    accumulate every position or combine adjacent equal-key contributions
-    locally before atomic accumulation. For CSR positions, the segmented form
-    also carries the recovered row across the chunk.
-    Wave mapping uses balanced position-space partitions and first combines
-    adjacent equal keys with a segmented reduction.
+    that produced each keyed contribution. It collapses an arbitrary-rank
+    logical position domain according to its order permutation and recovers
+    logical coordinates inside each worker. Thread mapping splits the
+    collapsed range into configurable sequential chunks. It can either
+    atomically accumulate every iteration or combine adjacent equal-key
+    contributions locally before atomic accumulation. For a rank-1 CSR
+    position domain, the segmented form also carries the recovered row across
+    the chunk. Wave mapping uses balanced collapsed-space partitions and first
+    combines adjacent equal keys with a segmented reduction.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",

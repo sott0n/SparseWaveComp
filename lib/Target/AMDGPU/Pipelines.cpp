@@ -255,18 +255,20 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
     pm.addPass(createScheduleSparseWavePosition(scheduleOptions));
   }
 
-  // Collapse CSR positions and RHS columns into an operator-independent keyed
-  // reduction before applying the same thread position scheduler used by
-  // SpMV. Each contribution is accumulated atomically because adjacent
-  // position-column pairs do not generally share an output key.
+  // Reorder and collapse CSR positions and RHS columns into an
+  // operator-independent keyed reduction before applying the same thread
+  // position scheduler used by SpMV. Position-major preserves the original
+  // schedule; RHS-major exposes adjacent equal-key row segments.
   bool usesPositionSpMM = options.spmmMapping == "thread-per-position";
   if (usesPositionSpMM) {
-    pm.addPass(createDecomposePositionSpMM());
+    DecomposePositionSpMMOptions decompositionOptions;
+    decompositionOptions.iterationOrder = options.spmmPositionOrder;
+    pm.addPass(createDecomposePositionSpMM(decompositionOptions));
     ScheduleSparseWavePositionOptions scheduleOptions;
     scheduleOptions.mapping = "thread";
     scheduleOptions.blockSize = options.spmmBlockSize;
     scheduleOptions.threadChunkSize = options.spmmPositionChunkSize;
-    scheduleOptions.threadReduction = "atomic";
+    scheduleOptions.threadReduction = options.spmmPositionReduction;
     pm.addPass(createScheduleSparseWavePosition(scheduleOptions));
   }
 

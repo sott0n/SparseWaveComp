@@ -206,17 +206,21 @@ LogicalResult verifyBSRStorage(Operation *op, MemRefType blockRowOffsetsType,
   return success();
 }
 
-LogicalResult verifyPositionAxes(Operation *op, OperandRange lowerBounds,
-                                 OperandRange upperBounds,
-                                 ArrayRef<int64_t> order, Region &body) {
+LogicalResult verifyPositionDomain(Operation *op, OperandRange lowerBounds,
+                                   OperandRange upperBounds,
+                                   ArrayRef<int64_t> order,
+                                   unsigned minimumRank) {
   unsigned rank = lowerBounds.size();
   if (rank != upperBounds.size())
     return op->emitOpError()
            << "lower and upper bounds must have the same number of axes, but "
               "got "
            << rank << " and " << upperBounds.size();
-  if (rank < 2)
+  if (rank < minimumRank) {
+    if (minimumRank == 1)
+      return op->emitOpError() << "requires at least one logical axis";
     return op->emitOpError() << "requires at least two axes, but got " << rank;
+  }
 
   if (order.size() != rank)
     return op->emitOpError()
@@ -250,7 +254,18 @@ LogicalResult verifyPositionAxes(Operation *op, OperandRange lowerBounds,
              << ", but got " << *lower << " and " << *upper;
   }
 
+  return success();
+}
+
+LogicalResult verifyPositionAxes(Operation *op, OperandRange lowerBounds,
+                                 OperandRange upperBounds,
+                                 ArrayRef<int64_t> order, Region &body) {
+  if (failed(verifyPositionDomain(op, lowerBounds, upperBounds, order,
+                                  /*minimumRank=*/2)))
+    return failure();
+
   Block &bodyBlock = body.front();
+  unsigned rank = lowerBounds.size();
   if (bodyBlock.getNumArguments() != rank)
     return op->emitOpError()
            << "body must have one argument per logical axis, but got "
@@ -625,21 +640,19 @@ LogicalResult PositionReduceOp::verify() {
     return emitOpError() << "output must have floating-point elements, but got "
                          << valueType;
 
-  std::optional<int64_t> lower = matchConstantIndex(getLower());
-  std::optional<int64_t> upper = matchConstantIndex(getUpper());
-  if (lower && *lower < 0)
-    return emitOpError() << "lower bound must be nonnegative, but got "
-                         << *lower;
-  if (upper && *upper < 0)
-    return emitOpError() << "upper bound must be nonnegative, but got "
-                         << *upper;
-  if (lower && upper && *lower > *upper)
-    return emitOpError() << "lower bound must not exceed upper bound, but got "
-                         << *lower << " and " << *upper;
+  if (failed(verifyPositionDomain(*this, getLower(), getUpper(), getOrder(),
+                                  /*minimumRank=*/1)))
+    return failure();
 
   Block &body = getBody().front();
-  if (body.getNumArguments() != 1 || !body.getArgument(0).getType().isIndex())
-    return emitOpError() << "body must have one index position argument";
+  unsigned rank = getLower().size();
+  if (body.getNumArguments() != rank)
+    return emitOpError()
+           << "body must have one argument per logical axis, but got "
+           << body.getNumArguments() << " for " << rank << " axes";
+  for (BlockArgument argument : body.getArguments())
+    if (!argument.getType().isIndex())
+      return emitOpError() << "body arguments must have index type";
   auto yield = dyn_cast<YieldOp>(body.getTerminator());
   if (!yield || yield.getResults().size() != 2 ||
       !yield.getResults()[0].getType().isIndex() ||

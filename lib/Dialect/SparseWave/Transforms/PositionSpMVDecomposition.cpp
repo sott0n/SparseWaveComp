@@ -26,8 +26,9 @@ public:
     Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value nonzeroCount =
         memref::DimOp::create(rewriter, loc, op.getValues(), zero);
-    auto reduction = PositionReduceOp::create(rewriter, loc, zero, nonzeroCount,
-                                              op.getOutput(), "sum");
+    auto reduction = PositionReduceOp::create(
+        rewriter, loc, ValueRange{zero}, ValueRange{nonzeroCount},
+        rewriter.getDenseI64ArrayAttr({0}), op.getOutput(), "sum");
     Block *body =
         rewriter.createBlock(&reduction.getBody(), reduction.getBody().end(),
                              {rewriter.getIndexType()}, {loc});

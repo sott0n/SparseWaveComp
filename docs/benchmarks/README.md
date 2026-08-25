@@ -13,7 +13,7 @@ be included as CSR baselines.
 | --- | --- | --- | --- |
 | SpMV | CSR | `--formats=csr`; `--position-chunk-sizes` selects consecutive positions processed by each `thread-per-position` worker; `--position-reductions=atomic,segmented` compares per-position atomics with chunk-local segmented sums | `thread-per-row`, `thread-per-position`, `wave-per-position`, `wave-per-row`, `block-per-row` |
 | SpMV | COO | `--formats=coo` | `thread-per-nonzero` |
-| SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths; `--position-chunk-sizes` selects consecutive flattened `(position, RHS column)` pairs processed by each position worker | `thread-per-output`, `wave-per-row-tile`, `thread-per-position` |
+| SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths; `--position-chunk-sizes` selects consecutive flattened pairs; `--position-orders=position-major,rhs-major` reorders the position and RHS-column axes; `--position-reductions=atomic,segmented` selects contribution aggregation | `thread-per-output`, `wave-per-row-tile`, `thread-per-position` |
 | SpMM | BSR | `--formats=bsr`; `--bsr-block-sizes` selects square storage block sizes | `thread-per-output` |
 
 Multiple formats can be evaluated in one invocation, for example
@@ -95,3 +95,6 @@ environment, reproduction commands, performance data, and interpretation:
 - [gfx1101 position-space SpMM baseline](spmm-position-space-gfx1101.md)
   evaluates the reusable flattened position scheduler on SpMM and identifies
   the costs that remain before a load-balanced position schedule can compete.
+- [gfx1101 position-space SpMM reorder](spmm-position-reorder-gfx1101.md)
+  separates position/RHS-axis reorder from segmented reduction and compares
+  the combined schedule with the existing row-owned mappings.

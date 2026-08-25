@@ -213,27 +213,51 @@ amdhsa.kernels:
     def test_benchmark_cases_run_each_baseline_once(self):
         cases = list(
             BENCHMARK.benchmark_cases(
-                [64, 128],
-                [1, 4, 8],
-                [1, 4],
+                [64],
+                [4],
+                [4],
+                ["position-major", "rhs-major"],
+                ["atomic", "segmented"],
                 list(BENCHMARK.MAPPINGS),
             )
         )
         self.assertEqual(
             cases,
             [
-                ("thread-per-output", 64, None, None),
-                ("wave-per-row-tile", 64, 1, None),
-                ("wave-per-row-tile", 64, 4, None),
-                ("wave-per-row-tile", 64, 8, None),
-                ("thread-per-position", 64, None, 1),
-                ("thread-per-position", 64, None, 4),
-                ("thread-per-output", 128, None, None),
-                ("wave-per-row-tile", 128, 1, None),
-                ("wave-per-row-tile", 128, 4, None),
-                ("wave-per-row-tile", 128, 8, None),
-                ("thread-per-position", 128, None, 1),
-                ("thread-per-position", 128, None, 4),
+                ("thread-per-output", 64, None, None, None, None),
+                ("wave-per-row-tile", 64, 4, None, None, None),
+                (
+                    "thread-per-position",
+                    64,
+                    None,
+                    4,
+                    "position-major",
+                    "atomic",
+                ),
+                (
+                    "thread-per-position",
+                    64,
+                    None,
+                    4,
+                    "position-major",
+                    "segmented",
+                ),
+                (
+                    "thread-per-position",
+                    64,
+                    None,
+                    4,
+                    "rhs-major",
+                    "atomic",
+                ),
+                (
+                    "thread-per-position",
+                    64,
+                    None,
+                    4,
+                    "rhs-major",
+                    "segmented",
+                ),
             ],
         )
 
@@ -262,9 +286,10 @@ amdhsa.kernels:
                 str(source),
                 (
                     "--pass-pipeline=builtin.module("
-                    "decompose-position-spmm,"
+                    "decompose-position-spmm{iteration-order=rhs-major},"
                     "schedule-sparsewave-position{mapping=thread "
-                    "block-size=64 thread-chunk-size=4},"
+                    "block-size=64 thread-chunk-size=4 "
+                    "thread-reduction=segmented},"
                     "convert-sparsewave-to-gpu{"
                     "spmm-mapping=thread-per-output "
                     "spmm-block-size=64 position-block-size=64})"
@@ -290,6 +315,8 @@ amdhsa.kernels:
             wave_size=32,
             tile_sizes=[1, 4, 32],
             position_chunk_sizes=[1, 4, 8],
+            position_orders=list(BENCHMARK.POSITION_ORDERS),
+            position_reductions=list(BENCHMARK.POSITION_REDUCTIONS),
             mappings=list(BENCHMARK.MAPPINGS),
             bsr_block_sizes=[2, 4, 8],
             formats=["csr", "bsr"],
@@ -322,6 +349,20 @@ amdhsa.kernels:
         )
         with self.assertRaisesRegex(argparse.ArgumentTypeError, "unknown"):
             BENCHMARK.parse_mappings("block-per-row")
+
+    def test_position_options_are_validated(self):
+        self.assertEqual(
+            BENCHMARK.parse_position_orders("position-major,rhs-major"),
+            ["position-major", "rhs-major"],
+        )
+        self.assertEqual(
+            BENCHMARK.parse_position_reductions("atomic,segmented"),
+            ["atomic", "segmented"],
+        )
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "unknown"):
+            BENCHMARK.parse_position_orders("diagonal")
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "unknown"):
+            BENCHMARK.parse_position_reductions("tree")
 
 
 if __name__ == "__main__":

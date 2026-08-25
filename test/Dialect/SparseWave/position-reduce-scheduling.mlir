@@ -7,6 +7,9 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='mapping=thread block-size=64 thread-chunk-size=4 thread-reduction=segmented' \
 // RUN:   | FileCheck %s --check-prefix=SEGMENTED
+// RUN: sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=thread block-size=64' \
+// RUN:   | FileCheck %s --check-prefix=MULTI-AXIS
 
 // This keyed reduction deliberately has no CSR or SpMV operations. It verifies
 // that position scheduling depends only on position_reduce semantics.
@@ -47,11 +50,42 @@ func.func @keyed_sum(%values: memref<?xf32>, %output: memref<?xf32>) {
   %zero = arith.constant 0 : index
   %keys = arith.constant 4 : index
   %upper = memref.dim %values, %zero : memref<?xf32>
-  sparsewave.position_reduce %zero to %upper into %output kind = "sum" {
+  sparsewave.position_reduce lower (%zero) upper (%upper) order = [0]
+      into %output kind = "sum" {
   ^bb0(%position: index):
     %key = arith.remui %position, %keys : index
     %value = memref.load %values[%position] : memref<?xf32>
     sparsewave.yield %key, %value : index, f32
-  } : index, memref<?xf32>
+  } : memref<?xf32>
+  return
+}
+
+// This rank-2 reduction verifies that collapse order and coordinate recovery
+// belong to the generic scheduler rather than an SpMM decomposition pattern.
+
+// MULTI-AXIS-LABEL: func.func @multi_axis_keyed_sum(
+// MULTI-AXIS-NOT: sparsewave.position_reduce
+// MULTI-AXIS: %[[COUNT:.*]] = arith.muli
+// MULTI-AXIS: sparsewave.position_for
+// MULTI-AXIS: arith.remui
+// MULTI-AXIS: arith.divui
+// MULTI-AXIS: memref.load %{{.*}}[%{{.*}}, %{{.*}}]
+// MULTI-AXIS: memref.atomic_rmw addf
+
+func.func @multi_axis_keyed_sum(%values: memref<?x?xf32>,
+                                %output: memref<?xf32>) {
+  %zero = arith.constant 0 : index
+  %positions = memref.dim %values, %zero : memref<?x?xf32>
+  %one = arith.constant 1 : index
+  %columns = memref.dim %values, %one : memref<?x?xf32>
+  sparsewave.position_reduce lower (%zero, %zero)
+      upper (%positions, %columns) order = [1, 0]
+      into %output kind = "sum" {
+  ^bb0(%position: index, %column: index):
+    %rowBase = arith.muli %position, %columns : index
+    %key = arith.addi %rowBase, %column : index
+    %value = memref.load %values[%position, %column] : memref<?x?xf32>
+    sparsewave.yield %key, %value : index, f32
+  } : memref<?xf32>
   return
 }

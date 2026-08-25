@@ -1134,6 +1134,9 @@ REPORT_COLUMNS = {
     "position_chunk_size": TableColumn(
         "chunk", "position_chunk_size", 5, "d"
     ),
+    "position_order": TableColumn(
+        "order", "position_order", 14, alignment="<"
+    ),
     "position_reduction": TableColumn(
         "reduction", "position_reduction", 9, alignment="<"
     ),
