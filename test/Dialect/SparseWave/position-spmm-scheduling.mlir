@@ -10,6 +10,9 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(decompose-position-spmm,reorder-sparsewave-position{order=rhs,position},schedule-sparsewave-position{mapping=thread block-size=128 thread-chunk-size=4 thread-reduction=segmented})' \
 // RUN:   | FileCheck %s --check-prefix=RHS-SEGMENTED
+// RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(decompose-position-spmm,schedule-sparsewave-position{mapping=wave block-size=64 wave-size=32 cooperative-axis=rhs})' \
+// RUN:   | FileCheck %s --check-prefix=WAVE-COOPERATIVE
 
 // DECOMPOSE-LABEL: func.func @spmm(
 // DECOMPOSE: %[[NNZ:.*]] = memref.dim %{{.*}}, %{{.*}} : memref<?xf32>
@@ -58,6 +61,22 @@
 // RHS-SEGMENTED: memref.atomic_rmw addf
 // RHS-SEGMENTED: memref.atomic_rmw addf
 // RHS-SEGMENTED-NOT: sparsewave.spmm
+
+// WAVE-COOPERATIVE-LABEL: func.func @spmm(
+// WAVE-COOPERATIVE: sparsewave.position_parallel %{{.*}} mapping = "wave" block_size = 64 {
+// WAVE-COOPERATIVE: scf.if %{{.*}} -> (index) {
+// WAVE-COOPERATIVE:   sparsewave.csr_row_at_position
+// WAVE-COOPERATIVE: gpu.shuffle idx %{{.*}} : i64
+// WAVE-COOPERATIVE: scf.if %{{.*}} -> (i32) {
+// WAVE-COOPERATIVE:   memref.load %{{.*}}[%{{.*}}] : memref<?xi32>
+// WAVE-COOPERATIVE: gpu.shuffle idx %{{.*}} : i32
+// WAVE-COOPERATIVE: scf.if %{{.*}} -> (f32) {
+// WAVE-COOPERATIVE:   memref.load %{{.*}}[%{{.*}}] : memref<?xf32>
+// WAVE-COOPERATIVE: gpu.shuffle idx %{{.*}} : f32
+// WAVE-COOPERATIVE: scf.if %{{.*}} {
+// WAVE-COOPERATIVE:   memref.load %{{.*}}[%{{.*}}, %{{.*}}] : memref<?x?xf32>
+// WAVE-COOPERATIVE:   memref.atomic_rmw addf
+// WAVE-COOPERATIVE-NOT: sparsewave.spmm
 
 func.func @spmm(
     %rowOffsets: memref<?xi32>,

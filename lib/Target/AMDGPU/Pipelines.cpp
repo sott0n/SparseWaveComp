@@ -259,7 +259,10 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   // operator-independent pass selects the logical axis order before applying
   // the same position scheduler used by SpMV. Position-major preserves the
   // original schedule; RHS-major exposes adjacent equal-key row segments.
-  bool usesPositionSpMM = options.spmmMapping == "thread-per-position";
+  // Wave-per-position-tile assigns the RHS axis to cooperating lanes so that
+  // CSR information shared by those columns is loaded once and broadcast.
+  bool usesPositionSpMM = options.spmmMapping == "thread-per-position" ||
+                          options.spmmMapping == "wave-per-position-tile";
   if (usesPositionSpMM) {
     pm.addPass(createDecomposePositionSpMM());
     ReorderSparseWavePositionOptions reorderOptions;
@@ -271,8 +274,13 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
       reorderOptions.order = {options.spmmPositionOrder};
     pm.addPass(createReorderSparseWavePosition(reorderOptions));
     ScheduleSparseWavePositionOptions scheduleOptions;
-    scheduleOptions.mapping = "thread";
+    scheduleOptions.mapping =
+        options.spmmMapping == "thread-per-position" ? "thread" : "wave";
     scheduleOptions.blockSize = options.spmmBlockSize;
+    scheduleOptions.waveSize =
+        static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
+    if (options.spmmMapping == "wave-per-position-tile")
+      scheduleOptions.cooperativeAxis = "rhs";
     scheduleOptions.threadChunkSize = options.spmmPositionChunkSize;
     scheduleOptions.threadReduction = options.spmmPositionReduction;
     pm.addPass(createScheduleSparseWavePosition(scheduleOptions));

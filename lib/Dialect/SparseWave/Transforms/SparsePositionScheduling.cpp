@@ -10,7 +10,9 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/DenseSet.h"
 
 namespace mlir::sparsewave {
 #define GEN_PASS_DEF_SCHEDULESPARSEWAVEPOSITION
@@ -77,6 +79,57 @@ SmallVector<Value> buildLogicalCoordinates(OpBuilder &builder, Location loc,
   return coordinates;
 }
 
+std::optional<unsigned> findAxis(PositionReduceOp reduction,
+                                 StringRef axisName) {
+  for (auto [index, attribute] : llvm::enumerate(reduction.getAxes()))
+    if (cast<StringAttr>(attribute).getValue() == axisName)
+      return index;
+  return std::nullopt;
+}
+
+SmallVector<Value> buildCooperativeCoordinates(OpBuilder &builder, Location loc,
+                                               PositionReduceOp reduction,
+                                               Value linearWorker,
+                                               unsigned cooperativeAxis,
+                                               Value axisGroupCount, Value lane,
+                                               Value participantCount) {
+  unsigned rank = reduction.getLower().size();
+  SmallVector<Value> coordinates(rank);
+  Value remaining = linearWorker;
+  ArrayRef<int64_t> order = reduction.getOrder();
+  // Decode a wave worker as if the cooperative axis had been split into
+  // wave-sized groups. The participant ID materializes the inner split.
+  for (size_t orderIndex = order.size(); orderIndex > 0; --orderIndex) {
+    unsigned axis = order[orderIndex - 1];
+    Value extent =
+        axis == cooperativeAxis
+            ? axisGroupCount
+            : arith::SubIOp::create(builder, loc, reduction.getUpper()[axis],
+                                    reduction.getLower()[axis]);
+    Value offset = arith::RemUIOp::create(builder, loc, remaining, extent);
+    remaining = arith::DivUIOp::create(builder, loc, remaining, extent);
+    if (axis == cooperativeAxis) {
+      coordinates[axis] = offset;
+      continue;
+    }
+    Value lower = reduction.getLower()[axis];
+    coordinates[axis] =
+        matchPattern(lower, m_Zero())
+            ? offset
+            : arith::AddIOp::create(builder, loc, lower, offset);
+  }
+
+  Value groupOffset = arith::MulIOp::create(
+      builder, loc, coordinates[cooperativeAxis], participantCount);
+  Value laneOffset = arith::AddIOp::create(builder, loc, groupOffset, lane);
+  Value lower = reduction.getLower()[cooperativeAxis];
+  coordinates[cooperativeAxis] =
+      matchPattern(lower, m_Zero())
+          ? laneOffset
+          : arith::AddIOp::create(builder, loc, lower, laneOffset);
+  return coordinates;
+}
+
 PositionParallelOp buildOutputInitialization(PatternRewriter &rewriter,
                                              Location loc, Value output,
                                              Value outputSize, Value zero,
@@ -108,6 +161,141 @@ KeyedContribution cloneContributionBody(OpBuilder &builder,
   auto yield = cast<YieldOp>(source.getTerminator());
   return {mapping.lookup(yield.getResults()[0]),
           mapping.lookup(yield.getResults()[1])};
+}
+
+Value buildZero(OpBuilder &builder, Location loc, Type type) {
+  if (type.isIndex())
+    return arith::ConstantIndexOp::create(builder, loc, 0);
+  return arith::ConstantOp::create(builder, loc, builder.getZeroAttr(type));
+}
+
+Value buildLaneZeroBroadcast(OpBuilder &builder, Location loc, Value value,
+                             int64_t waveSize) {
+  if (value.getType().isIndex()) {
+    Value valueI64 =
+        arith::IndexCastOp::create(builder, loc, builder.getI64Type(), value);
+    Value broadcastI64 = gpu::ShuffleOp::create(builder, loc, valueI64, 0,
+                                                waveSize, gpu::ShuffleMode::IDX)
+                             .getShuffleResult();
+    return arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
+                                      broadcastI64);
+  }
+  return gpu::ShuffleOp::create(builder, loc, value, 0, waveSize,
+                                gpu::ShuffleMode::IDX)
+      .getShuffleResult();
+}
+
+bool isReadOnlyBroadcastCandidate(Operation &operation) {
+  if (operation.getNumRegions() != 0 || operation.getNumResults() == 0)
+    return false;
+  if (!llvm::all_of(operation.getResultTypes(), [](Type type) {
+        return type.isIndex() || isa<IntegerType, FloatType>(type);
+      }))
+    return false;
+  std::optional<SmallVector<MemoryEffects::EffectInstance>> effects =
+      getEffectsRecursively(&operation);
+  return effects && !effects->empty() &&
+         llvm::all_of(*effects, [](MemoryEffects::EffectInstance &effect) {
+           return isa<MemoryEffects::Read>(effect.getEffect());
+         });
+}
+
+bool isMappedOrCaptured(Value value, Block &source, IRMapping &mapping) {
+  if (mapping.contains(value))
+    return true;
+  auto argument = dyn_cast<BlockArgument>(value);
+  if (argument)
+    return argument.getOwner() != &source;
+  Operation *definition = value.getDefiningOp();
+  return !definition || definition->getBlock() != &source;
+}
+
+struct CooperativeBodyMapping {
+  IRMapping values;
+  llvm::DenseSet<Operation *> hoistedOperations;
+};
+
+CooperativeBodyMapping
+buildCooperativeBodyMapping(OpBuilder &builder, Location loc,
+                            PositionReduceOp reduction, ValueRange coordinates,
+                            unsigned cooperativeAxis, Value lane,
+                            int64_t waveSize) {
+  Block &source = reduction.getBody().front();
+  CooperativeBodyMapping result;
+  for (auto [argument, coordinate] :
+       llvm::zip(source.getArguments(), coordinates))
+    result.values.map(argument, coordinate);
+
+  llvm::DenseSet<Value> laneDependentValues;
+  laneDependentValues.insert(source.getArgument(cooperativeAxis));
+  Value zeroIndex = arith::ConstantIndexOp::create(builder, loc, 0);
+  Value laneIsZero = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::eq, lane, zeroIndex);
+
+  // Track dependence on the selected axis through the contribution body.
+  // Uniform pure operations are hoisted. Uniform reads execute only in lane
+  // zero and are broadcast before the active-lane guard so the shuffle still
+  // has a complete hardware wave, including a partial final axis group.
+  for (Operation &operation : source.without_terminator()) {
+    bool laneDependent =
+        llvm::any_of(operation.getOperands(), [&](Value value) {
+          return laneDependentValues.contains(value);
+        });
+    if (laneDependent) {
+      laneDependentValues.insert(operation.getResults().begin(),
+                                 operation.getResults().end());
+      continue;
+    }
+
+    bool operandsAvailable =
+        llvm::all_of(operation.getOperands(), [&](Value value) {
+          return isMappedOrCaptured(value, source, result.values);
+        });
+    if (!operandsAvailable)
+      continue;
+
+    if (isMemoryEffectFree(&operation)) {
+      Operation *clone = builder.clone(operation, result.values);
+      for (auto [original, replacement] :
+           llvm::zip(operation.getResults(), clone->getResults()))
+        result.values.map(original, replacement);
+      result.hoistedOperations.insert(&operation);
+      continue;
+    }
+    if (!isReadOnlyBroadcastCandidate(operation))
+      continue;
+
+    auto laneZero = scf::IfOp::create(
+        builder, loc, laneIsZero,
+        [&](OpBuilder &thenBuilder, Location thenLoc) {
+          Operation *clone = thenBuilder.clone(operation, result.values);
+          scf::YieldOp::create(thenBuilder, thenLoc, clone->getResults());
+        },
+        [&](OpBuilder &elseBuilder, Location elseLoc) {
+          SmallVector<Value> zeros;
+          for (Type type : operation.getResultTypes())
+            zeros.push_back(buildZero(elseBuilder, elseLoc, type));
+          scf::YieldOp::create(elseBuilder, elseLoc, zeros);
+        });
+    for (auto [original, laneZeroValue] :
+         llvm::zip(operation.getResults(), laneZero.getResults()))
+      result.values.map(original, buildLaneZeroBroadcast(
+                                      builder, loc, laneZeroValue, waveSize));
+    result.hoistedOperations.insert(&operation);
+  }
+  return result;
+}
+
+KeyedContribution
+cloneRemainingContributionBody(OpBuilder &builder, PositionReduceOp reduction,
+                               CooperativeBodyMapping &mapping) {
+  Block &source = reduction.getBody().front();
+  for (Operation &operation : source.without_terminator())
+    if (!mapping.hoistedOperations.contains(&operation))
+      builder.clone(operation, mapping.values);
+  auto yield = cast<YieldOp>(source.getTerminator());
+  return {mapping.values.lookup(yield.getResults()[0]),
+          mapping.values.lookup(yield.getResults()[1])};
 }
 
 std::optional<CSRRowAtPositionOp>
@@ -462,6 +650,90 @@ private:
   int64_t waveSize;
 };
 
+class CooperativeWavePositionReducePattern
+    : public OpRewritePattern<PositionReduceOp> {
+public:
+  CooperativeWavePositionReducePattern(MLIRContext *context, int64_t blockSize,
+                                       int64_t waveSize,
+                                       StringRef cooperativeAxis)
+      : OpRewritePattern<PositionReduceOp>(context), blockSize(blockSize),
+        waveSize(waveSize), cooperativeAxis(cooperativeAxis) {}
+
+  LogicalResult matchAndRewrite(PositionReduceOp op,
+                                PatternRewriter &rewriter) const override {
+    std::optional<unsigned> axis = findAxis(op, cooperativeAxis);
+    if (!axis)
+      return rewriter.notifyMatchFailure(op, "cooperative axis was not found");
+
+    Location loc = op.getLoc();
+    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value outputSize =
+        memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
+    Type valueType =
+        cast<MemRefType>(op.getOutput().getType()).getElementType();
+    Value zero = arith::ConstantOp::create(rewriter, loc,
+                                           rewriter.getZeroAttr(valueType));
+    PositionParallelOp initialization = buildOutputInitialization(
+        rewriter, loc, op.getOutput(), outputSize, zero, blockSize);
+
+    rewriter.setInsertionPointAfter(initialization);
+    Value waveSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, waveSize);
+    Value axisExtent = arith::SubIOp::create(
+        rewriter, loc, op.getUpper()[*axis], op.getLower()[*axis]);
+    Value axisGroupCount =
+        arith::CeilDivUIOp::create(rewriter, loc, axisExtent, waveSizeValue);
+    Value workerCount = axisGroupCount;
+    for (unsigned currentAxis = 0; currentAxis < op.getLower().size();
+         ++currentAxis) {
+      if (currentAxis == *axis)
+        continue;
+      Value extent =
+          arith::SubIOp::create(rewriter, loc, op.getUpper()[currentAxis],
+                                op.getLower()[currentAxis]);
+      workerCount = arith::MulIOp::create(rewriter, loc, workerCount, extent);
+    }
+
+    auto parallel =
+        PositionParallelOp::create(rewriter, loc, workerCount, "wave",
+                                   rewriter.getI64IntegerAttr(blockSize));
+    Block *body =
+        rewriter.createBlock(&parallel.getBody(), parallel.getBody().end(),
+                             {rewriter.getIndexType(), rewriter.getIndexType(),
+                              rewriter.getIndexType()},
+                             {loc, loc, loc});
+    rewriter.setInsertionPointToStart(body);
+    Value worker = body->getArgument(0);
+    Value lane = body->getArgument(1);
+    Value participantCount = body->getArgument(2);
+    SmallVector<Value> coordinates =
+        buildCooperativeCoordinates(rewriter, loc, op, worker, *axis,
+                                    axisGroupCount, lane, participantCount);
+    Value active =
+        arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
+                              coordinates[*axis], op.getUpper()[*axis]);
+    CooperativeBodyMapping mapping = buildCooperativeBodyMapping(
+        rewriter, loc, op, coordinates, *axis, lane, waveSize);
+    scf::IfOp::create(
+        rewriter, loc, active, [&](OpBuilder &builder, Location bodyLoc) {
+          KeyedContribution contribution =
+              cloneRemainingContributionBody(builder, op, mapping);
+          memref::AtomicRMWOp::create(
+              builder, bodyLoc, arith::AtomicRMWKind::addf, contribution.value,
+              op.getOutput(), ValueRange{contribution.key});
+          scf::YieldOp::create(builder, bodyLoc);
+        });
+    YieldOp::create(rewriter, loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  int64_t blockSize;
+  int64_t waveSize;
+  std::string cooperativeAxis;
+};
+
 class ScheduleSparseWavePosition
     : public impl::ScheduleSparseWavePositionBase<ScheduleSparseWavePosition> {
 public:
@@ -482,9 +754,24 @@ public:
       signalPassFailure();
       return;
     }
-    if (mapping == "wave" && waveSize != 32) {
+    if (mapping == "thread" && !cooperativeAxis.empty()) {
+      getOperation().emitError()
+          << "cooperative position axis applies only to wave mapping";
+      signalPassFailure();
+      return;
+    }
+    if (mapping == "wave" && cooperativeAxis.empty() && waveSize != 32) {
       getOperation().emitError()
           << "wave position mapping currently requires Wave32, but got "
+          << waveSize.getValue();
+      signalPassFailure();
+      return;
+    }
+    if (mapping == "wave" && !cooperativeAxis.empty() && waveSize != 32 &&
+        waveSize != 64) {
+      getOperation().emitError()
+          << "cooperative wave position mapping requires a wave size of 32 "
+             "or 64, but got "
           << waveSize.getValue();
       signalPassFailure();
       return;
@@ -523,6 +810,19 @@ public:
       signalPassFailure();
       return;
     }
+    if (!cooperativeAxis.empty()) {
+      WalkResult result = getOperation().walk([&](PositionReduceOp op) {
+        if (findAxis(op, cooperativeAxis))
+          return WalkResult::advance();
+        op.emitError() << "does not define cooperative axis '"
+                       << cooperativeAxis << "'";
+        return WalkResult::interrupt();
+      });
+      if (result.wasInterrupted()) {
+        signalPassFailure();
+        return;
+      }
+    }
 
     RewritePatternSet patterns(&getContext());
     if (mapping == "thread") {
@@ -532,9 +832,12 @@ public:
       else
         patterns.add<ThreadPositionReducePattern>(&getContext(), blockSize,
                                                   threadChunkSize);
-    } else {
+    } else if (cooperativeAxis.empty()) {
       patterns.add<WavePositionReducePattern>(&getContext(), blockSize,
                                               waveSize);
+    } else {
+      patterns.add<CooperativeWavePositionReducePattern>(
+          &getContext(), blockSize, waveSize, cooperativeAxis);
     }
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();

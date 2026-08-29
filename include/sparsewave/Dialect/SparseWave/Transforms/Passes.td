@@ -174,7 +174,11 @@ def ScheduleSparseWavePosition
     contributions locally before atomic accumulation. For a rank-1 CSR
     position domain, the segmented form also carries the recovered row across
     the chunk. Wave mapping uses balanced collapsed-space partitions and first
-    combines adjacent equal keys with a segmented reduction.
+    combines adjacent equal keys with a segmented reduction. When a
+    cooperative axis is named, each wave instead owns one group of that axis
+    and its lanes select individual axis coordinates. Read-only scalar values
+    that do not depend on the cooperative axis are loaded by lane zero and
+    broadcast across the wave.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",
@@ -186,6 +190,9 @@ def ScheduleSparseWavePosition
     Option<"waveSize", "wave-size", "int64_t",
            /*default=*/"32",
            "Number of target lanes in a scheduled wave">,
+    Option<"cooperativeAxis", "cooperative-axis", "std::string",
+           /*default=*/"\"\"",
+           "Logical axis distributed across cooperating wave lanes">,
     Option<"threadChunkSize", "thread-chunk-size", "int64_t",
            /*default=*/"1",
            "Number of consecutive positions processed by each thread worker">,

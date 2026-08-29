@@ -33,8 +33,11 @@ size. `thread-per-output` assigns one GPU thread to each dense output element.
 `wave-per-row-tile` assigns one Wave32 to a CSR row and a tile of output
 columns. Each lane loads a sparse value once, reuses it across the tile, and
 the wave reduces one partial sum per output column. `spmm-tile-size` controls
-the tile width and defaults to 4. `spmm-block-size` defaults to 256 and must be
-between 1 and 1024; the wave mapping requires a multiple of 32.
+the tile width and defaults to 4. `wave-per-position-tile` assigns one stored
+CSR position and a wave-sized group of RHS columns to a wave. Lane zero loads
+the shared row, column, and sparse value, then broadcasts them while each lane
+loads a different RHS column. `spmm-block-size` defaults to 256 and must be
+between 1 and 1024; wave mappings require a multiple of the wavefront size.
 
 ```sh
 sparsewave-opt input.mlir \
