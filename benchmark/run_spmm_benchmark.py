@@ -12,7 +12,13 @@ import benchmark_utils as common
 BASELINE_MAPPING = "thread-per-output"
 TILED_MAPPING = "wave-per-row-tile"
 POSITION_MAPPING = "thread-per-position"
-MAPPINGS = (BASELINE_MAPPING, TILED_MAPPING, POSITION_MAPPING)
+COOPERATIVE_POSITION_MAPPING = "wave-per-position-tile"
+MAPPINGS = (
+    BASELINE_MAPPING,
+    TILED_MAPPING,
+    POSITION_MAPPING,
+    COOPERATIVE_POSITION_MAPPING,
+)
 POSITION_ORDERS = ("position-major", "rhs-major")
 POSITION_REDUCTIONS = ("atomic", "segmented")
 FORMATS = ("csr", "bsr")
@@ -238,6 +244,15 @@ def benchmark_cases(
         if TILED_MAPPING in mappings:
             for tile_size in tile_sizes:
                 yield TILED_MAPPING, block_size, tile_size, None, None, None
+        if COOPERATIVE_POSITION_MAPPING in mappings:
+            yield (
+                COOPERATIVE_POSITION_MAPPING,
+                block_size,
+                None,
+                None,
+                None,
+                None,
+            )
         if POSITION_MAPPING in mappings:
             for chunk_size in position_chunk_sizes:
                 for order in position_orders:
@@ -253,7 +268,7 @@ def benchmark_cases(
 
 
 def sparsewave_kernel_layout(mapping):
-    if mapping == POSITION_MAPPING:
+    if mapping in (POSITION_MAPPING, COOPERATIVE_POSITION_MAPPING):
         return 2, 1
     return 1, 0
 
@@ -394,7 +409,16 @@ def validate_paths(args):
     uses_tiled_mapping = (
         "csr" in args.formats and TILED_MAPPING in args.mappings
     )
-    common.validate_block_sizes(args, require_wave_multiple=uses_tiled_mapping)
+    uses_cooperative_mapping = (
+        "csr" in args.formats
+        and COOPERATIVE_POSITION_MAPPING in args.mappings
+    )
+    common.validate_block_sizes(
+        args,
+        require_wave_multiple=(
+            uses_tiled_mapping or uses_cooperative_mapping
+        ),
+    )
     if uses_tiled_mapping and args.wave_size != 32:
         raise ValueError("wave-per-row-tile currently requires wave size 32")
     if uses_tiled_mapping and any(
@@ -446,7 +470,8 @@ def parse_arguments(argv):
         default=list(MAPPINGS),
         help=(
             "Comma-separated CSR mappings: thread-per-output,"
-            "wave-per-row-tile,thread-per-position."
+            "wave-per-row-tile,thread-per-position,"
+            "wave-per-position-tile."
         ),
     )
     parser.add_argument(

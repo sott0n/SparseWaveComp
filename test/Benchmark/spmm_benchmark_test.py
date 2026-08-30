@@ -227,6 +227,14 @@ amdhsa.kernels:
                 ("thread-per-output", 64, None, None, None, None),
                 ("wave-per-row-tile", 64, 4, None, None, None),
                 (
+                    "wave-per-position-tile",
+                    64,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+                (
                     "thread-per-position",
                     64,
                     None,
@@ -264,6 +272,10 @@ amdhsa.kernels:
     def test_position_mapping_uses_initialization_and_compute_kernels(self):
         self.assertEqual(
             BENCHMARK.sparsewave_kernel_layout("thread-per-position"),
+            (2, 1),
+        )
+        self.assertEqual(
+            BENCHMARK.sparsewave_kernel_layout("wave-per-position-tile"),
             (2, 1),
         )
         self.assertEqual(
@@ -324,9 +336,11 @@ amdhsa.kernels:
             matrix_data=self.matrix,
         )
         BENCHMARK.validate_paths(args)
+        args.mappings = [BENCHMARK.COOPERATIVE_POSITION_MAPPING]
         args.block_sizes = [48]
         with self.assertRaisesRegex(ValueError, "multiples of wave size"):
             BENCHMARK.validate_paths(args)
+        args.mappings = list(BENCHMARK.MAPPINGS)
         args.block_sizes = [64]
         args.tile_sizes = [33]
         with self.assertRaisesRegex(ValueError, "must not exceed 32"):
@@ -347,6 +361,10 @@ amdhsa.kernels:
         self.assertEqual(
             BENCHMARK.parse_mappings("thread-per-position"),
             ["thread-per-position"],
+        )
+        self.assertEqual(
+            BENCHMARK.parse_mappings("wave-per-position-tile"),
+            ["wave-per-position-tile"],
         )
         with self.assertRaisesRegex(argparse.ArgumentTypeError, "unknown"):
             BENCHMARK.parse_mappings("block-per-row")
