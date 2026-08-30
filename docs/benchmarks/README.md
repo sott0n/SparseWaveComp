@@ -98,3 +98,6 @@ environment, reproduction commands, performance data, and interpretation:
 - [gfx1101 position-space SpMM reorder](spmm-position-reorder-gfx1101.md)
   separates position/RHS-axis reorder from segmented reduction and compares
   the combined schedule with the existing row-owned mappings.
+- [gfx1101 cooperative position-space SpMM](spmm-cooperative-position-gfx1101.md)
+  evaluates wave cooperation across RHS columns, compares it with existing
+  mappings and rocSPARSE, and explains its current costs using generated ISA.
