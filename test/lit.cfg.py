@@ -20,6 +20,9 @@ llvm_config.use_default_substitutions()
 llvm_config.with_environment("PATH", config.llvm_tools_dir, append_path=True)
 
 tool_dirs = [config.sparsewave_tools_dir, config.llvm_tools_dir]
+config.substitutions.append(
+    ("%sparsewave_benchmark_utils", config.sparsewave_benchmark_utils)
+)
 llvm_config.add_tool_substitutions(
     [
         "mlir-translate",

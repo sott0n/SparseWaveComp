@@ -712,7 +712,8 @@ def profile_mlir(
     if not output_lines or output_lines[-1] != "[0]":
         raise RuntimeError(
             f"{operation.upper()} correctness validation failed; expected "
-            f"zero mismatches, got stdout: {completed.stdout!r}"
+            f"zero mismatches, got stdout: {completed.stdout!r}\n"
+            f"{completed.stderr}"
         )
     return command
 

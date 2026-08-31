@@ -8,6 +8,7 @@ import subprocess
 import sys
 import types
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(sys.argv[1]).resolve()
@@ -22,6 +23,27 @@ SPEC.loader.exec_module(BENCHMARK)
 
 
 class SpMMBenchmarkTest(unittest.TestCase):
+    def test_validation_failure_preserves_diagnostics(self):
+        args = types.SimpleNamespace(
+            rocprofv3="rocprofv3",
+            mlir_runner="mlir-runner",
+            rocm_runtime="runtime.so",
+            runner_utils="runner.so",
+        )
+        result = subprocess.CompletedProcess(
+            [], 0, stdout="[1]\n",
+            stderr="SpMM mismatch at (4, 2): expected=1 actual=2 tolerance=0.0001",
+        )
+        with mock.patch.object(
+            BENCHMARK.common.subprocess, "run", return_value=result
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, r"SpMM mismatch at \(4, 2\)"
+            ):
+                BENCHMARK.common.profile_mlir(
+                    args, "input.mlir", "trace", None, "spmm"
+                )
+
     def setUp(self):
         TEMPORARY_ROOT.mkdir(parents=True, exist_ok=True)
         matrix_path = TEMPORARY_ROOT / "spmm.mtx"

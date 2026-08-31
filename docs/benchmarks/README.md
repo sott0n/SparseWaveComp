@@ -39,6 +39,13 @@ number and density of nonzero blocks, the fraction of unused scalar slots
 inside stored blocks, and the ratio of stored scalar slots to occupied input
 coordinates.
 
+SpMM correctness checks use f64 references and a per-output f32 rounding bound
+based on the number and absolute sum of products, shared by CSR, BSR, and the
+rocSPARSE baseline. This accommodates cancellation and reordered reductions
+without globally increasing the tolerance. See the
+[correctness follow-up](spmm-cooperative-position-gfx1101.md#correctness-follow-up)
+for the formula and the motivating input. Validation runs outside GPU timing.
+
 For example, a small CSR/BSR comparison can be run with:
 
 ```sh

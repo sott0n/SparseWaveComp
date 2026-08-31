@@ -71,8 +71,10 @@ The best cooperative configurations and effective throughput were:
 | ca-AstroPh | 32 | 64 | 3,916.98 us | 3.24 | 6.47 | 48.31x slower | 0.01x |
 | ca-AstroPh | 128 | 64 | 15,498.10 us | 3.27 | 6.54 | 50.27x slower | 0.01x |
 
-The cooperative mapping does not win on either matrix or any tested RHS
-width. It also does not improve on the chunked `thread-per-position` schedule.
+The cooperative mapping does not beat the best existing mapping on either
+matrix or any tested RHS width. It does improve on the chunked
+`thread-per-position` schedule for `ca-GrQc` at RHS 128 (430.15 vs 496.37 us),
+but remains slower than the row-owned mappings in that case.
 
 ## Why the cooperative mapping loses
 
@@ -139,6 +141,50 @@ the CPU-reference tolerance, and a cooperative-only sweep reproduced the
 failure. Its performance values are excluded until that correctness issue is
 understood. A single RHS-8, block-64 cooperative case passed, so the failure is
 not treated as evidence against all configurations of the mapping.
+
+### Correctness follow-up
+
+On 2026-08-31, RHS 32 / block 256 reproduced four mismatches in zero-based row
+20,925, at columns 4, 11, 18, and 25. The RHS repeats every seven columns.
+Ten subsequent diagnostic executions of that configuration produced one
+failure and nine passes. The failing outputs shared these values:
+
+| Quantity | Value |
+| --- | ---: |
+| Products in the row | 44 |
+| Sum of absolute products | approximately 32,498.33 |
+| Sequential f32 CPU reference | 7.05335712 |
+| f64 CPU reference from f32 inputs | 7.05322437 |
+| Observed GPU value | 7.05198336 |
+| Previous tolerance | 0.00070534 |
+
+This row has strong cancellation. Randomizing the f32 accumulation order on
+the CPU over 10,000 permutations also exceeded the previous tolerance, with
+results ranging from 7.04785156 to 7.05581331. The non-deterministic atomic
+accumulation order therefore explains the observed discrepancy; reproducing
+the discrepancy does not require a GPU indexing or synchronization error.
+
+SpMM validation now uses an f64 reference and an input-dependent f32 rounding
+bound shared with the rocSPARSE baseline:
+
+```text
+u = 2^-24
+gamma = (n + 1) * u / (1 - (n + 1) * u)
+tolerance = max(1e-4 * max(1, abs(reference)),
+                gamma * sum(abs(a_i * b_i)))
+```
+
+The bound accounts for rounded products and any accumulation order, assuming
+finite arithmetic without overflow or flush-to-zero underflow. It is
+conservative, not a claim that every result within it has equal accuracy.
+Non-finite results and errors exceeding the bound still fail validation.
+The original performance tables above are unchanged.
+
+With the updated check, the full `mac_econ_fwd500` sweep passed all 39
+configurations: 36 SparseWave configurations and three rocSPARSE baselines,
+using the same RHS widths, block sizes, tiles, chunks, warmup, and iteration
+counts as the reproduction command below. Compiler scheduling and generated
+GPU arithmetic were not changed by this validation fix.
 
 ## Reproduction
 

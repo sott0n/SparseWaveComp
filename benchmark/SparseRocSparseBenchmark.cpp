@@ -5,6 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "BenchmarkVerification.h"
 #include "hip/hip_runtime_api.h"
 #include "rocsparse/rocsparse.h"
 
@@ -176,18 +177,45 @@ std::vector<float> createSpMMRhs(const CSRMatrix &matrix, int rhsColumns) {
   return rhs;
 }
 
-std::vector<float> createSpMMExpected(const CSRMatrix &matrix,
-                                      const std::vector<float> &rhs,
-                                      int rhsColumns) {
-  std::vector<float> expected(matrix.rows * rhsColumns, 0.0f);
+struct SpMMReference {
+  std::vector<double> values;
+  std::vector<double> tolerances;
+};
+
+SpMMReference createSpMMExpected(const CSRMatrix &matrix,
+                                 const std::vector<float> &rhs,
+                                 int rhsColumns) {
+  SpMMReference expected{std::vector<double>(matrix.rows * rhsColumns),
+                         std::vector<double>(matrix.rows * rhsColumns)};
   for (uint64_t row = 0; row < matrix.rows; ++row)
-    for (int column = 0; column < rhsColumns; ++column)
+    for (int column = 0; column < rhsColumns; ++column) {
+      double sum = 0.0;
+      double absoluteProducts = 0.0;
       for (int32_t position = matrix.rowOffsets[row];
-           position < matrix.rowOffsets[row + 1]; ++position)
-        expected[row * rhsColumns + column] +=
-            matrix.values[position] *
+           position < matrix.rowOffsets[row + 1]; ++position) {
+        double product =
+            static_cast<double>(matrix.values[position]) *
             rhs[matrix.columnIndices[position] * rhsColumns + column];
+        sum += product;
+        absoluteProducts += std::abs(product);
+      }
+      expected.values[row * rhsColumns + column] = sum;
+      expected.tolerances[row * rhsColumns + column] =
+          sparsewave::benchmark::referenceTolerance(sum, absoluteProducts,
+                                                    matrix.rowOffsets[row + 1] -
+                                                        matrix.rowOffsets[row]);
+    }
   return expected;
+}
+
+int64_t countMismatches(const std::vector<float> &actual,
+                        const SpMMReference &expected) {
+  int64_t mismatches = 0;
+  for (size_t index = 0; index < actual.size(); ++index)
+    if (!sparsewave::benchmark::referenceMatches(
+            actual[index], expected.values[index], expected.tolerances[index]))
+      ++mismatches;
+  return mismatches;
 }
 
 int64_t countMismatches(const std::vector<float> &actual,
@@ -333,7 +361,7 @@ BenchmarkResult runSpMM(rocsparse_handle handle, hipStream_t setupStream,
                         const CSRMatrix &matrix, const DeviceCSR &deviceMatrix,
                         int rhsColumns, int dispatches) {
   std::vector<float> rhs = createSpMMRhs(matrix, rhsColumns);
-  std::vector<float> expected = createSpMMExpected(matrix, rhs, rhsColumns);
+  SpMMReference expected = createSpMMExpected(matrix, rhs, rhsColumns);
   std::vector<float> output(matrix.rows * rhsColumns, 0.0f);
   float *deviceRhs = allocateDevice<float>(rhs.size());
   float *deviceOutput = allocateDevice<float>(output.size());

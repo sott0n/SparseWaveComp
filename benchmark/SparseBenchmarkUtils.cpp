@@ -5,12 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "BenchmarkVerification.h"
 #include "mlir/ExecutionEngine/CRunnerUtils.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -255,7 +257,8 @@ _mlir_ciface_loadSpMMBenchmarkInputs(
     StridedMemRefType<int32_t, 1> *rowOffsets,
     StridedMemRefType<int32_t, 1> *columnIndices,
     StridedMemRefType<float, 1> *values, StridedMemRefType<float, 2> *rhs,
-    StridedMemRefType<float, 2> *expected) {
+    StridedMemRefType<double, 2> *expected,
+    StridedMemRefType<double, 2> *tolerances) {
   SparseDimensions dimensions =
       loadCSRInputs(rowOffsets, columnIndices, values);
   if (rhs->sizes[0] != static_cast<int64_t>(dimensions.columns) ||
@@ -267,6 +270,12 @@ _mlir_ciface_loadSpMMBenchmarkInputs(
       expected->strides[0] != expected->sizes[1])
     fail("expected-output memref has an unexpected layout");
 
+  if (tolerances->sizes[0] != expected->sizes[0] ||
+      tolerances->sizes[1] != expected->sizes[1] ||
+      tolerances->strides[1] != 1 ||
+      tolerances->strides[0] != tolerances->sizes[1])
+    fail("tolerance memref has an unexpected layout");
+
   for (uint64_t reduction = 0; reduction < dimensions.columns; ++reduction)
     for (int64_t column = 0; column < rhs->sizes[1]; ++column)
       element(rhs, reduction, column) =
@@ -274,16 +283,25 @@ _mlir_ciface_loadSpMMBenchmarkInputs(
 
   for (uint64_t row = 0; row < dimensions.rows; ++row) {
     for (int64_t column = 0; column < rhs->sizes[1]; ++column) {
-      float sum = 0.0f;
+      double sum = 0.0;
+      double absoluteProducts = 0.0;
       for (int32_t position = rowOffsets->data[rowOffsets->offset + row];
            position < rowOffsets->data[rowOffsets->offset + row + 1];
            ++position) {
         int32_t reductionIndex =
             columnIndices->data[columnIndices->offset + position];
-        sum += values->data[values->offset + position] *
-               element(rhs, reductionIndex, column);
+        double product =
+            static_cast<double>(values->data[values->offset + position]) *
+            element(rhs, reductionIndex, column);
+        sum += product;
+        absoluteProducts += std::abs(product);
       }
       element(expected, row, column) = sum;
+      uint64_t terms = rowOffsets->data[rowOffsets->offset + row + 1] -
+                       rowOffsets->data[rowOffsets->offset + row];
+      element(tolerances, row, column) =
+          sparsewave::benchmark::referenceTolerance(sum, absoluteProducts,
+                                                    terms);
     }
   }
 }
@@ -293,7 +311,8 @@ _mlir_ciface_loadBSRSpMMBenchmarkInputs(
     StridedMemRefType<int32_t, 1> *blockRowOffsets,
     StridedMemRefType<int32_t, 1> *blockColumnIndices,
     StridedMemRefType<float, 1> *blockValues, StridedMemRefType<float, 2> *rhs,
-    StridedMemRefType<float, 2> *expected) {
+    StridedMemRefType<double, 2> *expected,
+    StridedMemRefType<double, 2> *tolerances) {
   BSRDimensions dimensions =
       loadBSRInputs(blockRowOffsets, blockColumnIndices, blockValues);
   if (rhs->sizes[0] != static_cast<int64_t>(dimensions.columns) ||
@@ -305,13 +324,22 @@ _mlir_ciface_loadBSRSpMMBenchmarkInputs(
       expected->strides[0] != expected->sizes[1])
     fail("expected-output memref has an unexpected layout");
 
+  if (tolerances->sizes[0] != expected->sizes[0] ||
+      tolerances->sizes[1] != expected->sizes[1] ||
+      tolerances->strides[1] != 1 ||
+      tolerances->strides[0] != tolerances->sizes[1])
+    fail("tolerance memref has an unexpected layout");
+
   for (uint64_t reduction = 0; reduction < dimensions.columns; ++reduction)
     for (int64_t column = 0; column < rhs->sizes[1]; ++column)
       element(rhs, reduction, column) =
           1.0f + static_cast<float>((reduction + column) % 7) * 0.125f;
 
   std::fill_n(expected->data + expected->offset,
-              dimensions.rows * rhs->sizes[1], 0.0f);
+              dimensions.rows * rhs->sizes[1], 0.0);
+  std::fill_n(tolerances->data + tolerances->offset,
+              dimensions.rows * rhs->sizes[1], 0.0);
+  std::vector<uint64_t> rowTerms(dimensions.rows, 0);
   for (uint64_t position = 0; position < dimensions.originalNnz; ++position) {
     int32_t row = dimensions.inputRows[position];
     int32_t reduction = dimensions.inputColumns[position];
@@ -319,8 +347,46 @@ _mlir_ciface_loadBSRSpMMBenchmarkInputs(
         reduction < 0 ||
         static_cast<uint64_t>(reduction) >= dimensions.originalColumns)
       fail("original BSR input coordinate is out of bounds");
-    for (int64_t column = 0; column < rhs->sizes[1]; ++column)
-      element(expected, row, column) +=
-          dimensions.inputValues[position] * element(rhs, reduction, column);
+    ++rowTerms[row];
+    for (int64_t column = 0; column < rhs->sizes[1]; ++column) {
+      double product = static_cast<double>(dimensions.inputValues[position]) *
+                       element(rhs, reduction, column);
+      element(expected, row, column) += product;
+      element(tolerances, row, column) += std::abs(product);
+    }
   }
+  for (uint64_t row = 0; row < dimensions.rows; ++row) {
+    for (int64_t column = 0; column < rhs->sizes[1]; ++column) {
+      element(tolerances, row, column) =
+          sparsewave::benchmark::referenceTolerance(
+              element(expected, row, column), element(tolerances, row, column),
+              rowTerms[row]);
+    }
+  }
+}
+
+extern "C" SPARSEWAVE_BENCHMARK_EXPORT int64_t
+_mlir_ciface_verifySpMMBenchmarkOutput(
+    StridedMemRefType<float, 2> *actual, StridedMemRefType<double, 2> *expected,
+    StridedMemRefType<double, 2> *tolerances) {
+  if (actual->sizes[0] != expected->sizes[0] ||
+      actual->sizes[1] != expected->sizes[1] ||
+      tolerances->sizes[0] != expected->sizes[0] ||
+      tolerances->sizes[1] != expected->sizes[1])
+    fail("verification memref shapes differ");
+  int64_t mismatches = 0;
+  for (int64_t row = 0; row < actual->sizes[0]; ++row) {
+    for (int64_t column = 0; column < actual->sizes[1]; ++column) {
+      float value = element(actual, row, column);
+      double reference = element(expected, row, column);
+      double tolerance = element(tolerances, row, column);
+      if (sparsewave::benchmark::referenceMatches(value, reference, tolerance))
+        continue;
+      if (mismatches++ < 8)
+        std::cerr << std::setprecision(17) << "SpMM mismatch at (" << row
+                  << ", " << column << "): expected=" << reference
+                  << " actual=" << value << " tolerance=" << tolerance << '\n';
+    }
+  }
+  return mismatches;
 }

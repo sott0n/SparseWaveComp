@@ -7,6 +7,7 @@ config.mlir_runtime_lib_dir = lit_config.substitute(
 )
 config.sparsewave_obj_root = "@SPARSEWAVE_BINARY_DIR@"
 config.sparsewave_tools_dir = "@LLVM_RUNTIME_OUTPUT_INTDIR@"
+config.sparsewave_benchmark_utils = "@LLVM_LIBRARY_OUTPUT_INTDIR@/@CMAKE_SHARED_LIBRARY_PREFIX@sparsewave_benchmark_utils@CMAKE_SHARED_LIBRARY_SUFFIX@"
 
 import lit.llvm
 
