@@ -178,7 +178,10 @@ def ScheduleSparseWavePosition
     cooperative axis is named, each wave instead owns one group of that axis
     and its lanes select individual axis coordinates. Read-only scalar values
     that do not depend on the cooperative axis are loaded by lane zero and
-    broadcast across the wave.
+    broadcast across the wave. A cooperative wave can traverse a configurable
+    chunk of the remaining position domain. Each lane combines adjacent
+    contributions with equal output keys locally and performs atomic updates
+    only at key boundaries and the end of the chunk.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",
@@ -193,6 +196,10 @@ def ScheduleSparseWavePosition
     Option<"cooperativeAxis", "cooperative-axis", "std::string",
            /*default=*/"\"\"",
            "Logical axis distributed across cooperating wave lanes">,
+    Option<"cooperativeChunkSize", "cooperative-chunk-size", "int64_t",
+           /*default=*/"1",
+           "Number of consecutive points on the non-cooperative position "
+           "domain processed by each wave">,
     Option<"threadChunkSize", "thread-chunk-size", "int64_t",
            /*default=*/"1",
            "Number of consecutive positions processed by each thread worker">,

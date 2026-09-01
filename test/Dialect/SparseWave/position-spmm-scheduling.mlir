@@ -13,6 +13,9 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(decompose-position-spmm,schedule-sparsewave-position{mapping=wave block-size=64 wave-size=32 cooperative-axis=rhs})' \
 // RUN:   | FileCheck %s --check-prefix=WAVE-COOPERATIVE
+// RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(decompose-position-spmm,schedule-sparsewave-position{mapping=wave block-size=64 wave-size=32 cooperative-axis=rhs cooperative-chunk-size=4})' \
+// RUN:   | FileCheck %s --check-prefix=WAVE-COOPERATIVE-CHUNK
 
 // DECOMPOSE-LABEL: func.func @spmm(
 // DECOMPOSE: %[[NNZ:.*]] = memref.dim %{{.*}}, %{{.*}} : memref<?xf32>
@@ -77,6 +80,17 @@
 // WAVE-COOPERATIVE:   memref.load %{{.*}}[%{{.*}}, %{{.*}}] : memref<?x?xf32>
 // WAVE-COOPERATIVE:   memref.atomic_rmw addf
 // WAVE-COOPERATIVE-NOT: sparsewave.spmm
+
+// WAVE-COOPERATIVE-CHUNK-LABEL: func.func @spmm(
+// WAVE-COOPERATIVE-CHUNK: arith.ceildivui %{{.*}}, %{{.*}} : index
+// WAVE-COOPERATIVE-CHUNK: sparsewave.position_parallel %{{.*}} mapping = "wave" block_size = 64 {
+// WAVE-COOPERATIVE-CHUNK: scf.for
+// WAVE-COOPERATIVE-CHUNK: sparsewave.csr_row_at_position
+// WAVE-COOPERATIVE-CHUNK: arith.cmpi eq
+// WAVE-COOPERATIVE-CHUNK: memref.atomic_rmw addf
+// WAVE-COOPERATIVE-CHUNK: arith.addf
+// WAVE-COOPERATIVE-CHUNK: memref.atomic_rmw addf
+// WAVE-COOPERATIVE-CHUNK-NOT: sparsewave.spmm
 
 func.func @spmm(
     %rowOffsets: memref<?xi32>,

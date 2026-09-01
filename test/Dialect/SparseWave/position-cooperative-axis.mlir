@@ -1,13 +1,16 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='mapping=wave block-size=64 wave-size=32 cooperative-axis=column' \
 // RUN:   | FileCheck %s
+// RUN: sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=wave block-size=64 wave-size=32 cooperative-axis=column cooperative-chunk-size=4' \
+// RUN:   | FileCheck %s --check-prefix=CHUNK
 
 // This operator-independent reduction verifies that a named logical axis can
 // be assigned to wave lanes without relying on SpMM operation semantics.
 
 // CHECK-LABEL: func.func @cooperative_axis(
 // CHECK: %[[GROUPS:.*]] = arith.ceildivui %{{.*}}, %{{.*}} : index
-// CHECK: %[[WORKERS:.*]] = arith.muli %[[GROUPS]], %{{.*}} : index
+// CHECK: %[[WORKERS:.*]] = arith.muli %{{.*}}, %[[GROUPS]] : index
 // CHECK: sparsewave.position_parallel %[[WORKERS]] mapping = "wave" block_size = 64 {
 // CHECK: ^bb0(%[[WORKER:.*]]: index, %[[LANE:.*]]: index, %[[LANES:.*]]: index):
 // CHECK: %[[COLUMN_GROUP:.*]] = arith.remui %[[WORKER]], %[[GROUPS]] : index
@@ -26,6 +29,20 @@
 // CHECK:   memref.atomic_rmw addf %[[PRODUCT]],
 // CHECK-NOT: sparsewave.position_reduce
 
+// CHUNK-LABEL: func.func @cooperative_axis(
+// CHUNK: %[[GROUPS:.*]] = arith.ceildivui %{{.*}}, %{{.*}} : index
+// CHUNK: %[[CHUNKS:.*]] = arith.ceildivui %{{.*}}, %{{.*}} : index
+// CHUNK: %[[WORKERS:.*]] = arith.muli %[[CHUNKS]], %[[GROUPS]] : index
+// CHUNK: sparsewave.position_parallel %[[WORKERS]] mapping = "wave" block_size = 64 {
+// CHUNK: scf.for
+// CHUNK: arith.cmpi eq
+// CHUNK: scf.if
+// CHUNK: memref.atomic_rmw addf
+// CHUNK: arith.addf
+// CHUNK: scf.if
+// CHUNK: memref.atomic_rmw addf
+// CHUNK-NOT: sparsewave.position_reduce
+
 func.func @cooperative_axis(%shared: memref<?xf32>,
                             %perColumn: memref<?x?xf32>,
                             %output: memref<?xf32>) {
@@ -40,7 +57,11 @@ func.func @cooperative_axis(%shared: memref<?xf32>,
     %sharedValue = memref.load %shared[%item] : memref<?xf32>
     %columnValue = memref.load %perColumn[%item, %column] : memref<?x?xf32>
     %product = arith.mulf %sharedValue, %columnValue : f32
-    %base = arith.muli %item, %columns : index
+    // Pairs of positions intentionally share an output key. A cooperative
+    // chunk can combine their per-column contributions before an atomic add.
+    %two = arith.constant 2 : index
+    %itemGroup = arith.divui %item, %two : index
+    %base = arith.muli %itemGroup, %columns : index
     %key = arith.addi %base, %column : index
     sparsewave.yield %key, %product : index, f32
   } : memref<?xf32>

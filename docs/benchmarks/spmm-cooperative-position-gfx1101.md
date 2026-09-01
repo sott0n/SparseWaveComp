@@ -133,6 +133,38 @@ cooperation with a position chunk or row segment so that one wave processes
 multiple positions and accumulates locally before crossing the atomic
 boundary.
 
+## Cooperative position chunks
+
+The follow-up schedule assigns a consecutive chunk of the non-cooperative
+position domain to each wave. Every lane still owns one RHS column. Within the
+chunk, it accumulates adjacent contributions with the same flattened output
+key in a register. It performs an atomic add only when the key changes or the
+chunk ends. A CSR row boundary therefore ends the current segment instead of
+requiring any preprocessing or a new nonzero array.
+
+Chunk size 1 retains the original direct lowering. The following results were
+measured on 2026-09-02 with the same GPU, LLVM, ROCm, warmup, and iteration
+counts as the initial experiment. Each row selects the lowest median across
+block sizes 64 and 256. The speedup compares chunking against chunk size 1 in
+this follow-up run; GPU clocks remained unlocked.
+
+| Matrix | RHS | Chunk 1 median | Best chunk | Block | Median / p95 | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ca-GrQc | 8 | 362.92 us | 2 | 64 | 272.92 / 274.12 us | 1.33x |
+| ca-GrQc | 32 | 264.56 us | 4 | 256 | 90.42 / 91.20 us | 2.93x |
+| ca-GrQc | 128 | 430.06 us | 4 | 64 | 315.94 / 317.52 us | 1.36x |
+| ca-AstroPh | 8 | 11,574.13 us | 16 | 256 | 2,346.44 / 2,372.08 us | 4.93x |
+| ca-AstroPh | 32 | 3,954.97 us | 8 | 64 | 1,153.48 / 1,159.60 us | 3.43x |
+| ca-AstroPh | 128 | 15,578.62 us | 8 | 64 | 4,464.29 / 4,507.24 us | 3.49x |
+
+Chunked kernels use 34 VGPRs and 45 SGPRs, compared with 27 VGPRs and 29
+SGPRs for the direct chunk-1 kernel. Neither variant spills or uses LDS or
+scratch memory. The larger chunks reduce waves and atomic executions, but
+eventually lose parallelism; `ca-GrQc` RHS 8 is fastest at chunk 2, while the
+longer-row `ca-AstroPh` benefits through chunk 8 or 16. Chunking substantially
+improves the cooperative schedule, but the prior row-owned and rocSPARSE
+results remain faster on these matrices.
+
 ## Excluded matrix
 
 [Williams/mac_econ_fwd500](https://sparse.tamu.edu/Williams/mac_econ_fwd500)
@@ -188,23 +220,20 @@ GPU arithmetic were not changed by this validation fix.
 
 ## Reproduction
 
-Run the following command for each Matrix Market file:
+Run the following command for each Matrix Market file to reproduce the
+cooperative chunk sweep:
 
 ```sh
 python3 benchmark/run_spmm_benchmark.py \
   --chip=gfx1101 \
   --matrix=/path/to/matrix.mtx \
   --formats=csr \
-  --mappings=thread-per-output,wave-per-row-tile,thread-per-position,wave-per-position-tile \
+  --mappings=wave-per-position-tile \
   --rhs-columns=8,32,128 \
   --block-sizes=64,256 \
-  --tile-sizes=8,16 \
-  --position-chunk-sizes=4,8 \
-  --position-orders=rhs-major \
-  --position-reductions=segmented \
+  --position-chunk-sizes=1,2,4,8,16 \
   --warmup=10 \
-  --iterations=100 \
-  --rocsparse
+  --iterations=100
 ```
 
 To retain HSACO files for ISA inspection, add `--keep-artifacts` and

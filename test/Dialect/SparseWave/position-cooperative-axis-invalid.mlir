@@ -7,10 +7,18 @@
 // RUN: not sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='mapping=wave wave-size=16 cooperative-axis=column' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=WAVE-SIZE
+// RUN: not sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=thread cooperative-chunk-size=4' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=CHUNK
+// RUN: not sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=wave cooperative-axis=column cooperative-chunk-size=0' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=ZERO-CHUNK
 
 // THREAD: cooperative position axis applies only to wave mapping
 // MISSING: does not define cooperative axis 'missing'
 // WAVE-SIZE: cooperative wave position mapping requires a wave size of 32 or 64, but got 16
+// CHUNK: cooperative position chunk size applies only to cooperative wave mapping
+// ZERO-CHUNK: cooperative position chunk size must be positive, but got 0
 
 func.func @invalid_cooperative_axis(%values: memref<?x?xf32>,
                                     %output: memref<?xf32>) {

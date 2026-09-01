@@ -153,8 +153,8 @@ struct SparseWaveToAMDGPUPipelineOptions
   PassOptions::Option<int64_t> spmmPositionChunkSize{
       *this, "spmm-position-chunk-size",
       llvm::cl::desc(
-          "Number of consecutive SpMM position-column pairs processed by "
-          "each thread."),
+          "Number of consecutive SpMM position-space points processed by "
+          "each position worker."),
       llvm::cl::init(1)};
 
   PassOptions::Option<std::string> spmmPositionOrder{

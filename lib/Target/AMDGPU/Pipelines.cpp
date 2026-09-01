@@ -279,9 +279,12 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
     scheduleOptions.blockSize = options.spmmBlockSize;
     scheduleOptions.waveSize =
         static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
-    if (options.spmmMapping == "wave-per-position-tile")
+    if (options.spmmMapping == "wave-per-position-tile") {
       scheduleOptions.cooperativeAxis = "rhs";
-    scheduleOptions.threadChunkSize = options.spmmPositionChunkSize;
+      scheduleOptions.cooperativeChunkSize = options.spmmPositionChunkSize;
+    } else {
+      scheduleOptions.threadChunkSize = options.spmmPositionChunkSize;
+    }
     scheduleOptions.threadReduction = options.spmmPositionReduction;
     pm.addPass(createScheduleSparseWavePosition(scheduleOptions));
   }

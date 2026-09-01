@@ -245,14 +245,15 @@ def benchmark_cases(
             for tile_size in tile_sizes:
                 yield TILED_MAPPING, block_size, tile_size, None, None, None
         if COOPERATIVE_POSITION_MAPPING in mappings:
-            yield (
-                COOPERATIVE_POSITION_MAPPING,
-                block_size,
-                None,
-                None,
-                None,
-                None,
-            )
+            for chunk_size in position_chunk_sizes:
+                yield (
+                    COOPERATIVE_POSITION_MAPPING,
+                    block_size,
+                    None,
+                    chunk_size,
+                    None,
+                    None,
+                )
         if POSITION_MAPPING in mappings:
             for chunk_size in position_chunk_sizes:
                 for order in position_orders:
@@ -501,8 +502,8 @@ def parse_arguments(argv):
         type=common.parse_positive_int_list,
         default=common.parse_positive_int_list("1,4,8"),
         help=(
-            "Comma-separated consecutive position-column pairs processed "
-            "by each thread-per-position worker."
+            "Comma-separated consecutive position-space points processed by "
+            "each thread-per-position or cooperative wave worker."
         ),
     )
     parser.add_argument(
@@ -600,15 +601,19 @@ def main(argv=None):
                         case_directory /= f"tile-{tile_size}"
                         pipeline_options = (f"spmm-tile-size={tile_size}",)
                     if chunk_size is not None:
-                        case_directory /= (
-                            f"chunk-{chunk_size}"
-                            f"-{position_order}-{position_reduction}"
-                        )
+                        case_directory /= f"chunk-{chunk_size}"
                         pipeline_options = (
                             f"spmm-position-chunk-size={chunk_size}",
-                            f"spmm-position-order={position_order}",
-                            f"spmm-position-reduction={position_reduction}",
                         )
+                        if position_order is not None:
+                            case_directory = case_directory.with_name(
+                                f"{case_directory.name}-{position_order}"
+                                f"-{position_reduction}"
+                            )
+                            pipeline_options += (
+                                f"spmm-position-order={position_order}",
+                                f"spmm-position-reduction={position_reduction}",
+                            )
                     kernels_per_dispatch, compute_binary_index = (
                         sparsewave_kernel_layout(mapping)
                     )

@@ -89,29 +89,25 @@ std::optional<unsigned> findAxis(PositionReduceOp reduction,
 
 SmallVector<Value> buildCooperativeCoordinates(OpBuilder &builder, Location loc,
                                                PositionReduceOp reduction,
-                                               Value linearWorker,
+                                               Value linearIteration,
                                                unsigned cooperativeAxis,
-                                               Value axisGroupCount, Value lane,
+                                               Value axisGroup, Value lane,
                                                Value participantCount) {
   unsigned rank = reduction.getLower().size();
   SmallVector<Value> coordinates(rank);
-  Value remaining = linearWorker;
+  Value remaining = linearIteration;
   ArrayRef<int64_t> order = reduction.getOrder();
-  // Decode a wave worker as if the cooperative axis had been split into
-  // wave-sized groups. The participant ID materializes the inner split.
+  // Decode the non-cooperative position domain independently from the axis
+  // group assigned to wave lanes. This lets one wave traverse consecutive
+  // points on that domain without changing its cooperative coordinates.
   for (size_t orderIndex = order.size(); orderIndex > 0; --orderIndex) {
     unsigned axis = order[orderIndex - 1];
-    Value extent =
-        axis == cooperativeAxis
-            ? axisGroupCount
-            : arith::SubIOp::create(builder, loc, reduction.getUpper()[axis],
-                                    reduction.getLower()[axis]);
+    if (axis == cooperativeAxis)
+      continue;
+    Value extent = arith::SubIOp::create(
+        builder, loc, reduction.getUpper()[axis], reduction.getLower()[axis]);
     Value offset = arith::RemUIOp::create(builder, loc, remaining, extent);
     remaining = arith::DivUIOp::create(builder, loc, remaining, extent);
-    if (axis == cooperativeAxis) {
-      coordinates[axis] = offset;
-      continue;
-    }
     Value lower = reduction.getLower()[axis];
     coordinates[axis] =
         matchPattern(lower, m_Zero())
@@ -119,8 +115,8 @@ SmallVector<Value> buildCooperativeCoordinates(OpBuilder &builder, Location loc,
             : arith::AddIOp::create(builder, loc, lower, offset);
   }
 
-  Value groupOffset = arith::MulIOp::create(
-      builder, loc, coordinates[cooperativeAxis], participantCount);
+  Value groupOffset =
+      arith::MulIOp::create(builder, loc, axisGroup, participantCount);
   Value laneOffset = arith::AddIOp::create(builder, loc, groupOffset, lane);
   Value lower = reduction.getLower()[cooperativeAxis];
   coordinates[cooperativeAxis] =
@@ -128,6 +124,20 @@ SmallVector<Value> buildCooperativeCoordinates(OpBuilder &builder, Location loc,
           ? laneOffset
           : arith::AddIOp::create(builder, loc, lower, laneOffset);
   return coordinates;
+}
+
+Value buildNonCooperativeIterationCount(OpBuilder &builder, Location loc,
+                                        PositionReduceOp reduction,
+                                        unsigned cooperativeAxis) {
+  Value count = arith::ConstantIndexOp::create(builder, loc, 1);
+  for (unsigned axis = 0; axis < reduction.getLower().size(); ++axis) {
+    if (axis == cooperativeAxis)
+      continue;
+    Value extent = arith::SubIOp::create(
+        builder, loc, reduction.getUpper()[axis], reduction.getLower()[axis]);
+    count = arith::MulIOp::create(builder, loc, count, extent);
+  }
+  return count;
 }
 
 PositionParallelOp buildOutputInitialization(PatternRewriter &rewriter,
@@ -296,6 +306,25 @@ cloneRemainingContributionBody(OpBuilder &builder, PositionReduceOp reduction,
   auto yield = cast<YieldOp>(source.getTerminator());
   return {mapping.values.lookup(yield.getResults()[0]),
           mapping.values.lookup(yield.getResults()[1])};
+}
+
+KeyedContribution
+buildActiveCooperativeContribution(OpBuilder &builder, Location loc,
+                                   PositionReduceOp reduction,
+                                   CooperativeBodyMapping &mapping,
+                                   Value active, Value zeroIndex, Value zero) {
+  auto entry = scf::IfOp::create(
+      builder, loc, TypeRange{builder.getIndexType(), zero.getType()}, active,
+      /*withElseRegion=*/true);
+  builder.setInsertionPointToStart(&entry.getThenRegion().front());
+  KeyedContribution contribution =
+      cloneRemainingContributionBody(builder, reduction, mapping);
+  scf::YieldOp::create(builder, loc,
+                       ValueRange{contribution.key, contribution.value});
+  builder.setInsertionPointToStart(&entry.getElseRegion().front());
+  scf::YieldOp::create(builder, loc, ValueRange{zeroIndex, zero});
+  builder.setInsertionPointAfter(entry);
+  return {entry.getResult(0), entry.getResult(1)};
 }
 
 std::optional<CSRRowAtPositionOp>
@@ -655,9 +684,11 @@ class CooperativeWavePositionReducePattern
 public:
   CooperativeWavePositionReducePattern(MLIRContext *context, int64_t blockSize,
                                        int64_t waveSize,
-                                       StringRef cooperativeAxis)
+                                       StringRef cooperativeAxis,
+                                       int64_t chunkSize)
       : OpRewritePattern<PositionReduceOp>(context), blockSize(blockSize),
-        waveSize(waveSize), cooperativeAxis(cooperativeAxis) {}
+        waveSize(waveSize), cooperativeAxis(cooperativeAxis),
+        chunkSize(chunkSize) {}
 
   LogicalResult matchAndRewrite(PositionReduceOp op,
                                 PatternRewriter &rewriter) const override {
@@ -683,15 +714,19 @@ public:
         rewriter, loc, op.getUpper()[*axis], op.getLower()[*axis]);
     Value axisGroupCount =
         arith::CeilDivUIOp::create(rewriter, loc, axisExtent, waveSizeValue);
-    Value workerCount = axisGroupCount;
-    for (unsigned currentAxis = 0; currentAxis < op.getLower().size();
-         ++currentAxis) {
-      if (currentAxis == *axis)
-        continue;
-      Value extent =
-          arith::SubIOp::create(rewriter, loc, op.getUpper()[currentAxis],
-                                op.getLower()[currentAxis]);
-      workerCount = arith::MulIOp::create(rewriter, loc, workerCount, extent);
+    Value iterationCount =
+        buildNonCooperativeIterationCount(rewriter, loc, op, *axis);
+    Value workerCount;
+    Value chunkSizeValue;
+    if (chunkSize == 1) {
+      workerCount =
+          arith::MulIOp::create(rewriter, loc, iterationCount, axisGroupCount);
+    } else {
+      chunkSizeValue = arith::ConstantIndexOp::create(rewriter, loc, chunkSize);
+      Value chunkCount = arith::CeilDivUIOp::create(
+          rewriter, loc, iterationCount, chunkSizeValue);
+      workerCount =
+          arith::MulIOp::create(rewriter, loc, chunkCount, axisGroupCount);
     }
 
     auto parallel =
@@ -706,21 +741,93 @@ public:
     Value worker = body->getArgument(0);
     Value lane = body->getArgument(1);
     Value participantCount = body->getArgument(2);
-    SmallVector<Value> coordinates =
-        buildCooperativeCoordinates(rewriter, loc, op, worker, *axis,
-                                    axisGroupCount, lane, participantCount);
+    Value axisGroup =
+        arith::RemUIOp::create(rewriter, loc, worker, axisGroupCount);
+    Value chunk = arith::DivUIOp::create(rewriter, loc, worker, axisGroupCount);
+    if (chunkSize == 1) {
+      SmallVector<Value> coordinates = buildCooperativeCoordinates(
+          rewriter, loc, op, chunk, *axis, axisGroup, lane, participantCount);
+      Value active =
+          arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
+                                coordinates[*axis], op.getUpper()[*axis]);
+      CooperativeBodyMapping mapping = buildCooperativeBodyMapping(
+          rewriter, loc, op, coordinates, *axis, lane, waveSize);
+      scf::IfOp::create(
+          rewriter, loc, active, [&](OpBuilder &builder, Location bodyLoc) {
+            KeyedContribution contribution =
+                cloneRemainingContributionBody(builder, op, mapping);
+            memref::AtomicRMWOp::create(builder, bodyLoc,
+                                        arith::AtomicRMWKind::addf,
+                                        contribution.value, op.getOutput(),
+                                        ValueRange{contribution.key});
+            scf::YieldOp::create(builder, bodyLoc);
+          });
+      YieldOp::create(rewriter, loc);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value begin = arith::MulIOp::create(rewriter, loc, chunk, chunkSizeValue);
+    Value remaining =
+        arith::SubIOp::create(rewriter, loc, iterationCount, begin);
+    Value boundedSize =
+        arith::MinUIOp::create(rewriter, loc, remaining, chunkSizeValue);
+    Value end = arith::AddIOp::create(rewriter, loc, begin, boundedSize);
+    SmallVector<Value> coordinates = buildCooperativeCoordinates(
+        rewriter, loc, op, begin, *axis, axisGroup, lane, participantCount);
     Value active =
         arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
                               coordinates[*axis], op.getUpper()[*axis]);
     CooperativeBodyMapping mapping = buildCooperativeBodyMapping(
         rewriter, loc, op, coordinates, *axis, lane, waveSize);
+    KeyedContribution first = buildActiveCooperativeContribution(
+        rewriter, loc, op, mapping, active, zeroIndex, zero);
+
+    Value nextIteration = arith::AddIOp::create(rewriter, loc, begin, oneIndex);
+    auto reduction = scf::ForOp::create(
+        rewriter, loc, nextIteration, end, oneIndex,
+        ValueRange{first.key, first.value},
+        [&](OpBuilder &builder, Location bodyLoc, Value linearIteration,
+            ValueRange iterArgs) {
+          SmallVector<Value> nextCoordinates = buildCooperativeCoordinates(
+              builder, bodyLoc, op, linearIteration, *axis, axisGroup, lane,
+              participantCount);
+          CooperativeBodyMapping nextMapping = buildCooperativeBodyMapping(
+              builder, bodyLoc, op, nextCoordinates, *axis, lane, waveSize);
+          KeyedContribution next = buildActiveCooperativeContribution(
+              builder, bodyLoc, op, nextMapping, active, zeroIndex, zero);
+          Value sameKey =
+              arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
+                                    iterArgs[0], next.key);
+          Value keyChanged = arith::XOrIOp::create(
+              builder, bodyLoc, sameKey,
+              arith::ConstantIntOp::create(builder, bodyLoc, 1, 1));
+          Value flush =
+              arith::AndIOp::create(builder, bodyLoc, active, keyChanged);
+          scf::IfOp::create(builder, bodyLoc, flush,
+                            [&](OpBuilder &flushBuilder, Location flushLoc) {
+                              memref::AtomicRMWOp::create(
+                                  flushBuilder, flushLoc,
+                                  arith::AtomicRMWKind::addf, iterArgs[1],
+                                  op.getOutput(), ValueRange{iterArgs[0]});
+                              scf::YieldOp::create(flushBuilder, flushLoc);
+                            });
+          Value combined =
+              arith::AddFOp::create(builder, bodyLoc, iterArgs[1], next.value);
+          Value nextKey = arith::SelectOp::create(builder, bodyLoc, sameKey,
+                                                  iterArgs[0], next.key);
+          Value nextValue = arith::SelectOp::create(builder, bodyLoc, sameKey,
+                                                    combined, next.value);
+          scf::YieldOp::create(builder, bodyLoc,
+                               ValueRange{nextKey, nextValue});
+        });
     scf::IfOp::create(
         rewriter, loc, active, [&](OpBuilder &builder, Location bodyLoc) {
-          KeyedContribution contribution =
-              cloneRemainingContributionBody(builder, op, mapping);
-          memref::AtomicRMWOp::create(
-              builder, bodyLoc, arith::AtomicRMWKind::addf, contribution.value,
-              op.getOutput(), ValueRange{contribution.key});
+          memref::AtomicRMWOp::create(builder, bodyLoc,
+                                      arith::AtomicRMWKind::addf,
+                                      reduction.getResult(1), op.getOutput(),
+                                      ValueRange{reduction.getResult(0)});
           scf::YieldOp::create(builder, bodyLoc);
         });
     YieldOp::create(rewriter, loc);
@@ -732,6 +839,7 @@ private:
   int64_t blockSize;
   int64_t waveSize;
   std::string cooperativeAxis;
+  int64_t chunkSize;
 };
 
 class ScheduleSparseWavePosition
@@ -791,6 +899,13 @@ public:
       signalPassFailure();
       return;
     }
+    if (cooperativeChunkSize < 1) {
+      getOperation().emitError()
+          << "cooperative position chunk size must be positive, but got "
+          << cooperativeChunkSize.getValue();
+      signalPassFailure();
+      return;
+    }
     if (threadReduction != "atomic" && threadReduction != "segmented") {
       getOperation().emitError()
           << "unsupported thread position reduction '" << threadReduction
@@ -801,6 +916,14 @@ public:
     if (mapping == "wave" && threadChunkSize != 1) {
       getOperation().emitError()
           << "thread position chunk size applies only to thread mapping";
+      signalPassFailure();
+      return;
+    }
+    if ((mapping != "wave" || cooperativeAxis.empty()) &&
+        cooperativeChunkSize != 1) {
+      getOperation().emitError()
+          << "cooperative position chunk size applies only to cooperative "
+             "wave mapping";
       signalPassFailure();
       return;
     }
@@ -837,7 +960,8 @@ public:
                                               waveSize);
     } else {
       patterns.add<CooperativeWavePositionReducePattern>(
-          &getContext(), blockSize, waveSize, cooperativeAxis);
+          &getContext(), blockSize, waveSize, cooperativeAxis,
+          cooperativeChunkSize);
     }
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();

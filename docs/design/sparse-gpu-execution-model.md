@@ -193,7 +193,7 @@ The current mappings can be described by composing the components:
 | SpMV block-per-row | CSR row | one block | thread-strided positions | scalar | wave shuffle + LDS |
 | SpMM thread-per-output | output element | one thread | sequential row positions | scalar | sequential |
 | SpMM wave-per-row-tile | row and column tile | one wave | lane-strided positions | tile | wave shuffle |
-| SpMM wave-per-position-tile | stored CSR position and RHS-column group | one wave | cooperative logical-axis mapping | one product per lane | lane-zero broadcast + atomic add |
+| SpMM wave-per-position-tile | chunk of stored CSR positions and RHS-column group | one wave | cooperative logical-axis mapping | one output-key segment per lane | lane-zero broadcast + local accumulation + atomic add |
 
 For example, wave-per-row SpMV becomes:
 

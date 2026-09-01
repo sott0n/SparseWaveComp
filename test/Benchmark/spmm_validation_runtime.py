@@ -26,23 +26,25 @@ for sparse_format in ["csr", "bsr"]:
         source_text = benchmark.render_mlir(
             Path(sys.argv[1]) / "spmm.mlir.in", matrix, 8, 3
         )
-        mappings = benchmark.MAPPINGS
+        mappings = [(mapping, 1) for mapping in benchmark.MAPPINGS]
+        mappings.append((benchmark.COOPERATIVE_POSITION_MAPPING, 4))
     else:
         bsr = benchmark.common.convert_to_bsr(matrix, 2)
         benchmark.common.write_bsr_binary(binary, bsr)
         source_text = benchmark.render_bsr_mlir(
             Path(sys.argv[1]) / "bsr_spmm.mlir.in", bsr, 8, 3
         )
-        mappings = [benchmark.BASELINE_MAPPING]
+        mappings = [(benchmark.BASELINE_MAPPING, 1)]
     source = root / f"{sparse_format}.mlir"
     source.write_text(source_text)
-    for mapping in mappings:
-        compiled = root / f"{sparse_format}-{mapping}.mlir"
+    for mapping, chunk_size in mappings:
+        compiled = root / f"{sparse_format}-{mapping}-{chunk_size}.mlir"
         pipeline = (
             "builtin.module(convert-scf-to-cf,"
             "sparsewave-to-amdgpu-pipeline{"
             f"chip={chip} wavefront-size=32 spmm-block-size=64 "
-            f"spmm-mapping={mapping}"
+            f"spmm-mapping={mapping} "
+            f"spmm-position-chunk-size={chunk_size}"
             "},reconcile-unrealized-casts)"
         )
         subprocess.run(
@@ -64,5 +66,5 @@ for sparse_format in ["csr", "bsr"]:
             check=True,
         )
         assert result.stdout.strip().endswith("[0]"), (
-            sparse_format, mapping, result.stdout, result.stderr
+            sparse_format, mapping, chunk_size, result.stdout, result.stderr
         )

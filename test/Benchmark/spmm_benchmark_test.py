@@ -252,7 +252,7 @@ amdhsa.kernels:
                     "wave-per-position-tile",
                     64,
                     None,
-                    None,
+                    4,
                     None,
                     None,
                 ),
