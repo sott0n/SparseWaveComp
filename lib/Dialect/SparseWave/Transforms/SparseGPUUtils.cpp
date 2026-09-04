@@ -100,20 +100,6 @@ SmallVector<Value> buildCSRPositionTraversal(OpBuilder &builder, Location loc,
   return SmallVector<Value>(loop.getResults());
 }
 
-CSRSpMVProduct buildCSRSpMVProduct(OpBuilder &builder, Location loc,
-                                   Value rowOffsets, Value columnIndices,
-                                   Value values, Value vector, Value position) {
-  Value row = CSRRowAtPositionOp::create(builder, loc, builder.getIndexType(),
-                                         rowOffsets, position);
-  Value columnValue =
-      memref::LoadOp::create(builder, loc, columnIndices, position);
-  Value column = castToIndex(builder, loc, columnValue);
-  Value sparseValue = memref::LoadOp::create(builder, loc, values, position);
-  Value vectorValue = memref::LoadOp::create(builder, loc, vector, column);
-  Value product = arith::MulFOp::create(builder, loc, sparseValue, vectorValue);
-  return {row, product};
-}
-
 SmallVector<Value>
 buildCSRCoiteration(OpBuilder &builder, Location loc, Value lhsColumnIndices,
                     CompressedRowBounds lhsBounds, Value rhsColumnIndices,

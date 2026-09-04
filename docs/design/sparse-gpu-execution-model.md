@@ -191,6 +191,7 @@ The current mappings can be described by composing the components:
 | SpMV wave-per-position | stored CSR position range | one wave | position-space partition + coordinate recovery | segmented partial sums | wave segmented scan + atomic add |
 | SpMV wave-per-row | CSR row | one wave | lane-strided positions | scalar | wave shuffle |
 | SpMV block-per-row | CSR row | one block | thread-strided positions | scalar | wave shuffle + LDS |
+| COO SpMV thread-per-position | stored COO position chunk | one thread | direct row and column index loads | scalar product or same-row partial sum | per-position or segment-end atomic add |
 | SpMM thread-per-output | output element | one thread | sequential row positions | scalar | sequential |
 | SpMM wave-per-row-tile | row and column tile | one wave | lane-strided positions | tile | wave shuffle |
 | SpMM wave-per-position-tile | chunk of stored CSR positions and RHS-column group | one wave | cooperative logical-axis mapping | one output-key segment per lane | lane-zero broadcast + local accumulation + atomic add |

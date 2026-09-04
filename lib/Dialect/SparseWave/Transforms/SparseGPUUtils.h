@@ -45,11 +45,6 @@ struct CSRPosition {
   Value value;
 };
 
-struct CSRSpMVProduct {
-  Value row;
-  Value product;
-};
-
 struct WaveSegmentedReduction {
   Value inclusiveValue;
   Value segmentEnd;
@@ -98,10 +93,6 @@ SmallVector<Value> buildCSRPositionTraversal(OpBuilder &builder, Location loc,
                                              StridedPositionRange positions,
                                              ValueRange initialValues,
                                              CSRPositionBodyBuilder buildBody);
-
-CSRSpMVProduct buildCSRSpMVProduct(OpBuilder &builder, Location loc,
-                                   Value rowOffsets, Value columnIndices,
-                                   Value values, Value vector, Value position);
 
 SmallVector<Value>
 buildCSRCoiteration(OpBuilder &builder, Location loc, Value lhsColumnIndices,

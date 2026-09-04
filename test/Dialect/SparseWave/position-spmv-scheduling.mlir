@@ -2,6 +2,9 @@
 // RUN:   --decompose-position-spmv \
 // RUN:   | FileCheck %s --check-prefix=DECOMPOSE
 // RUN: sparsewave-opt %s \
+// RUN:   --decompose-position-spmv='preserve-direct-mapping=true' \
+// RUN:   | FileCheck %s --check-prefix=DIRECT
+// RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(decompose-position-spmv,schedule-sparsewave-position{mapping=thread block-size=128})' \
 // RUN:   | FileCheck %s --check-prefix=THREAD
 // RUN: sparsewave-opt %s \
@@ -24,6 +27,10 @@
 // DECOMPOSE: %[[PRODUCT:.*]] = arith.mulf
 // DECOMPOSE: sparsewave.yield %[[ROW]], %[[PRODUCT]] : index, f32
 // DECOMPOSE-NOT: sparsewave.spmv
+
+// DIRECT-LABEL: func.func @spmv(
+// DIRECT: sparsewave.spmv
+// DIRECT-NOT: sparsewave.position_reduce
 
 // THREAD-LABEL: func.func @spmv(
 // THREAD-NOT: gpu.launch

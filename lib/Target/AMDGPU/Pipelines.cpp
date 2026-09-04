@@ -237,23 +237,23 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   pm.addNestedPass<func::FuncOp>(createSCFToControlFlowPass());
   pm.addPass(memref::createExpandStridedMetadataPass());
 
-  // Decompose position-space SpMV into a generic keyed reduction, then apply
-  // an operator-independent position schedule. Row-space mappings are handled
-  // directly by the GPU pass.
+  // Decompose bridge operations selected for position traversal into generic
+  // keyed reductions, then apply the common position schedule. Operations
+  // using direct mappings remain for the GPU conversion pass.
   bool usesPositionSpMV = options.spmvMapping == "thread-per-position" ||
                           options.spmvMapping == "wave-per-position";
-  if (usesPositionSpMV) {
-    pm.addPass(createDecomposePositionSpMV());
-    ScheduleSparseWavePositionOptions scheduleOptions;
-    scheduleOptions.mapping =
-        options.spmvMapping == "thread-per-position" ? "thread" : "wave";
-    scheduleOptions.blockSize = options.spmvBlockSize;
-    scheduleOptions.waveSize =
-        static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
-    scheduleOptions.threadChunkSize = options.spmvPositionChunkSize;
-    scheduleOptions.threadReduction = options.spmvPositionReduction;
-    pm.addPass(createScheduleSparseWavePosition(scheduleOptions));
-  }
+  DecomposePositionSpMVOptions decompositionOptions;
+  decompositionOptions.preserveDirectMapping = !usesPositionSpMV;
+  pm.addPass(createDecomposePositionSpMV(decompositionOptions));
+  ScheduleSparseWavePositionOptions spmvScheduleOptions;
+  spmvScheduleOptions.mapping =
+      options.spmvMapping == "wave-per-position" ? "wave" : "thread";
+  spmvScheduleOptions.blockSize = options.spmvBlockSize;
+  spmvScheduleOptions.waveSize =
+      static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
+  spmvScheduleOptions.threadChunkSize = options.spmvPositionChunkSize;
+  spmvScheduleOptions.threadReduction = options.spmvPositionReduction;
+  pm.addPass(createScheduleSparseWavePosition(spmvScheduleOptions));
 
   // Decompose SpMM semantics into a canonical keyed reduction. A separate,
   // operator-independent pass selects the logical axis order before applying

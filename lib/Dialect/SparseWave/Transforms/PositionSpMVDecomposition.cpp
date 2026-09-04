@@ -16,28 +16,90 @@ namespace mlir::sparsewave {
 
 namespace {
 
-class DecomposePositionSpMVPattern : public OpRewritePattern<SpMVOp> {
-public:
-  using OpRewritePattern::OpRewritePattern;
+struct PositionSpMVElement {
+  Value row;
+  Value column;
+  Value value;
+};
 
-  LogicalResult matchAndRewrite(SpMVOp op,
+// These adapters isolate the format-specific SparseWave bridge operations.
+// Removing this compatibility boundary requires upstream SparseTensor
+// iteration to support the mixed sparse/dense contractions consumed here.
+struct CSRPositionSpMVAdapter {
+  using Op = SpMVOp;
+
+  static Value getValues(Op op) { return op.getValues(); }
+  static Value getVector(Op op) { return op.getVector(); }
+  static Value getOutput(Op op) { return op.getOutput(); }
+
+  static PositionSpMVElement buildElement(OpBuilder &builder, Location loc,
+                                          Op op, Value position) {
+    Value row = CSRRowAtPositionOp::create(builder, loc, builder.getIndexType(),
+                                           op.getRowOffsets(), position);
+    Value columnValue =
+        memref::LoadOp::create(builder, loc, op.getColumnIndices(), position);
+    Value column = castToIndex(builder, loc, columnValue);
+    Value value =
+        memref::LoadOp::create(builder, loc, op.getValues(), position);
+    return {row, column, value};
+  }
+};
+
+struct COOPositionSpMVAdapter {
+  using Op = COOSpMVOp;
+
+  static Value getValues(Op op) { return op.getValues(); }
+  static Value getVector(Op op) { return op.getVector(); }
+  static Value getOutput(Op op) { return op.getOutput(); }
+
+  static PositionSpMVElement buildElement(OpBuilder &builder, Location loc,
+                                          Op op, Value position) {
+    Value rowValue =
+        memref::LoadOp::create(builder, loc, op.getRowIndices(), position);
+    Value columnValue =
+        memref::LoadOp::create(builder, loc, op.getColumnIndices(), position);
+    Value row = castToIndex(builder, loc, rowValue);
+    Value column = castToIndex(builder, loc, columnValue);
+    Value value =
+        memref::LoadOp::create(builder, loc, op.getValues(), position);
+    return {row, column, value};
+  }
+};
+
+template <typename Adapter>
+void createPositionSpMVReduction(PatternRewriter &rewriter,
+                                 typename Adapter::Op op) {
+  Location loc = op.getLoc();
+  Value values = Adapter::getValues(op);
+  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value nonzeroCount = memref::DimOp::create(rewriter, loc, values, zero);
+  auto reduction = PositionReduceOp::create(
+      rewriter, loc, ValueRange{zero}, ValueRange{nonzeroCount},
+      rewriter.getStrArrayAttr({"position"}),
+      rewriter.getDenseI64ArrayAttr({0}), Adapter::getOutput(op), "sum");
+  Block *body =
+      rewriter.createBlock(&reduction.getBody(), reduction.getBody().end(),
+                           {rewriter.getIndexType()}, {loc});
+  rewriter.setInsertionPointToStart(body);
+  PositionSpMVElement element =
+      Adapter::buildElement(rewriter, loc, op, body->getArgument(0));
+  Value vectorValue = memref::LoadOp::create(
+      rewriter, loc, Adapter::getVector(op), element.column);
+  Value product =
+      arith::MulFOp::create(rewriter, loc, element.value, vectorValue);
+  YieldOp::create(rewriter, loc, ValueRange{element.row, product});
+}
+
+template <typename Adapter>
+class DecomposePositionSpMVPattern
+    : public OpRewritePattern<typename Adapter::Op> {
+public:
+  using Op = typename Adapter::Op;
+  using OpRewritePattern<Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Op op,
                                 PatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
-    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value nonzeroCount =
-        memref::DimOp::create(rewriter, loc, op.getValues(), zero);
-    auto reduction = PositionReduceOp::create(
-        rewriter, loc, ValueRange{zero}, ValueRange{nonzeroCount},
-        rewriter.getStrArrayAttr({"position"}),
-        rewriter.getDenseI64ArrayAttr({0}), op.getOutput(), "sum");
-    Block *body =
-        rewriter.createBlock(&reduction.getBody(), reduction.getBody().end(),
-                             {rewriter.getIndexType()}, {loc});
-    rewriter.setInsertionPointToStart(body);
-    CSRSpMVProduct element = buildCSRSpMVProduct(
-        rewriter, loc, op.getRowOffsets(), op.getColumnIndices(),
-        op.getValues(), op.getVector(), body->getArgument(0));
-    YieldOp::create(rewriter, loc, ValueRange{element.row, element.product});
+    createPositionSpMVReduction<Adapter>(rewriter, op);
     rewriter.eraseOp(op);
     return success();
   }
@@ -51,7 +113,11 @@ public:
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<DecomposePositionSpMVPattern>(&getContext());
+    patterns.add<DecomposePositionSpMVPattern<COOPositionSpMVAdapter>>(
+        &getContext());
+    if (!preserveDirectMapping)
+      patterns.add<DecomposePositionSpMVPattern<CSRPositionSpMVAdapter>>(
+          &getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
   }

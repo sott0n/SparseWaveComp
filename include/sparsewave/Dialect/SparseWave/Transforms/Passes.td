@@ -112,13 +112,21 @@ def LowerSparseWavePositionSpace
 
 def DecomposePositionSpMV
     : Pass<"decompose-position-spmv", "::mlir::ModuleOp"> {
-  let summary = "Decompose CSR SpMV into a keyed position reduction";
+  let summary = "Decompose SpMV into a keyed position reduction";
   let description = [{
-    Rewrites sparsewave.spmv into sparsewave.position_reduce. The resulting
-    operator-independent reduction region recovers each stored position's CSR
-    coordinates and yields the output row together with the matrix-vector
-    product. No parallel mapping or GPU launch strategy is selected.
+    Rewrites supported SpMV bridge operations into
+    sparsewave.position_reduce. Storage adapters recover each stored
+    position's coordinates and value, while common decomposition constructs
+    the matrix-vector product and keyed reduction. No GPU launch strategy is
+    selected. Bridge operations using a requested direct mapping remain for
+    compatibility until those mappings are represented by reusable execution
+    primitives.
   }];
+  let options = [
+    Option<"preserveDirectMapping", "preserve-direct-mapping", "bool",
+           /*default=*/"false",
+           "Preserve bridge operations assigned to a direct compatibility path">
+  ];
   let dependentDialects = [
     "arith::ArithDialect",
     "memref::MemRefDialect",
@@ -220,22 +228,11 @@ def ConvertSparseWaveToGPU
     : Pass<"convert-sparsewave-to-gpu", "::mlir::ModuleOp"> {
   let summary = "Map SparseWave operations to GPU launches";
   let description = [{
-    Lowers sparsewave.spmv, sparsewave.coo_spmv, sparsewave.spmm,
-    sparsewave.bsr_spmm, sparsewave.sddmm, sparsewave.csr_rowwise_map, and
-    sparsewave.csr_elementwise to one-dimensional GPU launches. Also lowers
-    sparsewave.position_parallel by mapping its logical workers and
-    participants to threads, waves, or blocks.
-    CSR SpMV can assign one GPU thread, one GPU wave, or one GPU block to each
-    matrix row. Position-space reductions are first made explicit by
-    schedule-sparsewave-position, then this pass maps their logical parallel
-    workers to the GPU. COO SpMV
-    assigns one thread to each nonzero and atomically accumulates the output.
-    CSR SpMM can assign one GPU thread to each dense
-    output element or one GPU wave to a CSR row and a tile of dense output
-    columns. BSR SpMM initially assigns one GPU thread to each dense output
-    element. SDDMM and CSR row reduction assign one thread to each CSR row.
-    SDDMM computes sampled dot products sequentially. CSR elementwise operations use parallel
-    row-wise symbolic and numeric coiteration around a sequential prefix scan.
+    Maps explicit SparseWave execution operations to GPU launches. Logical
+    workers and participants produced by scheduling are assigned to GPU
+    threads, waves, or blocks. Higher-level bridge operations that have not
+    yet been decomposed into reusable execution primitives are handled by
+    compatibility patterns.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",
