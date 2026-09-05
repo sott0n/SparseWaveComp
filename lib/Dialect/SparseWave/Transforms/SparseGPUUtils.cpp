@@ -31,6 +31,28 @@ buildLinearThreadWorkDistribution(PatternRewriter &rewriter, Location loc,
   return {launch, workUnit, workUnitIsActive};
 }
 
+gpu::LaunchOp buildThreadPerCompressedSegment(
+    PatternRewriter &rewriter, Location loc, Value segmentCount, Value offsets,
+    Value oneIndex, Value blockSize,
+    ThreadPerCompressedSegmentBodyBuilder buildBody) {
+  LinearThreadWorkDistribution distribution = buildLinearThreadWorkDistribution(
+      rewriter, loc, segmentCount, oneIndex, blockSize);
+
+  scf::IfOp::create(
+      rewriter, loc, distribution.workUnitIsActive,
+      [&](OpBuilder &builder, Location bodyLoc) {
+        CompressedSegmentBounds bounds = buildCompressedSegmentBounds(
+            builder, bodyLoc, offsets, distribution.workUnit, oneIndex);
+        buildBody(builder, bodyLoc, distribution.workUnit, bounds);
+        scf::YieldOp::create(builder, bodyLoc);
+      },
+      {});
+
+  rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
+  gpu::TerminatorOp::create(rewriter, loc);
+  return distribution.launch;
+}
+
 WaveWorkDistribution
 buildWaveWorkDistribution(PatternRewriter &rewriter, Location loc,
                           Value workUnitCount, Value oneIndex, Value blockSize,

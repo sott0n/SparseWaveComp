@@ -66,6 +66,9 @@ struct CompressedCoiterationEntry {
 using CompressedPositionBodyBuilder = llvm::function_ref<SmallVector<Value>(
     OpBuilder &, Location, CompressedPosition, ValueRange)>;
 
+using ThreadPerCompressedSegmentBodyBuilder = llvm::function_ref<void(
+    OpBuilder &, Location, Value, CompressedSegmentBounds)>;
+
 using CompressedCoiterationBodyBuilder = llvm::function_ref<SmallVector<Value>(
     OpBuilder &, Location, CompressedCoiterationEntry, ValueRange)>;
 
@@ -73,6 +76,13 @@ LinearThreadWorkDistribution
 buildLinearThreadWorkDistribution(PatternRewriter &rewriter, Location loc,
                                   Value workUnitCount, Value oneIndex,
                                   Value blockSize);
+
+/// Assigns one compressed segment to each GPU thread and builds the active
+/// segment body with its position bounds.
+gpu::LaunchOp buildThreadPerCompressedSegment(
+    PatternRewriter &rewriter, Location loc, Value segmentCount, Value offsets,
+    Value oneIndex, Value blockSize,
+    ThreadPerCompressedSegmentBodyBuilder buildBody);
 
 WaveWorkDistribution
 buildWaveWorkDistribution(PatternRewriter &rewriter, Location loc,
