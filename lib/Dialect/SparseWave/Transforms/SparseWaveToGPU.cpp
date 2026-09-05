@@ -664,16 +664,10 @@ public:
         arith::ConstantIndexOp::create(rewriter, loc, blockSize);
     Value rowCount =
         memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
-    LinearThreadWorkDistribution distribution =
-        buildLinearThreadWorkDistribution(rewriter, loc, rowCount, oneIndex,
-                                          blockSizeValue);
-    Value row = distribution.workUnit;
-
-    scf::IfOp::create(
-        rewriter, loc, distribution.workUnitIsActive,
-        [&](OpBuilder &builder, Location bodyLoc) {
-          CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
-              builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
+    gpu::LaunchOp launch = buildThreadPerCompressedSegment(
+        rewriter, loc, rowCount, op.getRowOffsets(), oneIndex, blockSizeValue,
+        [&](OpBuilder &builder, Location bodyLoc, Value row,
+            CompressedSegmentBounds rowBounds) {
           auto valueType = cast<FloatType>(
               cast<MemRefType>(op.getValues().getType()).getElementType());
           FloatAttr identityAttr =
@@ -703,12 +697,8 @@ public:
               });
           memref::StoreOp::create(builder, bodyLoc, reduction.getResult(0),
                                   op.getOutput(), row);
-          scf::YieldOp::create(builder, bodyLoc);
         });
-
-    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
-    gpu::TerminatorOp::create(rewriter, loc);
-    propagateKernelName(op, distribution.launch);
+    propagateKernelName(op, launch);
     rewriter.eraseOp(op);
     return success();
   }
@@ -732,16 +722,10 @@ public:
         arith::ConstantIndexOp::create(rewriter, loc, blockSize);
     Value rowCount =
         memref::DimOp::create(rewriter, loc, op.getRowValues(), zeroIndex);
-    LinearThreadWorkDistribution distribution =
-        buildLinearThreadWorkDistribution(rewriter, loc, rowCount, oneIndex,
-                                          blockSizeValue);
-    Value row = distribution.workUnit;
-
-    scf::IfOp::create(
-        rewriter, loc, distribution.workUnitIsActive,
-        [&](OpBuilder &builder, Location bodyLoc) {
-          CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
-              builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
+    gpu::LaunchOp launch = buildThreadPerCompressedSegment(
+        rewriter, loc, rowCount, op.getRowOffsets(), oneIndex, blockSizeValue,
+        [&](OpBuilder &builder, Location bodyLoc, Value row,
+            CompressedSegmentBounds rowBounds) {
           Value rowValue =
               memref::LoadOp::create(builder, bodyLoc, op.getRowValues(), row);
           Block &mapBody = op.getBody().front();
@@ -763,12 +747,8 @@ public:
                                         op.getOutputValues(), position);
                 scf::YieldOp::create(mapBuilder, mapLoc);
               });
-          scf::YieldOp::create(builder, bodyLoc);
         });
-
-    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
-    gpu::TerminatorOp::create(rewriter, loc);
-    propagateKernelName(op, distribution.launch);
+    propagateKernelName(op, launch);
     rewriter.eraseOp(op);
     return success();
   }
