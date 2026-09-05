@@ -116,12 +116,11 @@ def DecomposePositionSpMV
   let summary = "Decompose SpMV into a keyed position reduction";
   let description = [{
     Rewrites supported SpMV bridge operations into
-    sparsewave.position_reduce. Storage adapters recover each stored
-    position's coordinates and value, while common decomposition constructs
-    the matrix-vector product and keyed reduction. No GPU launch strategy is
-    selected. Bridge operations using a requested direct mapping remain for
-    compatibility until those mappings are represented by reusable execution
-    primitives.
+    sparsewave.position_reduce. Storage and vector-contraction adapters supply
+    the format and computation semantics to the common position-contraction
+    decomposition. No GPU launch strategy is selected. Bridge operations using
+    a requested direct mapping remain for compatibility until those mappings
+    are represented by reusable execution primitives.
   }];
   let options = [
     Option<"preserveDirectMapping", "preserve-direct-mapping", "bool",
@@ -139,12 +138,11 @@ def DecomposePositionSpMM
     : Pass<"decompose-position-spmm", "::mlir::ModuleOp"> {
   let summary = "Decompose SpMM into a keyed position reduction";
   let description = [{
-    Uses a storage adapter to obtain each sparse element, then constructs a
-    rank-2 sparsewave.position_reduce whose logical axes are sparse position
-    and dense output column in canonical order. The common reduction region
-    yields the flattened output coordinate together with the sparse-dense
-    product. Axis reordering, parallel mapping, and GPU launch strategy are
-    selected by later scheduling passes.
+    Supplies storage and matrix-contraction adapters to the common
+    position-contraction decomposition. The resulting rank-2
+    sparsewave.position_reduce uses sparse position and dense output column as
+    its logical axes. Axis reordering, parallel mapping, and GPU launch strategy
+    are selected by later scheduling passes.
   }];
   let dependentDialects = [
     "arith::ArithDialect",

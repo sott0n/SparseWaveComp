@@ -1,7 +1,7 @@
 // RUN: not sparsewave-opt %s --decompose-position-spmm 2>&1 \
 // RUN:   | FileCheck %s
 
-// CHECK: position-space SpMM requires an identity-layout output memref
+// CHECK: position-space matrix contraction requires an identity-layout output memref
 
 func.func @strided_output(
     %rowOffsets: memref<?xi32>,

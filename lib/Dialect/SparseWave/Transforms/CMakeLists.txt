@@ -1,8 +1,7 @@
 add_mlir_library(SparseWaveTransforms
   LinalgSparseToSparseWave.cpp
   PrepareGPUBarePtrABI.cpp
-  PositionSpMVDecomposition.cpp
-  PositionSpMMDecomposition.cpp
+  PositionContractionDecomposition.cpp
   SparsePositionReordering.cpp
   SparseLoweringUtils.cpp
   SparsePositionToSCF.cpp
