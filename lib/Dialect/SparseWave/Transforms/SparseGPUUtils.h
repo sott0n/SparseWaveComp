@@ -39,6 +39,13 @@ struct StridedPositionRange {
   Value stride;
 };
 
+struct WaveCompressedSegment {
+  Value segment;
+  Value lane;
+  CompressedSegmentBounds bounds;
+  StridedPositionRange positions;
+};
+
 struct CompressedPosition {
   Value position;
   Value coordinate;
@@ -69,6 +76,9 @@ using CompressedPositionBodyBuilder = llvm::function_ref<SmallVector<Value>(
 using ThreadPerCompressedSegmentBodyBuilder = llvm::function_ref<void(
     OpBuilder &, Location, Value, CompressedSegmentBounds)>;
 
+using WavePerCompressedSegmentBodyBuilder =
+    llvm::function_ref<void(OpBuilder &, Location, WaveCompressedSegment)>;
+
 using CompressedCoiterationBodyBuilder = llvm::function_ref<SmallVector<Value>(
     OpBuilder &, Location, CompressedCoiterationEntry, ValueRange)>;
 
@@ -83,6 +93,13 @@ gpu::LaunchOp buildThreadPerCompressedSegment(
     PatternRewriter &rewriter, Location loc, Value segmentCount, Value offsets,
     Value oneIndex, Value blockSize,
     ThreadPerCompressedSegmentBodyBuilder buildBody);
+
+/// Assigns one compressed segment to each GPU wave and builds the active
+/// segment body with lane-strided position bounds.
+gpu::LaunchOp buildWavePerCompressedSegment(
+    PatternRewriter &rewriter, Location loc, Value segmentCount, Value offsets,
+    Value oneIndex, Value blockSize, Value waveSize, Value wavesPerBlock,
+    WavePerCompressedSegmentBodyBuilder buildBody);
 
 WaveWorkDistribution
 buildWaveWorkDistribution(PatternRewriter &rewriter, Location loc,

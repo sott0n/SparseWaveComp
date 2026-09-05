@@ -200,20 +200,11 @@ public:
         arith::ConstantIndexOp::create(rewriter, loc, blockSize / waveSize);
     Value rowCount =
         memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
-    WaveWorkDistribution distribution = buildWaveWorkDistribution(
-        rewriter, loc, rowCount, oneIndex, blockSizeValue, waveSizeValue,
-        wavesPerBlockValue);
-    Value row = distribution.workUnit;
-
-    scf::IfOp::create(
-        rewriter, loc, distribution.workUnitIsActive,
-        [&](OpBuilder &builder, Location bodyLoc) {
-          CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
-              builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
-          StridedPositionRange positions = buildStridedPositionRange(
-              builder, bodyLoc, rowBounds, distribution.lane,
-              distribution.positionStride);
-
+    buildWavePerCompressedSegment(
+        rewriter, loc, rowCount, op.getRowOffsets(), oneIndex, blockSizeValue,
+        waveSizeValue, wavesPerBlockValue,
+        [&](OpBuilder &builder, Location bodyLoc,
+            WaveCompressedSegment segment) {
           auto valueType =
               cast<MemRefType>(op.getValues().getType()).getElementType();
           Value zero = arith::ConstantOp::create(
@@ -221,7 +212,7 @@ public:
           SmallVector<Value> partialReduction =
               buildCompressedPositionTraversal(
                   builder, bodyLoc, op.getColumnIndices(), op.getValues(),
-                  positions, ValueRange{zero},
+                  segment.positions, ValueRange{zero},
                   [&](OpBuilder &loopBuilder, Location loopLoc,
                       CompressedPosition position, ValueRange iterArgs) {
                     Value vectorValue = memref::LoadOp::create(
@@ -239,20 +230,15 @@ public:
 
           Value laneIsZero =
               arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
-                                    distribution.lane, zeroIndex);
+                                    segment.lane, zeroIndex);
           scf::IfOp::create(builder, bodyLoc, laneIsZero,
                             [&](OpBuilder &storeBuilder, Location storeLoc) {
                               memref::StoreOp::create(storeBuilder, storeLoc,
                                                       waveSum, op.getOutput(),
-                                                      row);
+                                                      segment.segment);
                               scf::YieldOp::create(storeBuilder, storeLoc);
                             });
-          scf::YieldOp::create(builder, bodyLoc);
-        },
-        {});
-
-    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
-    gpu::TerminatorOp::create(rewriter, loc);
+        });
     rewriter.eraseOp(op);
     return success();
   }
