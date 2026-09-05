@@ -137,12 +137,12 @@ def DecomposePositionSpMV
 
 def DecomposePositionSpMM
     : Pass<"decompose-position-spmm", "::mlir::ModuleOp"> {
-  let summary = "Decompose CSR SpMM into a keyed position reduction";
+  let summary = "Decompose SpMM into a keyed position reduction";
   let description = [{
-    Rewrites sparsewave.spmm into a rank-2 sparsewave.position_reduce whose
-    logical axes are sparse position and dense output column in canonical
-    order. The reduction region remains independent from collapse arithmetic
-    and yields the flattened output coordinate together with the sparse-dense
+    Uses a storage adapter to obtain each sparse element, then constructs a
+    rank-2 sparsewave.position_reduce whose logical axes are sparse position
+    and dense output column in canonical order. The common reduction region
+    yields the flattened output coordinate together with the sparse-dense
     product. Axis reordering, parallel mapping, and GPU launch strategy are
     selected by later scheduling passes.
   }];
