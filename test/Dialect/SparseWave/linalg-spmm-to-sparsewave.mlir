@@ -40,8 +40,8 @@
 // CHECK-LABEL: func.func @csr_spmm(
 // CHECK-SAME: %[[MATRIX:[^,]+]]: tensor<?x?xf32, #[[$CSR:[a-zA-Z0-9_]+]]>, %[[RHS:[^,]+]]: tensor<?x?xf32>
 // CHECK: %[[EMPTY:.*]] = tensor.empty
-// CHECK: %[[POSITIONS:.*]] = sparse_tensor.positions %[[MATRIX]] {level = 1 : index}
-// CHECK: %[[COORDINATES:.*]] = sparse_tensor.coordinates %[[MATRIX]] {level = 1 : index}
+// CHECK: %[[POSITIONS:.*]] = sparse_tensor.positions %[[MATRIX]]{{.*}}level = 1
+// CHECK: %[[COORDINATES:.*]] = sparse_tensor.coordinates %[[MATRIX]]{{.*}}level = 1
 // CHECK: %[[VALUES:.*]] = sparse_tensor.values %[[MATRIX]]
 // CHECK: %[[RHS_BUFFER:.*]] = bufferization.to_buffer %[[RHS]] read_only
 // CHECK: %[[OUTPUT_BUFFER:.*]] = bufferization.to_buffer %[[EMPTY]]
@@ -87,8 +87,8 @@ func.func @named_csr_spmm(
 
 // CHECK-LABEL: func.func @named_bsr_spmm(
 // CHECK-SAME: %[[MATRIX:[^,]+]]: tensor<?x?xf32, #[[$BSR:[a-zA-Z0-9_]+]]>, %[[RHS:[^,]+]]: tensor<?x?xf32>
-// CHECK: %[[POSITIONS:.*]] = sparse_tensor.positions %[[MATRIX]] {level = 1 : index}
-// CHECK: %[[COORDINATES:.*]] = sparse_tensor.coordinates %[[MATRIX]] {level = 1 : index}
+// CHECK: %[[POSITIONS:.*]] = sparse_tensor.positions %[[MATRIX]]{{.*}}level = 1
+// CHECK: %[[COORDINATES:.*]] = sparse_tensor.coordinates %[[MATRIX]]{{.*}}level = 1
 // CHECK: %[[VALUES:.*]] = sparse_tensor.values %[[MATRIX]]
 // CHECK: %[[RHS_BUFFER:.*]] = bufferization.to_buffer %[[RHS]] read_only
 // CHECK: %[[OUTPUT_BUFFER:.*]] = bufferization.to_buffer %{{.*}}

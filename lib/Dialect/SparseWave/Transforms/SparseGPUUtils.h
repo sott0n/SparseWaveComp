@@ -28,7 +28,7 @@ struct WaveWorkDistribution {
   Value positionStride;
 };
 
-struct CompressedRowBounds {
+struct CompressedSegmentBounds {
   Value start;
   Value end;
 };
@@ -39,9 +39,9 @@ struct StridedPositionRange {
   Value stride;
 };
 
-struct CSRPosition {
+struct CompressedPosition {
   Value position;
-  Value column;
+  Value coordinate;
   Value value;
 };
 
@@ -50,24 +50,24 @@ struct WaveSegmentedReduction {
   Value segmentEnd;
 };
 
-enum class CSRCoiterationKind {
+enum class CompressedCoiterationKind {
   Union,
   Intersection,
 };
 
-struct CSRCoiterationEntry {
-  Value column;
+struct CompressedCoiterationEntry {
+  Value coordinate;
   Value lhsPosition;
   Value rhsPosition;
   Value lhsPresent;
   Value rhsPresent;
 };
 
-using CSRPositionBodyBuilder = llvm::function_ref<SmallVector<Value>(
-    OpBuilder &, Location, CSRPosition, ValueRange)>;
+using CompressedPositionBodyBuilder = llvm::function_ref<SmallVector<Value>(
+    OpBuilder &, Location, CompressedPosition, ValueRange)>;
 
-using CSRCoiterationBodyBuilder = llvm::function_ref<SmallVector<Value>(
-    OpBuilder &, Location, CSRCoiterationEntry, ValueRange)>;
+using CompressedCoiterationBodyBuilder = llvm::function_ref<SmallVector<Value>(
+    OpBuilder &, Location, CompressedCoiterationEntry, ValueRange)>;
 
 LinearThreadWorkDistribution
 buildLinearThreadWorkDistribution(PatternRewriter &rewriter, Location loc,
@@ -79,27 +79,31 @@ buildWaveWorkDistribution(PatternRewriter &rewriter, Location loc,
                           Value workUnitCount, Value oneIndex, Value blockSize,
                           Value waveSize, Value wavesPerBlock);
 
-CompressedRowBounds buildCompressedRowBounds(OpBuilder &builder, Location loc,
-                                             Value rowOffsets, Value row,
-                                             Value oneIndex);
+CompressedSegmentBounds
+buildCompressedSegmentBounds(OpBuilder &builder, Location loc, Value offsets,
+                             Value segment, Value oneIndex);
 
 StridedPositionRange buildStridedPositionRange(OpBuilder &builder, Location loc,
-                                               CompressedRowBounds rowBounds,
+                                               CompressedSegmentBounds bounds,
                                                Value participantOffset,
                                                Value stride);
 
-SmallVector<Value> buildCSRPositionTraversal(OpBuilder &builder, Location loc,
-                                             Value columnIndices, Value values,
-                                             StridedPositionRange positions,
-                                             ValueRange initialValues,
-                                             CSRPositionBodyBuilder buildBody);
+/// Traverses positions in a compressed segment and materializes the aligned
+/// coordinate and value for each position.
+SmallVector<Value> buildCompressedPositionTraversal(
+    OpBuilder &builder, Location loc, Value coordinates, Value values,
+    StridedPositionRange positions, ValueRange initialValues,
+    CompressedPositionBodyBuilder buildBody);
 
-SmallVector<Value>
-buildCSRCoiteration(OpBuilder &builder, Location loc, Value lhsColumnIndices,
-                    CompressedRowBounds lhsBounds, Value rhsColumnIndices,
-                    CompressedRowBounds rhsBounds, CSRCoiterationKind kind,
-                    Value oneIndex, ValueRange initialValues,
-                    CSRCoiterationBodyBuilder buildBody);
+/// Coiterates two sorted, unique coordinate sequences within compressed
+/// segments. Union visits coordinates present in either input; intersection
+/// visits only coordinates present in both inputs.
+SmallVector<Value> buildCompressedCoiteration(
+    OpBuilder &builder, Location loc, Value lhsCoordinates,
+    CompressedSegmentBounds lhsBounds, Value rhsCoordinates,
+    CompressedSegmentBounds rhsBounds, CompressedCoiterationKind kind,
+    Value oneIndex, ValueRange initialValues,
+    CompressedCoiterationBodyBuilder buildBody);
 
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
                          int64_t waveSize);

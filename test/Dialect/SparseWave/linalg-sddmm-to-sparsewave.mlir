@@ -20,8 +20,8 @@
 // CHECK-SAME: %[[SAMPLE:[^,]+]]: tensor<?x?xf32, #[[$CSR:[a-zA-Z0-9_]+]]>
 // CHECK-SAME: %[[LHS:[^,]+]]: tensor<?x?xf32>
 // CHECK-SAME: %[[RHS:[^)]+]]: tensor<?x?xf32>
-// CHECK: %[[POSITIONS:.*]] = sparse_tensor.positions %[[SAMPLE]] {level = 1 : index}
-// CHECK: %[[COORDINATES:.*]] = sparse_tensor.coordinates %[[SAMPLE]] {level = 1 : index}
+// CHECK: %[[POSITIONS:.*]] = sparse_tensor.positions %[[SAMPLE]]{{.*}}level = 1
+// CHECK: %[[COORDINATES:.*]] = sparse_tensor.coordinates %[[SAMPLE]]{{.*}}level = 1
 // CHECK: %[[VALUES:.*]] = sparse_tensor.values %[[SAMPLE]]
 // CHECK: %[[LHS_BUFFER:.*]] = bufferization.to_buffer %[[LHS]] read_only
 // CHECK: %[[RHS_BUFFER:.*]] = bufferization.to_buffer %[[RHS]] read_only

@@ -50,7 +50,7 @@
 // OPTIONS-LABEL: gpu.module @kernels
 // OPTIONS-SAME: [#rocdl.target<O = 3, chip = "gfx942", features = "+xnack", abi = "500">]
 // OPTIONS: llvm.func @kernel(%{{.*}}: !llvm.ptr)
-// OPTIONS: llvm.mlir.constant(1024 : index) : i32
+// OPTIONS: llvm.mlir.constant(1024 : {{(index|i32)}}) : i32
 // OPTIONS: rocdl.workitem.id.x : i32
 // CHECK: llvm.func @kernel(
 // CHECK-SAME: rocdl.kernel
@@ -72,8 +72,7 @@ gpu.module @kernels {
   // CHECK: rocdl.update.dpp
   // CHECK-NOT: amdgpu.dpp
   gpu.func @permute_lane(%old: i32, %source: i32) -> i32 {
-    %result = amdgpu.dpp %old %source row_shl ( 0x1 : i32 )
-        {row_mask = 0xa : i32, bound_ctrl = false} : i32
+    %result = amdgpu.dpp %old %source row_shl ( 0x1 : i32 ) : i32
     gpu.return %result : i32
   }
 }

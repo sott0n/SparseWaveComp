@@ -58,54 +58,53 @@ buildWaveWorkDistribution(PatternRewriter &rewriter, Location loc,
   return {launch, waveInBlock, lane, workUnit, workUnitIsActive, waveSize};
 }
 
-CompressedRowBounds buildCompressedRowBounds(OpBuilder &builder, Location loc,
-                                             Value rowOffsets, Value row,
-                                             Value oneIndex) {
-  Value nextRow = arith::AddIOp::create(builder, loc, row, oneIndex);
-  Value rowStartValue = memref::LoadOp::create(builder, loc, rowOffsets, row);
-  Value rowEndValue = memref::LoadOp::create(builder, loc, rowOffsets, nextRow);
-  return {castToIndex(builder, loc, rowStartValue),
-          castToIndex(builder, loc, rowEndValue)};
+CompressedSegmentBounds
+buildCompressedSegmentBounds(OpBuilder &builder, Location loc, Value offsets,
+                             Value segment, Value oneIndex) {
+  Value nextSegment = arith::AddIOp::create(builder, loc, segment, oneIndex);
+  Value startValue = memref::LoadOp::create(builder, loc, offsets, segment);
+  Value endValue = memref::LoadOp::create(builder, loc, offsets, nextSegment);
+  return {castToIndex(builder, loc, startValue),
+          castToIndex(builder, loc, endValue)};
 }
 
 StridedPositionRange buildStridedPositionRange(OpBuilder &builder, Location loc,
-                                               CompressedRowBounds rowBounds,
+                                               CompressedSegmentBounds bounds,
                                                Value participantOffset,
                                                Value stride) {
   Value first =
-      arith::AddIOp::create(builder, loc, rowBounds.start, participantOffset);
-  return {first, rowBounds.end, stride};
+      arith::AddIOp::create(builder, loc, bounds.start, participantOffset);
+  return {first, bounds.end, stride};
 }
 
-SmallVector<Value> buildCSRPositionTraversal(OpBuilder &builder, Location loc,
-                                             Value columnIndices, Value values,
-                                             StridedPositionRange positions,
-                                             ValueRange initialValues,
-                                             CSRPositionBodyBuilder buildBody) {
+SmallVector<Value> buildCompressedPositionTraversal(
+    OpBuilder &builder, Location loc, Value coordinates, Value values,
+    StridedPositionRange positions, ValueRange initialValues,
+    CompressedPositionBodyBuilder buildBody) {
   auto loop = scf::ForOp::create(
       builder, loc, positions.first, positions.end, positions.stride,
       initialValues,
       [&](OpBuilder &loopBuilder, Location loopLoc, Value position,
           ValueRange iterArgs) {
-        Value columnValue = memref::LoadOp::create(loopBuilder, loopLoc,
-                                                   columnIndices, position);
-        Value column = castToIndex(loopBuilder, loopLoc, columnValue);
+        Value coordinateValue =
+            memref::LoadOp::create(loopBuilder, loopLoc, coordinates, position);
+        Value coordinate = castToIndex(loopBuilder, loopLoc, coordinateValue);
         Value sparseValue =
             memref::LoadOp::create(loopBuilder, loopLoc, values, position);
-        SmallVector<Value> nextValues =
-            buildBody(loopBuilder, loopLoc,
-                      CSRPosition{position, column, sparseValue}, iterArgs);
+        SmallVector<Value> nextValues = buildBody(
+            loopBuilder, loopLoc,
+            CompressedPosition{position, coordinate, sparseValue}, iterArgs);
         scf::YieldOp::create(loopBuilder, loopLoc, nextValues);
       });
   return SmallVector<Value>(loop.getResults());
 }
 
-SmallVector<Value>
-buildCSRCoiteration(OpBuilder &builder, Location loc, Value lhsColumnIndices,
-                    CompressedRowBounds lhsBounds, Value rhsColumnIndices,
-                    CompressedRowBounds rhsBounds, CSRCoiterationKind kind,
-                    Value oneIndex, ValueRange initialValues,
-                    CSRCoiterationBodyBuilder buildBody) {
+SmallVector<Value> buildCompressedCoiteration(
+    OpBuilder &builder, Location loc, Value lhsCoordinates,
+    CompressedSegmentBounds lhsBounds, Value rhsCoordinates,
+    CompressedSegmentBounds rhsBounds, CompressedCoiterationKind kind,
+    Value oneIndex, ValueRange initialValues,
+    CompressedCoiterationBodyBuilder buildBody) {
   SmallVector<Value> initialState{lhsBounds.start, rhsBounds.start};
   llvm::append_range(initialState, initialValues);
   TypeRange stateTypes = ValueRange(initialState).getTypes();
@@ -123,7 +122,7 @@ buildCSRCoiteration(OpBuilder &builder, Location loc, Value lhsColumnIndices,
   Value rhsActive = arith::CmpIOp::create(
       builder, loc, arith::CmpIPredicate::ult, rhsPosition, rhsBounds.end);
   Value condition;
-  if (kind == CSRCoiterationKind::Union)
+  if (kind == CompressedCoiterationKind::Union)
     condition = arith::OrIOp::create(builder, loc, lhsActive, rhsActive);
   else
     condition = arith::AndIOp::create(builder, loc, lhsActive, rhsActive);
@@ -141,53 +140,53 @@ buildCSRCoiteration(OpBuilder &builder, Location loc, Value lhsColumnIndices,
                                     rhsPosition, rhsBounds.end);
 
   // A union iteration may have exhausted one input. Select the active input as
-  // the fallback so neither branch performs an out-of-bounds column load.
-  auto lhsColumnSelection = scf::IfOp::create(
+  // the fallback so neither branch performs an out-of-bounds coordinate load.
+  auto lhsCoordinateSelection = scf::IfOp::create(
       builder, loc, lhsActive,
       [&](OpBuilder &thenBuilder, Location thenLoc) {
-        Value columnValue = memref::LoadOp::create(
-            thenBuilder, thenLoc, lhsColumnIndices, lhsPosition);
-        Value column = castToIndex(thenBuilder, thenLoc, columnValue);
-        scf::YieldOp::create(thenBuilder, thenLoc, column);
+        Value coordinateValue = memref::LoadOp::create(
+            thenBuilder, thenLoc, lhsCoordinates, lhsPosition);
+        Value coordinate = castToIndex(thenBuilder, thenLoc, coordinateValue);
+        scf::YieldOp::create(thenBuilder, thenLoc, coordinate);
       },
       [&](OpBuilder &elseBuilder, Location elseLoc) {
-        Value columnValue = memref::LoadOp::create(
-            elseBuilder, elseLoc, rhsColumnIndices, rhsPosition);
-        Value column = castToIndex(elseBuilder, elseLoc, columnValue);
-        scf::YieldOp::create(elseBuilder, elseLoc, column);
+        Value coordinateValue = memref::LoadOp::create(
+            elseBuilder, elseLoc, rhsCoordinates, rhsPosition);
+        Value coordinate = castToIndex(elseBuilder, elseLoc, coordinateValue);
+        scf::YieldOp::create(elseBuilder, elseLoc, coordinate);
       });
-  auto rhsColumnSelection = scf::IfOp::create(
+  auto rhsCoordinateSelection = scf::IfOp::create(
       builder, loc, rhsActive,
       [&](OpBuilder &thenBuilder, Location thenLoc) {
-        Value columnValue = memref::LoadOp::create(
-            thenBuilder, thenLoc, rhsColumnIndices, rhsPosition);
-        Value column = castToIndex(thenBuilder, thenLoc, columnValue);
-        scf::YieldOp::create(thenBuilder, thenLoc, column);
+        Value coordinateValue = memref::LoadOp::create(
+            thenBuilder, thenLoc, rhsCoordinates, rhsPosition);
+        Value coordinate = castToIndex(thenBuilder, thenLoc, coordinateValue);
+        scf::YieldOp::create(thenBuilder, thenLoc, coordinate);
       },
       [&](OpBuilder &elseBuilder, Location elseLoc) {
-        Value columnValue = memref::LoadOp::create(
-            elseBuilder, elseLoc, lhsColumnIndices, lhsPosition);
-        Value column = castToIndex(elseBuilder, elseLoc, columnValue);
-        scf::YieldOp::create(elseBuilder, elseLoc, column);
+        Value coordinateValue = memref::LoadOp::create(
+            elseBuilder, elseLoc, lhsCoordinates, lhsPosition);
+        Value coordinate = castToIndex(elseBuilder, elseLoc, coordinateValue);
+        scf::YieldOp::create(elseBuilder, elseLoc, coordinate);
       });
-  Value lhsColumn = lhsColumnSelection.getResult(0);
-  Value rhsColumn = rhsColumnSelection.getResult(0);
+  Value lhsCoordinate = lhsCoordinateSelection.getResult(0);
+  Value rhsCoordinate = rhsCoordinateSelection.getResult(0);
 
   Value trueValue = arith::ConstantIntOp::create(builder, loc, 1, 1);
   Value lhsOnly = arith::XOrIOp::create(builder, loc, rhsActive, trueValue);
   Value rhsOnly = arith::XOrIOp::create(builder, loc, lhsActive, trueValue);
   Value lhsPrecedes = arith::CmpIOp::create(
-      builder, loc, arith::CmpIPredicate::ule, lhsColumn, rhsColumn);
+      builder, loc, arith::CmpIPredicate::ule, lhsCoordinate, rhsCoordinate);
   Value rhsPrecedes = arith::CmpIOp::create(
-      builder, loc, arith::CmpIPredicate::ule, rhsColumn, lhsColumn);
+      builder, loc, arith::CmpIPredicate::ule, rhsCoordinate, lhsCoordinate);
   Value takeLhs = arith::AndIOp::create(
       builder, loc, lhsActive,
       arith::OrIOp::create(builder, loc, lhsOnly, lhsPrecedes));
   Value takeRhs = arith::AndIOp::create(
       builder, loc, rhsActive,
       arith::OrIOp::create(builder, loc, rhsOnly, rhsPrecedes));
-  Value column =
-      arith::SelectOp::create(builder, loc, takeLhs, lhsColumn, rhsColumn);
+  Value coordinate = arith::SelectOp::create(builder, loc, takeLhs,
+                                             lhsCoordinate, rhsCoordinate);
 
   Value nextLhsPosition = arith::SelectOp::create(
       builder, loc, takeLhs,
@@ -195,7 +194,7 @@ buildCSRCoiteration(OpBuilder &builder, Location loc, Value lhsColumnIndices,
   Value nextRhsPosition = arith::SelectOp::create(
       builder, loc, takeRhs,
       arith::AddIOp::create(builder, loc, rhsPosition, oneIndex), rhsPosition);
-  Value emit = kind == CSRCoiterationKind::Union
+  Value emit = kind == CompressedCoiterationKind::Union
                    ? trueValue
                    : arith::AndIOp::create(builder, loc, takeLhs, takeRhs);
 
@@ -204,8 +203,8 @@ buildCSRCoiteration(OpBuilder &builder, Location loc, Value lhsColumnIndices,
       [&](OpBuilder &thenBuilder, Location thenLoc) {
         SmallVector<Value> nextValues =
             buildBody(thenBuilder, thenLoc,
-                      CSRCoiterationEntry{column, lhsPosition, rhsPosition,
-                                          takeLhs, takeRhs},
+                      CompressedCoiterationEntry{coordinate, lhsPosition,
+                                                 rhsPosition, takeLhs, takeRhs},
                       iterArgs);
         scf::YieldOp::create(thenBuilder, thenLoc, nextValues);
       },

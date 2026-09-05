@@ -154,7 +154,7 @@ public:
     scf::IfOp::create(
         rewriter, loc, distribution.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          CompressedRowBounds rowBounds = buildCompressedRowBounds(
+          CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
 
           auto valueType =
@@ -163,13 +163,13 @@ public:
               builder, bodyLoc, builder.getZeroAttr(valueType));
           StridedPositionRange positions{rowBounds.start, rowBounds.end,
                                          oneIndex};
-          SmallVector<Value> reduction = buildCSRPositionTraversal(
+          SmallVector<Value> reduction = buildCompressedPositionTraversal(
               builder, bodyLoc, op.getColumnIndices(), op.getValues(),
               positions, ValueRange{zero},
               [&](OpBuilder &loopBuilder, Location loopLoc,
-                  CSRPosition position, ValueRange iterArgs) {
+                  CompressedPosition position, ValueRange iterArgs) {
                 Value vectorValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getVector(), position.column);
+                    loopBuilder, loopLoc, op.getVector(), position.coordinate);
                 Value product = arith::MulFOp::create(
                     loopBuilder, loopLoc, position.value, vectorValue);
                 Value sum = arith::AddFOp::create(loopBuilder, loopLoc,
@@ -220,7 +220,7 @@ public:
     scf::IfOp::create(
         rewriter, loc, distribution.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          CompressedRowBounds rowBounds = buildCompressedRowBounds(
+          CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
           StridedPositionRange positions = buildStridedPositionRange(
               builder, bodyLoc, rowBounds, distribution.lane,
@@ -230,19 +230,21 @@ public:
               cast<MemRefType>(op.getValues().getType()).getElementType();
           Value zero = arith::ConstantOp::create(
               builder, bodyLoc, builder.getZeroAttr(valueType));
-          SmallVector<Value> partialReduction = buildCSRPositionTraversal(
-              builder, bodyLoc, op.getColumnIndices(), op.getValues(),
-              positions, ValueRange{zero},
-              [&](OpBuilder &loopBuilder, Location loopLoc,
-                  CSRPosition position, ValueRange iterArgs) {
-                Value vectorValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getVector(), position.column);
-                Value product = arith::MulFOp::create(
-                    loopBuilder, loopLoc, position.value, vectorValue);
-                Value sum = arith::AddFOp::create(loopBuilder, loopLoc,
-                                                  iterArgs.front(), product);
-                return SmallVector<Value>{sum};
-              });
+          SmallVector<Value> partialReduction =
+              buildCompressedPositionTraversal(
+                  builder, bodyLoc, op.getColumnIndices(), op.getValues(),
+                  positions, ValueRange{zero},
+                  [&](OpBuilder &loopBuilder, Location loopLoc,
+                      CompressedPosition position, ValueRange iterArgs) {
+                    Value vectorValue = memref::LoadOp::create(
+                        loopBuilder, loopLoc, op.getVector(),
+                        position.coordinate);
+                    Value product = arith::MulFOp::create(
+                        loopBuilder, loopLoc, position.value, vectorValue);
+                    Value sum = arith::AddFOp::create(
+                        loopBuilder, loopLoc, iterArgs.front(), product);
+                    return SmallVector<Value>{sum};
+                  });
 
           Value waveSum = buildWaveReduction(
               builder, bodyLoc, partialReduction.front(), waveSize);
@@ -319,26 +321,28 @@ public:
     scf::IfOp::create(
         rewriter, loc, rowIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          CompressedRowBounds rowBounds = buildCompressedRowBounds(
+          CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
           StridedPositionRange positions = buildStridedPositionRange(
               builder, bodyLoc, rowBounds, thread, blockSizeValue);
           Value zero = arith::ConstantOp::create(
               builder, bodyLoc, builder.getZeroAttr(valueType));
 
-          SmallVector<Value> partialReduction = buildCSRPositionTraversal(
-              builder, bodyLoc, op.getColumnIndices(), op.getValues(),
-              positions, ValueRange{zero},
-              [&](OpBuilder &loopBuilder, Location loopLoc,
-                  CSRPosition position, ValueRange iterArgs) {
-                Value vectorValue = memref::LoadOp::create(
-                    loopBuilder, loopLoc, op.getVector(), position.column);
-                Value product = arith::MulFOp::create(
-                    loopBuilder, loopLoc, position.value, vectorValue);
-                Value sum = arith::AddFOp::create(loopBuilder, loopLoc,
-                                                  iterArgs.front(), product);
-                return SmallVector<Value>{sum};
-              });
+          SmallVector<Value> partialReduction =
+              buildCompressedPositionTraversal(
+                  builder, bodyLoc, op.getColumnIndices(), op.getValues(),
+                  positions, ValueRange{zero},
+                  [&](OpBuilder &loopBuilder, Location loopLoc,
+                      CompressedPosition position, ValueRange iterArgs) {
+                    Value vectorValue = memref::LoadOp::create(
+                        loopBuilder, loopLoc, op.getVector(),
+                        position.coordinate);
+                    Value product = arith::MulFOp::create(
+                        loopBuilder, loopLoc, position.value, vectorValue);
+                    Value sum = arith::AddFOp::create(
+                        loopBuilder, loopLoc, iterArgs.front(), product);
+                    return SmallVector<Value>{sum};
+                  });
 
           Value waveSum = buildWaveReduction(
               builder, bodyLoc, partialReduction.front(), waveSize);
@@ -435,7 +439,7 @@ public:
               arith::DivUIOp::create(builder, bodyLoc, element, columnCount);
           Value outputColumn =
               arith::RemUIOp::create(builder, bodyLoc, element, columnCount);
-          CompressedRowBounds rowBounds = buildCompressedRowBounds(
+          CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
 
           auto valueType =
@@ -444,14 +448,14 @@ public:
               builder, bodyLoc, builder.getZeroAttr(valueType));
           StridedPositionRange positions{rowBounds.start, rowBounds.end,
                                          oneIndex};
-          SmallVector<Value> reduction = buildCSRPositionTraversal(
+          SmallVector<Value> reduction = buildCompressedPositionTraversal(
               builder, bodyLoc, op.getColumnIndices(), op.getValues(),
               positions, ValueRange{zero},
               [&](OpBuilder &loopBuilder, Location loopLoc,
-                  CSRPosition position, ValueRange iterArgs) {
+                  CompressedPosition position, ValueRange iterArgs) {
                 Value rhsValue = memref::LoadOp::create(
                     loopBuilder, loopLoc, op.getRhs(),
-                    ValueRange{position.column, outputColumn});
+                    ValueRange{position.coordinate, outputColumn});
                 Value product = arith::MulFOp::create(loopBuilder, loopLoc,
                                                       position.value, rhsValue);
                 Value sum = arith::AddFOp::create(loopBuilder, loopLoc,
@@ -514,7 +518,7 @@ public:
               arith::DivUIOp::create(builder, bodyLoc, row, bsrBlockSize);
           Value localRow =
               arith::RemUIOp::create(builder, bodyLoc, row, bsrBlockSize);
-          CompressedRowBounds blockRowBounds = buildCompressedRowBounds(
+          CompressedSegmentBounds blockRowBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getBlockRowOffsets(), blockRow, oneIndex);
 
           auto valueType =
@@ -607,7 +611,7 @@ public:
     scf::IfOp::create(
         rewriter, loc, distribution.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          CompressedRowBounds rowBounds = buildCompressedRowBounds(
+          CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
           StridedPositionRange positions{rowBounds.start, rowBounds.end,
                                          oneIndex};
@@ -616,11 +620,11 @@ public:
           Value zero = arith::ConstantOp::create(
               builder, bodyLoc, builder.getZeroAttr(valueType));
 
-          buildCSRPositionTraversal(
+          buildCompressedPositionTraversal(
               builder, bodyLoc, op.getColumnIndices(), op.getValues(),
               positions, ValueRange{},
               [&](OpBuilder &positionBuilder, Location positionLoc,
-                  CSRPosition position, ValueRange) {
+                  CompressedPosition position, ValueRange) {
                 auto dot = scf::ForOp::create(
                     positionBuilder, positionLoc, zeroIndex, reductionSize,
                     oneIndex, ValueRange{zero},
@@ -631,7 +635,7 @@ public:
                           ValueRange{row, reductionIndex});
                       Value rhsValue = memref::LoadOp::create(
                           reductionBuilder, reductionLoc, op.getRhs(),
-                          ValueRange{reductionIndex, position.column});
+                          ValueRange{reductionIndex, position.coordinate});
                       Value product = arith::MulFOp::create(
                           reductionBuilder, reductionLoc, lhsValue, rhsValue);
                       Value sum =
@@ -691,7 +695,7 @@ public:
     scf::IfOp::create(
         rewriter, loc, distribution.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          CompressedRowBounds rowBounds = buildCompressedRowBounds(
+          CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
           auto valueType = cast<FloatType>(
               cast<MemRefType>(op.getValues().getType()).getElementType());
@@ -759,7 +763,7 @@ public:
     scf::IfOp::create(
         rewriter, loc, distribution.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          CompressedRowBounds rowBounds = buildCompressedRowBounds(
+          CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
           Value rowValue =
               memref::LoadOp::create(builder, bodyLoc, op.getRowValues(), row);
@@ -813,9 +817,9 @@ public:
         rewriter, loc, op.getOutputRowOffsets(), zeroIndex);
     Value rowCount =
         arith::SubIOp::create(rewriter, loc, rowOffsetCount, oneIndex);
-    CSRCoiterationKind coiterationKind = op.getKind() == "add"
-                                             ? CSRCoiterationKind::Union
-                                             : CSRCoiterationKind::Intersection;
+    CompressedCoiterationKind coiterationKind =
+        op.getKind() == "add" ? CompressedCoiterationKind::Union
+                              : CompressedCoiterationKind::Intersection;
 
     // Symbolic phase: count output coordinates independently for each row.
     // Counts are temporarily stored at outputRowOffsets[row + 1].
@@ -825,16 +829,16 @@ public:
     scf::IfOp::create(
         rewriter, loc, symbolic.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          CompressedRowBounds lhsBounds = buildCompressedRowBounds(
+          CompressedSegmentBounds lhsBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getLhsRowOffsets(), row, oneIndex);
-          CompressedRowBounds rhsBounds = buildCompressedRowBounds(
+          CompressedSegmentBounds rhsBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getRhsRowOffsets(), row, oneIndex);
-          SmallVector<Value> result = buildCSRCoiteration(
+          SmallVector<Value> result = buildCompressedCoiteration(
               builder, bodyLoc, op.getLhsColumnIndices(), lhsBounds,
               op.getRhsColumnIndices(), rhsBounds, coiterationKind, oneIndex,
               ValueRange{zeroIndex},
               [&](OpBuilder &entryBuilder, Location entryLoc,
-                  CSRCoiterationEntry, ValueRange iterArgs) {
+                  CompressedCoiterationEntry, ValueRange iterArgs) {
                 Value nextCount = arith::AddIOp::create(
                     entryBuilder, entryLoc, iterArgs.front(), oneIndex);
                 return SmallVector<Value>{nextCount};
@@ -893,9 +897,9 @@ public:
     scf::IfOp::create(
         rewriter, loc, numeric.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
-          CompressedRowBounds lhsBounds = buildCompressedRowBounds(
+          CompressedSegmentBounds lhsBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getLhsRowOffsets(), row, oneIndex);
-          CompressedRowBounds rhsBounds = buildCompressedRowBounds(
+          CompressedSegmentBounds rhsBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getRhsRowOffsets(), row, oneIndex);
           Value outputStartValue = memref::LoadOp::create(
               builder, bodyLoc, op.getOutputRowOffsets(), row);
@@ -905,15 +909,15 @@ public:
           Value zeroValue = arith::ConstantOp::create(
               builder, bodyLoc, builder.getZeroAttr(valueType));
 
-          buildCSRCoiteration(
+          buildCompressedCoiteration(
               builder, bodyLoc, op.getLhsColumnIndices(), lhsBounds,
               op.getRhsColumnIndices(), rhsBounds, coiterationKind, oneIndex,
               ValueRange{outputStart},
               [&](OpBuilder &entryBuilder, Location entryLoc,
-                  CSRCoiterationEntry entry, ValueRange iterArgs) {
+                  CompressedCoiterationEntry entry, ValueRange iterArgs) {
                 Value outputPosition = iterArgs.front();
                 Value outputValue;
-                if (coiterationKind == CSRCoiterationKind::Union) {
+                if (coiterationKind == CompressedCoiterationKind::Union) {
                   auto lhsValue = scf::IfOp::create(
                       entryBuilder, entryLoc, entry.lhsPresent,
                       [&](OpBuilder &thenBuilder, Location thenLoc) {
@@ -950,8 +954,8 @@ public:
                                                       lhsValue, rhsValue);
                 }
 
-                Value outputColumn = castIndexToType(entryBuilder, entryLoc,
-                                                     entry.column, offsetType);
+                Value outputColumn = castIndexToType(
+                    entryBuilder, entryLoc, entry.coordinate, offsetType);
                 memref::StoreOp::create(entryBuilder, entryLoc, outputColumn,
                                         op.getOutputColumnIndices(),
                                         outputPosition);
@@ -1015,7 +1019,7 @@ public:
               arith::RemUIOp::create(builder, bodyLoc, workUnit, tilesPerRow);
           Value firstOutputColumn =
               arith::MulIOp::create(builder, bodyLoc, tile, tileSizeValue);
-          CompressedRowBounds rowBounds = buildCompressedRowBounds(
+          CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
           StridedPositionRange positions = buildStridedPositionRange(
               builder, bodyLoc, rowBounds, distribution.lane,
@@ -1049,11 +1053,11 @@ public:
             }
 
             SmallVector<Value> initialSums(tileSize, zero);
-            return buildCSRPositionTraversal(
+            return buildCompressedPositionTraversal(
                 tileBuilder, tileLoc, op.getColumnIndices(), op.getValues(),
                 positions, initialSums,
                 [&](OpBuilder &loopBuilder, Location loopLoc,
-                    CSRPosition position, ValueRange iterArgs) {
+                    CompressedPosition position, ValueRange iterArgs) {
                   SmallVector<Value> nextSums;
                   nextSums.reserve(tileSize);
                   for (int64_t tileColumn = 0; tileColumn < tileSize;
@@ -1061,7 +1065,7 @@ public:
                     if (!guardColumns) {
                       Value rhsValue = memref::LoadOp::create(
                           loopBuilder, loopLoc, op.getRhs(),
-                          ValueRange{position.column,
+                          ValueRange{position.coordinate,
                                      outputColumns[tileColumn]});
                       Value product = arith::MulFOp::create(
                           loopBuilder, loopLoc, position.value, rhsValue);
@@ -1077,7 +1081,8 @@ public:
                         &update.getThenRegion().front());
                     Value rhsValue = memref::LoadOp::create(
                         loopBuilder, loopLoc, op.getRhs(),
-                        ValueRange{position.column, outputColumns[tileColumn]});
+                        ValueRange{position.coordinate,
+                                   outputColumns[tileColumn]});
                     Value product = arith::MulFOp::create(
                         loopBuilder, loopLoc, position.value, rhsValue);
                     Value sum = arith::AddFOp::create(
