@@ -99,9 +99,10 @@ def LowerSparseWavePositionSpace
     sparsewave.position_reorder to an SCF loop nest in the requested order,
     sparsewave.position_collapse to coordinate recovery and a guarded region,
     and sparsewave.position_space to integer arithmetic implementing a balanced
-    contiguous partition. Lowers sparsewave.csr_coordinates to an upper-bound
-    binary search over CSR row offsets and a column-index load. The resulting
-    IR is target-independent and uses only Arith, MemRef, and SCF operations.
+    contiguous partition. Compressed segment lookup is lowered to an
+    upper-bound search over its offsets; CSR coordinate recovery additionally
+    loads the column index. The resulting IR is target-independent and uses
+    only Arith, MemRef, and SCF operations.
   }];
   let dependentDialects = [
     "arith::ArithDialect",
@@ -179,9 +180,10 @@ def ScheduleSparseWavePosition
     logical coordinates inside each worker. Thread mapping splits the
     collapsed range into configurable sequential chunks. It can either
     atomically accumulate every iteration or combine adjacent equal-key
-    contributions locally before atomic accumulation. For a rank-1 CSR
-    position domain, the segmented form also carries the recovered row across
-    the chunk. Wave mapping uses balanced collapsed-space partitions and first
+    contributions locally before atomic accumulation. When a rank-1 domain
+    derives its key from a compressed segment, the segmented form carries that
+    segment across the chunk. Wave mapping uses balanced collapsed-space
+    partitions and first
     combines adjacent equal keys with a segmented reduction. When a
     cooperative axis is named, each wave instead owns one group of that axis
     and its lanes select individual axis coordinates. Read-only scalar values

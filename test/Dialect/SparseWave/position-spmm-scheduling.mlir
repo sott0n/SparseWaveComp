@@ -23,7 +23,7 @@
 // DECOMPOSE: %[[FLAT_OUTPUT:.*]] = memref.collapse_shape
 // DECOMPOSE: sparsewave.position_reduce lower(%{{.*}}, %{{.*}}) upper(%[[NNZ]], %[[RHS_COLS]]) axes = ["position", "rhs"] order = [0, 1] into %[[FLAT_OUTPUT]] kind = "sum" {
 // DECOMPOSE: ^bb0(%[[POSITION:.*]]: index, %[[OUTPUT_COL:.*]]: index):
-// DECOMPOSE: %[[ROW:.*]] = sparsewave.csr_row_at_position %{{.*}} at %[[POSITION]]
+// DECOMPOSE: %[[ROW:.*]] = sparsewave.compressed_segment_at_position %{{.*}} at %[[POSITION]]
 // DECOMPOSE: memref.load %{{.*}}[%[[POSITION]]]
 // DECOMPOSE: memref.load %{{.*}}[%{{.*}}, %[[OUTPUT_COL]]]
 // DECOMPOSE: %[[PRODUCT:.*]] = arith.mulf
@@ -37,7 +37,7 @@
 // RHS-MAJOR: %[[RHS_COLS:.*]] = memref.dim %{{.*}}, %{{.*}} : memref<?x?xf32>
 // RHS-MAJOR: sparsewave.position_reduce lower(%{{.*}}, %{{.*}}) upper(%[[NNZ]], %[[RHS_COLS]]) axes = ["position", "rhs"] order = [1, 0]
 // RHS-MAJOR: ^bb0(%[[POSITION:.*]]: index, %[[OUTPUT_COL:.*]]: index):
-// RHS-MAJOR: sparsewave.csr_row_at_position %{{.*}} at %[[POSITION]]
+// RHS-MAJOR: sparsewave.compressed_segment_at_position %{{.*}} at %[[POSITION]]
 // RHS-MAJOR: memref.load %{{.*}}[%{{.*}}, %[[OUTPUT_COL]]]
 // RHS-MAJOR: %[[KEY:.*]] = arith.addi %{{.*}}, %[[OUTPUT_COL]] : index
 // RHS-MAJOR: sparsewave.yield %[[KEY]], %{{.*}} : index, f32
@@ -49,7 +49,7 @@
 // THREAD: sparsewave.position_for %{{.*}} in %{{.*}} to %{{.*}} by 4
 // THREAD: arith.remui
 // THREAD: arith.divui
-// THREAD: sparsewave.csr_row_at_position
+// THREAD: sparsewave.compressed_segment_at_position
 // THREAD: memref.atomic_rmw addf
 // THREAD-NOT: sparsewave.spmm
 
@@ -68,7 +68,7 @@
 // WAVE-COOPERATIVE-LABEL: func.func @spmm(
 // WAVE-COOPERATIVE: sparsewave.position_parallel %{{.*}} mapping = "wave" block_size = 64 {
 // WAVE-COOPERATIVE: scf.if %{{.*}} -> (index) {
-// WAVE-COOPERATIVE:   sparsewave.csr_row_at_position
+// WAVE-COOPERATIVE:   sparsewave.compressed_segment_at_position
 // WAVE-COOPERATIVE: gpu.shuffle idx %{{.*}} : i64
 // WAVE-COOPERATIVE: scf.if %{{.*}} -> (i32) {
 // WAVE-COOPERATIVE:   memref.load %{{.*}}[%{{.*}}] : memref<?xi32>
@@ -85,7 +85,7 @@
 // WAVE-COOPERATIVE-CHUNK: arith.ceildivui %{{.*}}, %{{.*}} : index
 // WAVE-COOPERATIVE-CHUNK: sparsewave.position_parallel %{{.*}} mapping = "wave" block_size = 64 {
 // WAVE-COOPERATIVE-CHUNK: scf.for
-// WAVE-COOPERATIVE-CHUNK: sparsewave.csr_row_at_position
+// WAVE-COOPERATIVE-CHUNK: sparsewave.compressed_segment_at_position
 // WAVE-COOPERATIVE-CHUNK: arith.cmpi eq
 // WAVE-COOPERATIVE-CHUNK: memref.atomic_rmw addf
 // WAVE-COOPERATIVE-CHUNK: arith.addf

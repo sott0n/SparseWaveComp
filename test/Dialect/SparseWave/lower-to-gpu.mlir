@@ -127,7 +127,7 @@
 // POS: scf.if %[[ACTIVE]]
 // POS: sparsewave.position_for %[[WORKER]] in %[[ZERO]] to %[[NNZ]] by 1
 // POS-NEXT: ^bb0(%[[POSITION_VALUE:.*]]: index, %{{.*}}: index):
-// POS: %[[ROW:.*]] = sparsewave.csr_row_at_position %{{.*}} at %[[POSITION_VALUE]]
+// POS: %[[ROW:.*]] = sparsewave.compressed_segment_at_position %{{.*}} at %[[POSITION_VALUE]]
 // POS: %[[COLUMN_I32:.*]] = memref.load %{{.*}}[%[[POSITION_VALUE]]]
 // POS: %[[COLUMN:.*]] = arith.index_cast %[[COLUMN_I32]] : i32 to index
 // POS: %[[SPARSE_VALUE:.*]] = memref.load %{{.*}}[%[[POSITION_VALUE]]]
@@ -168,7 +168,7 @@
 // SEGMENT: %[[POSITION:.*]] = arith.addi %[[BEGIN]], %[[LANE]]
 // SEGMENT: %[[ACTIVE:.*]] = arith.cmpi ult, %[[POSITION]], %[[END]]
 // SEGMENT: scf.if %[[ACTIVE]] -> (index, f32)
-// SEGMENT: sparsewave.csr_row_at_position
+// SEGMENT: sparsewave.compressed_segment_at_position
 // SEGMENT-COUNT-10: gpu.shuffle up
 // SEGMENT-COUNT-2: gpu.shuffle down
 // SEGMENT: memref.atomic_rmw addf

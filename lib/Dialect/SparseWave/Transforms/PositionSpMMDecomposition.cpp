@@ -51,7 +51,7 @@ public:
     // scheduler interprets the order permutation when collapsing the domain.
     Value position = body->getArgument(0);
     Value outputColumn = body->getArgument(1);
-    Value row = CSRRowAtPositionOp::create(
+    Value row = CompressedSegmentAtPositionOp::create(
         rewriter, loc, rewriter.getIndexType(), op.getRowOffsets(), position);
     Value columnValue =
         memref::LoadOp::create(rewriter, loc, op.getColumnIndices(), position);

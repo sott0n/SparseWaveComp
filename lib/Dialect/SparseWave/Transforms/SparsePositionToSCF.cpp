@@ -222,18 +222,18 @@ public:
   }
 };
 
-Value buildCSRRowSearch(OpBuilder &builder, Location loc, Value rowOffsets,
-                        Value position) {
+Value buildCompressedSegmentSearch(OpBuilder &builder, Location loc,
+                                   Value offsets, Value position) {
   Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
   Value one = arith::ConstantIndexOp::create(builder, loc, 1);
   Value two = arith::ConstantIndexOp::create(builder, loc, 2);
-  Value rowOffsetsSize = memref::DimOp::create(builder, loc, rowOffsets, zero);
+  Value offsetsSize = memref::DimOp::create(builder, loc, offsets, zero);
 
-  // Search [1, rowOffsetsSize) for the first offset greater than position.
-  // Starting at one makes the final predecessor a valid CSR row index.
+  // Search [1, offsetsSize) for the first offset greater than position.
+  // Starting at one makes the final predecessor a valid segment index.
   auto search = scf::WhileOp::create(
       builder, loc, TypeRange{builder.getIndexType(), builder.getIndexType()},
-      ValueRange{one, rowOffsetsSize});
+      ValueRange{one, offsetsSize});
 
   SmallVector<Location> argumentLocations(2, loc);
   Block *before = builder.createBlock(
@@ -255,7 +255,7 @@ Value buildCSRRowSearch(OpBuilder &builder, Location loc, Value rowOffsets,
   Value midpoint = arith::AddIOp::create(
       builder, loc, lower, arith::DivUIOp::create(builder, loc, distance, two));
   Value offsetValue =
-      memref::LoadOp::create(builder, loc, rowOffsets, ValueRange{midpoint});
+      memref::LoadOp::create(builder, loc, offsets, ValueRange{midpoint});
   Value offset = castToIndex(builder, loc, offsetValue);
   Value offsetAtOrBeforePosition = arith::CmpIOp::create(
       builder, loc, arith::CmpIPredicate::ule, offset, position);
@@ -270,16 +270,16 @@ Value buildCSRRowSearch(OpBuilder &builder, Location loc, Value rowOffsets,
   return arith::SubIOp::create(builder, loc, search.getResult(0), one);
 }
 
-class LowerCSRRowAtPositionPattern
-    : public OpRewritePattern<CSRRowAtPositionOp> {
+class LowerCompressedSegmentAtPositionPattern
+    : public OpRewritePattern<CompressedSegmentAtPositionOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(CSRRowAtPositionOp op,
+  LogicalResult matchAndRewrite(CompressedSegmentAtPositionOp op,
                                 PatternRewriter &rewriter) const override {
-    Value row = buildCSRRowSearch(rewriter, op.getLoc(), op.getRowOffsets(),
-                                  op.getPosition());
-    rewriter.replaceOp(op, row);
+    Value segment = buildCompressedSegmentSearch(
+        rewriter, op.getLoc(), op.getOffsets(), op.getPosition());
+    rewriter.replaceOp(op, segment);
     return success();
   }
 };
@@ -291,8 +291,8 @@ public:
   LogicalResult matchAndRewrite(CSRCoordinatesOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    Value row =
-        buildCSRRowSearch(rewriter, loc, op.getRowOffsets(), op.getPosition());
+    Value row = buildCompressedSegmentSearch(rewriter, loc, op.getRowOffsets(),
+                                             op.getPosition());
     Value columnValue = memref::LoadOp::create(
         rewriter, loc, op.getColumnIndices(), ValueRange{op.getPosition()});
     Value column = castToIndex(rewriter, loc, columnValue);
@@ -310,10 +310,11 @@ public:
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns.add<LowerPositionSplitPattern, LowerPositionForPattern,
-                 LowerPositionReorderPattern, LowerPositionCollapsePattern,
-                 LowerPositionSpacePattern, LowerCSRRowAtPositionPattern,
-                 LowerCSRCoordinatesPattern>(&getContext());
+    patterns
+        .add<LowerPositionSplitPattern, LowerPositionForPattern,
+             LowerPositionReorderPattern, LowerPositionCollapsePattern,
+             LowerPositionSpacePattern, LowerCompressedSegmentAtPositionPattern,
+             LowerCSRCoordinatesPattern>(&getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
   }

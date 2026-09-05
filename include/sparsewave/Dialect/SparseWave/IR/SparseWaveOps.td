@@ -668,29 +668,35 @@ def SparseWave_PositionSpaceOp : SparseWave_Op<"position_space", [Pure]> {
   let hasVerifier = 1;
 }
 
-def SparseWave_CSRRowAtPositionOp : SparseWave_Op<"csr_row_at_position"> {
-  let summary = "Recover a CSR row from a stored position";
+def SparseWave_CompressedSegmentAtPositionOp
+    : SparseWave_Op<"compressed_segment_at_position"> {
+  let summary = "Recover a compressed segment from a stored position";
   let description = [{
-    `sparsewave.csr_row_at_position` maps a stored position in flattened CSR
-    storage back to its logical row. Keeping row recovery separate from the
-    column-index load allows a sequential position schedule to recover the
-    first row once and carry it across subsequent positions.
+    `sparsewave.compressed_segment_at_position` maps a stored position in a
+    flattened compressed level back to its parent segment. The offsets array
+    contains one boundary per segment plus a final sentinel. This primitive is
+    independent of whether segments represent rows, columns, blocks, or
+    another compressed-level grouping.
+
+    Keeping segment recovery explicit allows a sequential position schedule
+    to recover the first segment once and advance it incrementally across
+    subsequent positions.
 
     Example:
 
     ```mlir
-    %row = sparsewave.csr_row_at_position %row_offsets at %position
+    %segment = sparsewave.compressed_segment_at_position %offsets at %position
         : memref<?xi32>
     ```
   }];
 
   let arguments = (ins
-      Arg<AnyMemRef, "CSR row offsets", [MemRead]>:$rowOffsets,
+      Arg<AnyMemRef, "compressed segment offsets", [MemRead]>:$offsets,
       Index:$position);
-  let results = (outs Index:$row);
+  let results = (outs Index:$segment);
 
   let assemblyFormat = [{
-    $rowOffsets `at` $position attr-dict `:` type($rowOffsets)
+    $offsets `at` $position attr-dict `:` type($offsets)
   }];
 
   let hasVerifier = 1;

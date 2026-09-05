@@ -8,10 +8,11 @@ func.func @nonpositive_split_factor(%position: index) {
 
 // -----
 
-func.func @csr_row_at_position_requires_offsets(%position: index) {
-  %rowOffsets = memref.alloc() : memref<1xi32>
-  // expected-error @+1 {{row offsets must contain at least two elements, but got 1}}
-  %row = sparsewave.csr_row_at_position %rowOffsets at %position
+func.func @compressed_segment_at_position_requires_boundaries(
+    %position: index) {
+  %offsets = memref.alloc() : memref<1xi32>
+  // expected-error @+1 {{segment offsets must contain at least two elements, but got 1}}
+  %segment = sparsewave.compressed_segment_at_position %offsets at %position
       : memref<1xi32>
   return
 }

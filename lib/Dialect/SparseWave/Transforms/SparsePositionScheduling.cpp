@@ -25,8 +25,8 @@ struct KeyedContribution {
   Value value;
 };
 
-struct CSRRowState {
-  Value row;
+struct CompressedSegmentState {
+  Value segment;
   Value nextBoundary;
 };
 
@@ -327,32 +327,30 @@ buildActiveCooperativeContribution(OpBuilder &builder, Location loc,
   return {entry.getResult(0), entry.getResult(1)};
 }
 
-std::optional<CSRRowAtPositionOp>
-matchCSRRowRecovery(PositionReduceOp reduction) {
+std::optional<CompressedSegmentAtPositionOp>
+matchCompressedSegmentRecovery(PositionReduceOp reduction) {
   Block &body = reduction.getBody().front();
   if (body.getNumArguments() != 1)
     return std::nullopt;
   auto yield = cast<YieldOp>(body.getTerminator());
   for (Operation &operation : body.without_terminator()) {
-    auto recovery = dyn_cast<CSRRowAtPositionOp>(operation);
+    auto recovery = dyn_cast<CompressedSegmentAtPositionOp>(operation);
     if (recovery && recovery.getPosition() == body.getArgument(0) &&
-        yield.getResults()[0] == recovery.getRow())
+        yield.getResults()[0] == recovery.getSegment())
       return recovery;
   }
   return std::nullopt;
 }
 
-KeyedContribution cloneContributionBodyWithCSRRow(OpBuilder &builder,
-                                                  PositionReduceOp reduction,
-                                                  ValueRange coordinates,
-                                                  CSRRowAtPositionOp recovery,
-                                                  Value row) {
+KeyedContribution cloneContributionBodyWithCompressedSegment(
+    OpBuilder &builder, PositionReduceOp reduction, ValueRange coordinates,
+    CompressedSegmentAtPositionOp recovery, Value segment) {
   Block &source = reduction.getBody().front();
   IRMapping mapping;
   for (auto [argument, coordinate] :
        llvm::zip(source.getArguments(), coordinates))
     mapping.map(argument, coordinate);
-  mapping.map(recovery.getRow(), row);
+  mapping.map(recovery.getSegment(), segment);
   for (Operation &operation : source.without_terminator()) {
     if (&operation == recovery.getOperation())
       continue;
@@ -363,42 +361,45 @@ KeyedContribution cloneContributionBodyWithCSRRow(OpBuilder &builder,
           mapping.lookup(yield.getResults()[1])};
 }
 
-Value loadNextCSRRowBoundary(OpBuilder &builder, Location loc, Value rowOffsets,
-                             Value row) {
+Value loadNextCompressedSegmentBoundary(OpBuilder &builder, Location loc,
+                                        Value offsets, Value segment) {
   Value one = arith::ConstantIndexOp::create(builder, loc, 1);
-  Value nextRow = arith::AddIOp::create(builder, loc, row, one);
+  Value nextSegment = arith::AddIOp::create(builder, loc, segment, one);
   Value boundaryValue =
-      memref::LoadOp::create(builder, loc, rowOffsets, nextRow);
+      memref::LoadOp::create(builder, loc, offsets, nextSegment);
   return castToIndex(builder, loc, boundaryValue);
 }
 
-CSRRowState buildNextCSRRowState(OpBuilder &builder, Location loc,
-                                 Value rowOffsets, Value row,
-                                 Value nextBoundary, Value position) {
+CompressedSegmentState
+buildNextCompressedSegmentState(OpBuilder &builder, Location loc, Value offsets,
+                                Value segment, Value nextBoundary,
+                                Value position) {
   Type indexType = builder.getIndexType();
   Value one = arith::ConstantIndexOp::create(builder, loc, 1);
   auto advance =
       scf::WhileOp::create(builder, loc, TypeRange{indexType, indexType},
-                           ValueRange{row, nextBoundary});
+                           ValueRange{segment, nextBoundary});
   SmallVector<Location> argumentLocations(2, loc);
   Block *before = builder.createBlock(
       &advance.getBefore(), {}, advance.getResultTypes(), argumentLocations);
   builder.setInsertionPointToStart(before);
-  Value currentRow = before->getArgument(0);
+  Value currentSegment = before->getArgument(0);
   Value currentBoundary = before->getArgument(1);
   Value crossesBoundary = arith::CmpIOp::create(
       builder, loc, arith::CmpIPredicate::ule, currentBoundary, position);
   scf::ConditionOp::create(builder, loc, crossesBoundary,
-                           ValueRange{currentRow, currentBoundary});
+                           ValueRange{currentSegment, currentBoundary});
 
   Block *after = builder.createBlock(
       &advance.getAfter(), {}, advance.getResultTypes(), argumentLocations);
   builder.setInsertionPointToStart(after);
-  currentRow = after->getArgument(0);
-  Value advancedRow = arith::AddIOp::create(builder, loc, currentRow, one);
+  currentSegment = after->getArgument(0);
+  Value advancedSegment =
+      arith::AddIOp::create(builder, loc, currentSegment, one);
   Value advancedBoundary =
-      loadNextCSRRowBoundary(builder, loc, rowOffsets, advancedRow);
-  scf::YieldOp::create(builder, loc, ValueRange{advancedRow, advancedBoundary});
+      loadNextCompressedSegmentBoundary(builder, loc, offsets, advancedSegment);
+  scf::YieldOp::create(builder, loc,
+                       ValueRange{advancedSegment, advancedBoundary});
 
   builder.setInsertionPointAfter(advance);
   return {advance.getResult(0), advance.getResult(1)};
@@ -513,25 +514,26 @@ public:
         arith::MinUIOp::create(rewriter, loc, remaining, chunkSizeValue);
     Value end = arith::AddIOp::create(rewriter, loc, begin, boundedSize);
 
-    std::optional<CSRRowAtPositionOp> csrRecovery = matchCSRRowRecovery(op);
+    std::optional<CompressedSegmentAtPositionOp> segmentRecovery =
+        matchCompressedSegmentRecovery(op);
     SmallVector<Value> firstCoordinates =
         buildLogicalCoordinates(rewriter, loc, op, begin);
     KeyedContribution first;
-    if (csrRecovery) {
-      Value firstRow = CSRRowAtPositionOp::create(
-          rewriter, loc, rewriter.getIndexType(), csrRecovery->getRowOffsets(),
+    if (segmentRecovery) {
+      Value firstSegment = CompressedSegmentAtPositionOp::create(
+          rewriter, loc, rewriter.getIndexType(), segmentRecovery->getOffsets(),
           firstCoordinates[0]);
-      first = cloneContributionBodyWithCSRRow(rewriter, op, firstCoordinates,
-                                              *csrRecovery, firstRow);
+      first = cloneContributionBodyWithCompressedSegment(
+          rewriter, op, firstCoordinates, *segmentRecovery, firstSegment);
     } else {
       first = cloneContributionBody(rewriter, op, firstCoordinates);
     }
 
     Value nextPosition = arith::AddIOp::create(rewriter, loc, begin, oneIndex);
     SmallVector<Value> reductionInitializers{first.key, first.value};
-    if (csrRecovery) {
-      Value firstBoundary = loadNextCSRRowBoundary(
-          rewriter, loc, csrRecovery->getRowOffsets(), first.key);
+    if (segmentRecovery) {
+      Value firstBoundary = loadNextCompressedSegmentBoundary(
+          rewriter, loc, segmentRecovery->getOffsets(), first.key);
       reductionInitializers.push_back(firstBoundary);
     }
     auto reduction = scf::ForOp::create(
@@ -544,13 +546,15 @@ public:
           SmallVector<Value> coordinates =
               buildLogicalCoordinates(builder, bodyLoc, op, linearIteration);
           KeyedContribution contribution;
-          if (csrRecovery) {
-            CSRRowState rowState = buildNextCSRRowState(
-                builder, bodyLoc, csrRecovery->getRowOffsets(), currentKey,
-                iterArgs[2], coordinates[0]);
-            contribution = cloneContributionBodyWithCSRRow(
-                builder, op, coordinates, *csrRecovery, rowState.row);
-            nextBoundary = rowState.nextBoundary;
+          if (segmentRecovery) {
+            CompressedSegmentState segmentState =
+                buildNextCompressedSegmentState(
+                    builder, bodyLoc, segmentRecovery->getOffsets(), currentKey,
+                    iterArgs[2], coordinates[0]);
+            contribution = cloneContributionBodyWithCompressedSegment(
+                builder, op, coordinates, *segmentRecovery,
+                segmentState.segment);
+            nextBoundary = segmentState.nextBoundary;
           } else {
             contribution = cloneContributionBody(builder, op, coordinates);
           }
@@ -573,7 +577,7 @@ public:
           Value nextValue = arith::SelectOp::create(
               builder, bodyLoc, sameKey, combined, contribution.value);
           SmallVector<Value> nextState{contribution.key, nextValue};
-          if (csrRecovery)
+          if (segmentRecovery)
             nextState.push_back(nextBoundary);
           scf::YieldOp::create(builder, bodyLoc, nextState);
         });

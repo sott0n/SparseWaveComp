@@ -10,6 +10,9 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='mapping=thread block-size=64' \
 // RUN:   | FileCheck %s --check-prefix=MULTI-AXIS
+// RUN: sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=thread block-size=64 thread-chunk-size=4 thread-reduction=segmented' \
+// RUN:   | FileCheck %s --check-prefix=COMPRESSED
 
 // This keyed reduction deliberately has no CSR or SpMV operations. It verifies
 // that position scheduling depends only on position_reduce semantics.
@@ -44,7 +47,6 @@
 // SEGMENTED: arith.addf
 // SEGMENTED: memref.atomic_rmw addf
 // SEGMENTED: memref.atomic_rmw addf
-// SEGMENTED-NOT: sparsewave.csr_row_at_position
 
 func.func @keyed_sum(%values: memref<?xf32>, %output: memref<?xf32>) {
   %zero = arith.constant 0 : index
@@ -57,6 +59,37 @@ func.func @keyed_sum(%values: memref<?xf32>, %output: memref<?xf32>) {
     %key = arith.remui %position, %keys : index
     %value = memref.load %values[%position] : memref<?xf32>
     sparsewave.yield %key, %value : index, f32
+  } : memref<?xf32>
+  return
+}
+
+// This reduction uses a generic compressed-level key, independently of any
+// matrix format or named sparse operator. The segmented schedule performs one
+// initial lookup and then advances the segment at offset boundaries.
+
+// COMPRESSED-LABEL: func.func @compressed_segment_sum(
+// COMPRESSED-SAME: %[[OFFSETS:[^ :,]+]]: memref<?xi32>
+// COMPRESSED-COUNT-1: %[[FIRST:.*]] = sparsewave.compressed_segment_at_position %[[OFFSETS]]
+// COMPRESSED: %[[BOUNDARY_INDEX:.*]] = arith.addi %[[FIRST]], %{{.*}} : index
+// COMPRESSED: %[[BOUNDARY_RAW:.*]] = memref.load %[[OFFSETS]][%[[BOUNDARY_INDEX]]]
+// COMPRESSED: %{{.*}}:3 = scf.for
+// COMPRESSED-SAME: iter_args(%{{.*}} = %[[FIRST]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}})
+// COMPRESSED: scf.while
+// COMPRESSED-NOT: sparsewave.compressed_segment_at_position
+
+func.func @compressed_segment_sum(%offsets: memref<?xi32>,
+                                  %values: memref<?xf32>,
+                                  %output: memref<?xf32>) {
+  %zero = arith.constant 0 : index
+  %upper = memref.dim %values, %zero : memref<?xf32>
+  sparsewave.position_reduce lower (%zero) upper (%upper)
+      axes = ["position"] order = [0]
+      into %output kind = "sum" {
+  ^bb0(%position: index):
+    %segment = sparsewave.compressed_segment_at_position %offsets at %position
+        : memref<?xi32>
+    %value = memref.load %values[%position] : memref<?xf32>
+    sparsewave.yield %segment, %value : index, f32
   } : memref<?xf32>
   return
 }

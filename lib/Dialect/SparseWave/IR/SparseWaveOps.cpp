@@ -775,21 +775,21 @@ LogicalResult PositionParallelOp::verify() {
   return success();
 }
 
-LogicalResult CSRRowAtPositionOp::verify() {
-  MemRefType rowOffsetsType = getRowOffsets().getType();
-  if (failed(verifyRank(*this, rowOffsetsType, 1, "row offsets")))
+LogicalResult CompressedSegmentAtPositionOp::verify() {
+  MemRefType offsetsType = getOffsets().getType();
+  if (failed(verifyRank(*this, offsetsType, 1, "segment offsets")))
     return failure();
-  Type indexType = rowOffsetsType.getElementType();
+  Type indexType = offsetsType.getElementType();
   if (!indexType.isIntOrIndex())
     return emitOpError()
-           << "row offsets must have integer or index elements, but got "
+           << "segment offsets must have integer or index elements, but got "
            << indexType;
 
-  int64_t rowOffsetsSize = rowOffsetsType.getDimSize(0);
-  if (!ShapedType::isDynamic(rowOffsetsSize) && rowOffsetsSize < 2)
+  int64_t offsetsSize = offsetsType.getDimSize(0);
+  if (!ShapedType::isDynamic(offsetsSize) && offsetsSize < 2)
     return emitOpError()
-           << "row offsets must contain at least two elements, but got "
-           << rowOffsetsSize;
+           << "segment offsets must contain at least two elements, but got "
+           << offsetsSize;
 
   std::optional<int64_t> position = matchConstantIndex(getPosition());
   if (position && *position < 0)

@@ -34,8 +34,8 @@ struct CSRPositionSpMVAdapter {
 
   static PositionSpMVElement buildElement(OpBuilder &builder, Location loc,
                                           Op op, Value position) {
-    Value row = CSRRowAtPositionOp::create(builder, loc, builder.getIndexType(),
-                                           op.getRowOffsets(), position);
+    Value row = CompressedSegmentAtPositionOp::create(
+        builder, loc, builder.getIndexType(), op.getRowOffsets(), position);
     Value columnValue =
         memref::LoadOp::create(builder, loc, op.getColumnIndices(), position);
     Value column = castToIndex(builder, loc, columnValue);

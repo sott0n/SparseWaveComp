@@ -22,7 +22,7 @@
 // DECOMPOSE-NOT: sparsewave.position_parallel
 // DECOMPOSE: sparsewave.position_reduce lower(%{{.*}}) upper(%{{.*}}) axes = ["position"] order = [0] into %{{.*}} kind = "sum" {
 // DECOMPOSE: ^bb0(%[[POSITION:.*]]: index):
-// DECOMPOSE: %[[ROW:.*]] = sparsewave.csr_row_at_position %{{.*}} at %[[POSITION]]
+// DECOMPOSE: %[[ROW:.*]] = sparsewave.compressed_segment_at_position %{{.*}} at %[[POSITION]]
 // DECOMPOSE: memref.load %{{.*}}[%[[POSITION]]]
 // DECOMPOSE: %[[PRODUCT:.*]] = arith.mulf
 // DECOMPOSE: sparsewave.yield %[[ROW]], %[[PRODUCT]] : index, f32
@@ -40,7 +40,7 @@
 // THREAD-NEXT: ^bb0(%[[WORKER:[^,]+]]: index
 // THREAD: sparsewave.position_for %[[WORKER]] in %{{.*}} to %{{.*}} by 1
 // THREAD-NEXT: ^bb0(%[[POSITION:.*]]: index, %{{.*}}: index):
-// THREAD: sparsewave.csr_row_at_position %{{.*}} at %[[POSITION]]
+// THREAD: sparsewave.compressed_segment_at_position %{{.*}} at %[[POSITION]]
 // THREAD: memref.atomic_rmw addf
 // THREAD-NOT: sparsewave.spmv
 
@@ -50,12 +50,12 @@
 // CHUNK-NEXT: ^bb0(%[[WORKER:[^,]+]]: index
 // CHUNK: sparsewave.position_for %[[WORKER]] in %{{.*}} to %{{.*}} by 4
 // CHUNK-NEXT: ^bb0(%[[POSITION:.*]]: index, %{{.*}}: index):
-// CHUNK: sparsewave.csr_row_at_position %{{.*}} at %[[POSITION]]
+// CHUNK: sparsewave.compressed_segment_at_position %{{.*}} at %[[POSITION]]
 // CHUNK: memref.atomic_rmw addf
 
 // SEGMENTED-LABEL: func.func @spmv(
 // SEGMENTED-SAME: %[[OFFSETS:[^ :,]+]]: memref<?xi32>
-// SEGMENTED-COUNT-1: %[[FIRST_ROW:.*]] = sparsewave.csr_row_at_position %[[OFFSETS]]
+// SEGMENTED-COUNT-1: %[[FIRST_ROW:.*]] = sparsewave.compressed_segment_at_position %[[OFFSETS]]
 // SEGMENTED: %[[BOUNDARY_INDEX:.*]] = arith.addi %[[FIRST_ROW]], %{{.*}} : index
 // SEGMENTED: %[[BOUNDARY_RAW:.*]] = memref.load %[[OFFSETS]][%[[BOUNDARY_INDEX]]]
 // SEGMENTED: %[[BOUNDARY:.*]] = arith.index_cast %[[BOUNDARY_RAW]]
@@ -80,7 +80,7 @@
 // WAVE: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space
 // WAVE-SAME: partition %[[WAVE]] of %[[WAVES]]
 // WAVE: %[[POSITION:.*]] = arith.addi %[[BEGIN]], %[[LANE]]
-// WAVE: sparsewave.csr_row_at_position %{{.*}} at %[[POSITION]]
+// WAVE: sparsewave.compressed_segment_at_position %{{.*}} at %[[POSITION]]
 // WAVE: gpu.shuffle up
 // WAVE: memref.atomic_rmw addf
 // WAVE-NOT: sparsewave.spmv
