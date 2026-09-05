@@ -766,43 +766,35 @@ public:
 
     // Symbolic phase: count output coordinates independently for each row.
     // Counts are temporarily stored at outputRowOffsets[row + 1].
-    LinearThreadWorkDistribution symbolic = buildLinearThreadWorkDistribution(
-        rewriter, loc, rowCount, oneIndex, blockSizeValue);
-    Value row = symbolic.workUnit;
-    scf::IfOp::create(
-        rewriter, loc, symbolic.workUnitIsActive,
-        [&](OpBuilder &builder, Location bodyLoc) {
-          CompressedSegmentBounds lhsBounds = buildCompressedSegmentBounds(
-              builder, bodyLoc, op.getLhsRowOffsets(), row, oneIndex);
-          CompressedSegmentBounds rhsBounds = buildCompressedSegmentBounds(
-              builder, bodyLoc, op.getRhsRowOffsets(), row, oneIndex);
+    gpu::LaunchOp symbolic = buildThreadPerCompressedSegmentPair(
+        rewriter, loc, rowCount, op.getLhsRowOffsets(), op.getRhsRowOffsets(),
+        oneIndex, blockSizeValue,
+        [&](OpBuilder &builder, Location bodyLoc,
+            ThreadCompressedSegmentPair segments) {
           SmallVector<Value> result = buildCompressedCoiteration(
-              builder, bodyLoc, op.getLhsColumnIndices(), lhsBounds,
-              op.getRhsColumnIndices(), rhsBounds, coiterationKind, oneIndex,
-              ValueRange{zeroIndex},
+              builder, bodyLoc, op.getLhsColumnIndices(), segments.lhsBounds,
+              op.getRhsColumnIndices(), segments.rhsBounds, coiterationKind,
+              oneIndex, ValueRange{zeroIndex},
               [&](OpBuilder &entryBuilder, Location entryLoc,
                   CompressedCoiterationEntry, ValueRange iterArgs) {
                 Value nextCount = arith::AddIOp::create(
                     entryBuilder, entryLoc, iterArgs.front(), oneIndex);
                 return SmallVector<Value>{nextCount};
               });
-          Value nextRow =
-              arith::AddIOp::create(builder, bodyLoc, row, oneIndex);
+          Value nextRow = arith::AddIOp::create(builder, bodyLoc,
+                                                segments.segment, oneIndex);
           Type offsetType = cast<MemRefType>(op.getOutputRowOffsets().getType())
                                 .getElementType();
           Value count =
               castIndexToType(builder, bodyLoc, result.front(), offsetType);
           memref::StoreOp::create(builder, bodyLoc, count,
                                   op.getOutputRowOffsets(), nextRow);
-          scf::YieldOp::create(builder, bodyLoc);
         });
-    rewriter.setInsertionPointToEnd(&symbolic.launch.getBody().front());
-    gpu::TerminatorOp::create(rewriter, loc);
 
     // Prefix phase: convert row counts into CSR offsets and publish total NNZ.
     // This correctness baseline deliberately isolates a sequential scan so it
     // can later be replaced by a parallel scan without changing coiteration.
-    rewriter.setInsertionPointAfter(symbolic.launch);
+    rewriter.setInsertionPointAfter(symbolic);
     gpu::LaunchOp prefix =
         gpu::LaunchOp::create(rewriter, loc, oneIndex, oneIndex, oneIndex,
                               oneIndex, oneIndex, oneIndex);
@@ -834,18 +826,13 @@ public:
     // Numeric phase: replay the same coiteration and assemble values into the
     // positions assigned by the prefix phase.
     rewriter.setInsertionPointAfter(prefix);
-    LinearThreadWorkDistribution numeric = buildLinearThreadWorkDistribution(
-        rewriter, loc, rowCount, oneIndex, blockSizeValue);
-    row = numeric.workUnit;
-    scf::IfOp::create(
-        rewriter, loc, numeric.workUnitIsActive,
-        [&](OpBuilder &builder, Location bodyLoc) {
-          CompressedSegmentBounds lhsBounds = buildCompressedSegmentBounds(
-              builder, bodyLoc, op.getLhsRowOffsets(), row, oneIndex);
-          CompressedSegmentBounds rhsBounds = buildCompressedSegmentBounds(
-              builder, bodyLoc, op.getRhsRowOffsets(), row, oneIndex);
+    buildThreadPerCompressedSegmentPair(
+        rewriter, loc, rowCount, op.getLhsRowOffsets(), op.getRhsRowOffsets(),
+        oneIndex, blockSizeValue,
+        [&](OpBuilder &builder, Location bodyLoc,
+            ThreadCompressedSegmentPair segments) {
           Value outputStartValue = memref::LoadOp::create(
-              builder, bodyLoc, op.getOutputRowOffsets(), row);
+              builder, bodyLoc, op.getOutputRowOffsets(), segments.segment);
           Value outputStart = castToIndex(builder, bodyLoc, outputStartValue);
           auto valueType =
               cast<MemRefType>(op.getOutputValues().getType()).getElementType();
@@ -853,9 +840,9 @@ public:
               builder, bodyLoc, builder.getZeroAttr(valueType));
 
           buildCompressedCoiteration(
-              builder, bodyLoc, op.getLhsColumnIndices(), lhsBounds,
-              op.getRhsColumnIndices(), rhsBounds, coiterationKind, oneIndex,
-              ValueRange{outputStart},
+              builder, bodyLoc, op.getLhsColumnIndices(), segments.lhsBounds,
+              op.getRhsColumnIndices(), segments.rhsBounds, coiterationKind,
+              oneIndex, ValueRange{outputStart},
               [&](OpBuilder &entryBuilder, Location entryLoc,
                   CompressedCoiterationEntry entry, ValueRange iterArgs) {
                 Value outputPosition = iterArgs.front();
@@ -908,10 +895,7 @@ public:
                     entryBuilder, entryLoc, outputPosition, oneIndex);
                 return SmallVector<Value>{nextOutputPosition};
               });
-          scf::YieldOp::create(builder, bodyLoc);
         });
-    rewriter.setInsertionPointToEnd(&numeric.launch.getBody().front());
-    gpu::TerminatorOp::create(rewriter, loc);
     rewriter.eraseOp(op);
     return success();
   }
