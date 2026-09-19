@@ -932,25 +932,19 @@ public:
         arith::CeilDivUIOp::create(rewriter, loc, columnCount, tileSizeValue);
     Value workUnitCount =
         arith::MulIOp::create(rewriter, loc, rowCount, tilesPerRow);
-    WaveWorkDistribution distribution = buildWaveWorkDistribution(
-        rewriter, loc, workUnitCount, oneIndex, blockSizeValue, waveSizeValue,
-        wavesPerBlockValue);
-    Value workUnit = distribution.workUnit;
-
-    scf::IfOp::create(
-        rewriter, loc, distribution.workUnitIsActive,
-        [&](OpBuilder &builder, Location bodyLoc) {
-          Value row =
-              arith::DivUIOp::create(builder, bodyLoc, workUnit, tilesPerRow);
-          Value tile =
-              arith::RemUIOp::create(builder, bodyLoc, workUnit, tilesPerRow);
+    gpu::LaunchOp launch = buildWavePerCompressedWorkUnit(
+        rewriter, loc, workUnitCount, op.getRowOffsets(), oneIndex,
+        blockSizeValue, waveSizeValue, wavesPerBlockValue,
+        [&](OpBuilder &builder, Location bodyLoc, Value workUnit) {
+          return arith::DivUIOp::create(builder, bodyLoc, workUnit,
+                                        tilesPerRow);
+        },
+        [&](OpBuilder &builder, Location bodyLoc, WaveCompressedWorkUnit work) {
+          Value row = work.segment;
+          Value tile = arith::RemUIOp::create(builder, bodyLoc, work.workUnit,
+                                              tilesPerRow);
           Value firstOutputColumn =
               arith::MulIOp::create(builder, bodyLoc, tile, tileSizeValue);
-          CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
-              builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
-          StridedPositionRange positions = buildStridedPositionRange(
-              builder, bodyLoc, rowBounds, distribution.lane,
-              distribution.positionStride);
 
           auto valueType =
               cast<MemRefType>(op.getValues().getType()).getElementType();
@@ -982,7 +976,7 @@ public:
             SmallVector<Value> initialSums(tileSize, zero);
             return buildCompressedPositionTraversal(
                 tileBuilder, tileLoc, op.getColumnIndices(), op.getValues(),
-                positions, initialSums,
+                work.positions, initialSums,
                 [&](OpBuilder &loopBuilder, Location loopLoc,
                     CompressedPosition position, ValueRange iterArgs) {
                   SmallVector<Value> nextSums;
@@ -1050,9 +1044,8 @@ public:
           SmallVector<Value> waveSums = buildWaveReductions(
               builder, bodyLoc, tileReductions.getResults(), waveSize);
 
-          Value laneIsZero =
-              arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
-                                    distribution.lane, zeroIndex);
+          Value laneIsZero = arith::CmpIOp::create(
+              builder, bodyLoc, arith::CmpIPredicate::eq, work.lane, zeroIndex);
           scf::IfOp::create(
               builder, bodyLoc, laneIsZero,
               [&](OpBuilder &laneBuilder, Location laneLoc) {
@@ -1089,13 +1082,9 @@ public:
                     });
                 scf::YieldOp::create(laneBuilder, laneLoc);
               });
-          scf::YieldOp::create(builder, bodyLoc);
-        },
-        {});
+        });
 
-    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
-    gpu::TerminatorOp::create(rewriter, loc);
-    propagateKernelName(op, distribution.launch);
+    propagateKernelName(op, launch);
     rewriter.eraseOp(op);
     return success();
   }

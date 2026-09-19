@@ -46,6 +46,14 @@ struct WaveCompressedSegment {
   StridedPositionRange positions;
 };
 
+struct WaveCompressedWorkUnit {
+  Value workUnit;
+  Value segment;
+  Value lane;
+  CompressedSegmentBounds bounds;
+  StridedPositionRange positions;
+};
+
 struct ThreadCompressedSegmentPair {
   Value segment;
   CompressedSegmentBounds lhsBounds;
@@ -85,6 +93,12 @@ using ThreadPerCompressedSegmentBodyBuilder = llvm::function_ref<void(
 using WavePerCompressedSegmentBodyBuilder =
     llvm::function_ref<void(OpBuilder &, Location, WaveCompressedSegment)>;
 
+using CompressedSegmentMappingBuilder =
+    llvm::function_ref<Value(OpBuilder &, Location, Value)>;
+
+using WavePerCompressedWorkUnitBodyBuilder =
+    llvm::function_ref<void(OpBuilder &, Location, WaveCompressedWorkUnit)>;
+
 using ThreadPerCompressedSegmentPairBodyBuilder = llvm::function_ref<void(
     OpBuilder &, Location, ThreadCompressedSegmentPair)>;
 
@@ -116,6 +130,15 @@ gpu::LaunchOp buildWavePerCompressedSegment(
     PatternRewriter &rewriter, Location loc, Value segmentCount, Value offsets,
     Value oneIndex, Value blockSize, Value waveSize, Value wavesPerBlock,
     WavePerCompressedSegmentBodyBuilder buildBody);
+
+/// Assigns one logical work unit to each GPU wave, maps that work unit to a
+/// compressed segment, and builds the active body with lane-strided positions.
+/// Multiple work units may map to the same segment.
+gpu::LaunchOp buildWavePerCompressedWorkUnit(
+    PatternRewriter &rewriter, Location loc, Value workUnitCount, Value offsets,
+    Value oneIndex, Value blockSize, Value waveSize, Value wavesPerBlock,
+    CompressedSegmentMappingBuilder mapSegment,
+    WavePerCompressedWorkUnitBodyBuilder buildBody);
 
 WaveWorkDistribution
 buildWaveWorkDistribution(PatternRewriter &rewriter, Location loc,

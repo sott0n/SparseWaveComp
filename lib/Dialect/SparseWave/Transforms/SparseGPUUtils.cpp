@@ -83,21 +83,38 @@ gpu::LaunchOp buildWavePerCompressedSegment(
     PatternRewriter &rewriter, Location loc, Value segmentCount, Value offsets,
     Value oneIndex, Value blockSize, Value waveSize, Value wavesPerBlock,
     WavePerCompressedSegmentBodyBuilder buildBody) {
+  return buildWavePerCompressedWorkUnit(
+      rewriter, loc, segmentCount, offsets, oneIndex, blockSize, waveSize,
+      wavesPerBlock,
+      [](OpBuilder &, Location, Value workUnit) { return workUnit; },
+      [&](OpBuilder &builder, Location bodyLoc, WaveCompressedWorkUnit work) {
+        buildBody(builder, bodyLoc,
+                  WaveCompressedSegment{work.segment, work.lane, work.bounds,
+                                        work.positions});
+      });
+}
+
+gpu::LaunchOp buildWavePerCompressedWorkUnit(
+    PatternRewriter &rewriter, Location loc, Value workUnitCount, Value offsets,
+    Value oneIndex, Value blockSize, Value waveSize, Value wavesPerBlock,
+    CompressedSegmentMappingBuilder mapSegment,
+    WavePerCompressedWorkUnitBodyBuilder buildBody) {
   WaveWorkDistribution distribution =
-      buildWaveWorkDistribution(rewriter, loc, segmentCount, oneIndex,
+      buildWaveWorkDistribution(rewriter, loc, workUnitCount, oneIndex,
                                 blockSize, waveSize, wavesPerBlock);
 
   scf::IfOp::create(
       rewriter, loc, distribution.workUnitIsActive,
       [&](OpBuilder &builder, Location bodyLoc) {
+        Value segment = mapSegment(builder, bodyLoc, distribution.workUnit);
         CompressedSegmentBounds bounds = buildCompressedSegmentBounds(
-            builder, bodyLoc, offsets, distribution.workUnit, oneIndex);
+            builder, bodyLoc, offsets, segment, oneIndex);
         StridedPositionRange positions = buildStridedPositionRange(
             builder, bodyLoc, bounds, distribution.lane,
             distribution.positionStride);
         buildBody(builder, bodyLoc,
-                  WaveCompressedSegment{distribution.workUnit,
-                                        distribution.lane, bounds, positions});
+                  WaveCompressedWorkUnit{distribution.workUnit, segment,
+                                         distribution.lane, bounds, positions});
         scf::YieldOp::create(builder, bodyLoc);
       },
       {});

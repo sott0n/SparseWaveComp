@@ -37,7 +37,13 @@
 // WAVE-TILE-SAME: threads(
 // WAVE-TILE-SAME: = %[[BLOCK_SIZE]],
 // WAVE-TILE: %[[LANE:.*]] = arith.remui %{{.*}}, %[[WAVE_SIZE]]
+// WAVE-TILE: %[[WORK_UNIT:.*]] = arith.addi
+// WAVE-TILE: %[[ROW:.*]] = arith.divui %[[WORK_UNIT]], %[[TILES]]
+// WAVE-TILE: %[[ROW_END:.*]] = arith.addi %[[ROW]],
+// WAVE-TILE: memref.load %{{.*}}[%[[ROW]]]
+// WAVE-TILE: memref.load %{{.*}}[%[[ROW_END]]]
 // WAVE-TILE: %[[FIRST_POSITION:.*]] = arith.addi %{{.*}}, %[[LANE]]
+// WAVE-TILE: arith.remui %[[WORK_UNIT]], %[[TILES]]
 // WAVE-TILE: scf.for %{{.*}} = %[[FIRST_POSITION]] to %{{.*}} step %[[WAVE_SIZE]]
 // WAVE-TILE: %[[SPARSE_VALUE:.*]] = memref.load %{{.*}}[%{{.*}}]
 // WAVE-TILE-COUNT-4: memref.load %{{.*}}[%{{.*}}, %{{.*}}]
