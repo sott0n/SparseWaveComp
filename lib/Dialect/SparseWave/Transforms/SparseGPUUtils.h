@@ -19,6 +19,11 @@ struct LinearThreadWorkDistribution {
   Value workUnitIsActive;
 };
 
+struct ThreadDenseOutputElement {
+  Value row;
+  Value column;
+};
+
 struct WaveWorkDistribution {
   gpu::LaunchOp launch;
   Value waveInBlock;
@@ -87,6 +92,9 @@ struct CompressedCoiterationEntry {
 using CompressedPositionBodyBuilder = llvm::function_ref<SmallVector<Value>(
     OpBuilder &, Location, CompressedPosition, ValueRange)>;
 
+using ThreadDenseOutputElementBodyBuilder =
+    llvm::function_ref<Value(OpBuilder &, Location, ThreadDenseOutputElement)>;
+
 using ThreadPerCompressedSegmentBodyBuilder = llvm::function_ref<void(
     OpBuilder &, Location, Value, CompressedSegmentBounds)>;
 
@@ -109,6 +117,14 @@ LinearThreadWorkDistribution
 buildLinearThreadWorkDistribution(PatternRewriter &rewriter, Location loc,
                                   Value workUnitCount, Value oneIndex,
                                   Value blockSize);
+
+/// Assigns one element of a rank-2 dense output to each GPU thread. The body
+/// computes the value stored at the assigned row and column.
+gpu::LaunchOp
+buildThreadPerDenseOutputElement(PatternRewriter &rewriter, Location loc,
+                                 Value output, Value zeroIndex, Value oneIndex,
+                                 Value blockSize,
+                                 ThreadDenseOutputElementBodyBuilder buildBody);
 
 /// Assigns one compressed segment to each GPU thread and builds the active
 /// segment body with its position bounds.

@@ -395,26 +395,13 @@ public:
     Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
     Value blockSizeValue =
         arith::ConstantIndexOp::create(rewriter, loc, blockSize);
-    Value rowCount =
-        memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
-    Value columnCount =
-        memref::DimOp::create(rewriter, loc, op.getOutput(), oneIndex);
-    Value outputElementCount =
-        arith::MulIOp::create(rewriter, loc, rowCount, columnCount);
-    LinearThreadWorkDistribution distribution =
-        buildLinearThreadWorkDistribution(rewriter, loc, outputElementCount,
-                                          oneIndex, blockSizeValue);
-    Value element = distribution.workUnit;
-
-    scf::IfOp::create(
-        rewriter, loc, distribution.workUnitIsActive,
-        [&](OpBuilder &builder, Location bodyLoc) {
-          Value row =
-              arith::DivUIOp::create(builder, bodyLoc, element, columnCount);
-          Value outputColumn =
-              arith::RemUIOp::create(builder, bodyLoc, element, columnCount);
-          CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
-              builder, bodyLoc, op.getRowOffsets(), row, oneIndex);
+    gpu::LaunchOp launch = buildThreadPerDenseOutputElement(
+        rewriter, loc, op.getOutput(), zeroIndex, oneIndex, blockSizeValue,
+        [&](OpBuilder &builder, Location bodyLoc,
+            ThreadDenseOutputElement outputElement) {
+          CompressedSegmentBounds rowBounds =
+              buildCompressedSegmentBounds(builder, bodyLoc, op.getRowOffsets(),
+                                           outputElement.row, oneIndex);
 
           auto valueType =
               cast<MemRefType>(op.getValues().getType()).getElementType();
@@ -429,23 +416,17 @@ public:
                   CompressedPosition position, ValueRange iterArgs) {
                 Value rhsValue = memref::LoadOp::create(
                     loopBuilder, loopLoc, op.getRhs(),
-                    ValueRange{position.coordinate, outputColumn});
+                    ValueRange{position.coordinate, outputElement.column});
                 Value product = arith::MulFOp::create(loopBuilder, loopLoc,
                                                       position.value, rhsValue);
                 Value sum = arith::AddFOp::create(loopBuilder, loopLoc,
                                                   iterArgs.front(), product);
                 return SmallVector<Value>{sum};
               });
-          memref::StoreOp::create(builder, bodyLoc, reduction.front(),
-                                  op.getOutput(),
-                                  ValueRange{row, outputColumn});
-          scf::YieldOp::create(builder, bodyLoc);
-        },
-        {});
+          return reduction.front();
+        });
 
-    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
-    gpu::TerminatorOp::create(rewriter, loc);
-    propagateKernelName(op, distribution.launch);
+    propagateKernelName(op, launch);
     rewriter.eraseOp(op);
     return success();
   }
@@ -470,28 +451,14 @@ public:
         rewriter, loc, op.getBlockSizeAttr().getInt());
     Value valuesPerBlock =
         arith::MulIOp::create(rewriter, loc, bsrBlockSize, bsrBlockSize);
-    Value rowCount =
-        memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
-    Value columnCount =
-        memref::DimOp::create(rewriter, loc, op.getOutput(), oneIndex);
-    Value outputElementCount =
-        arith::MulIOp::create(rewriter, loc, rowCount, columnCount);
-    LinearThreadWorkDistribution distribution =
-        buildLinearThreadWorkDistribution(rewriter, loc, outputElementCount,
-                                          oneIndex, gpuBlockSizeValue);
-    Value element = distribution.workUnit;
-
-    scf::IfOp::create(
-        rewriter, loc, distribution.workUnitIsActive,
-        [&](OpBuilder &builder, Location bodyLoc) {
-          Value row =
-              arith::DivUIOp::create(builder, bodyLoc, element, columnCount);
-          Value outputColumn =
-              arith::RemUIOp::create(builder, bodyLoc, element, columnCount);
-          Value blockRow =
-              arith::DivUIOp::create(builder, bodyLoc, row, bsrBlockSize);
-          Value localRow =
-              arith::RemUIOp::create(builder, bodyLoc, row, bsrBlockSize);
+    buildThreadPerDenseOutputElement(
+        rewriter, loc, op.getOutput(), zeroIndex, oneIndex, gpuBlockSizeValue,
+        [&](OpBuilder &builder, Location bodyLoc,
+            ThreadDenseOutputElement outputElement) {
+          Value blockRow = arith::DivUIOp::create(
+              builder, bodyLoc, outputElement.row, bsrBlockSize);
+          Value localRow = arith::RemUIOp::create(
+              builder, bodyLoc, outputElement.row, bsrBlockSize);
           CompressedSegmentBounds blockRowBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getBlockRowOffsets(), blockRow, oneIndex);
 
@@ -533,7 +500,7 @@ public:
                           elementBuilder, elementLoc, rhsRowBase, localColumn);
                       Value rhsValue = memref::LoadOp::create(
                           elementBuilder, elementLoc, op.getRhs(),
-                          ValueRange{rhsRow, outputColumn});
+                          ValueRange{rhsRow, outputElement.column});
                       Value product = arith::MulFOp::create(
                           elementBuilder, elementLoc, blockValue, rhsValue);
                       Value sum =
@@ -544,15 +511,9 @@ public:
                 scf::YieldOp::create(blockBuilder, blockLoc,
                                      blockRowReduction.getResult(0));
               });
-          memref::StoreOp::create(builder, bodyLoc, blockTraversal.getResult(0),
-                                  op.getOutput(),
-                                  ValueRange{row, outputColumn});
-          scf::YieldOp::create(builder, bodyLoc);
-        },
-        {});
+          return blockTraversal.getResult(0);
+        });
 
-    rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
-    gpu::TerminatorOp::create(rewriter, loc);
     rewriter.eraseOp(op);
     return success();
   }

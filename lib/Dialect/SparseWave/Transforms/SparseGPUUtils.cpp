@@ -31,6 +31,37 @@ buildLinearThreadWorkDistribution(PatternRewriter &rewriter, Location loc,
   return {launch, workUnit, workUnitIsActive};
 }
 
+gpu::LaunchOp buildThreadPerDenseOutputElement(
+    PatternRewriter &rewriter, Location loc, Value output, Value zeroIndex,
+    Value oneIndex, Value blockSize,
+    ThreadDenseOutputElementBodyBuilder buildBody) {
+  Value rowCount = memref::DimOp::create(rewriter, loc, output, zeroIndex);
+  Value columnCount = memref::DimOp::create(rewriter, loc, output, oneIndex);
+  Value outputElementCount =
+      arith::MulIOp::create(rewriter, loc, rowCount, columnCount);
+  LinearThreadWorkDistribution distribution = buildLinearThreadWorkDistribution(
+      rewriter, loc, outputElementCount, oneIndex, blockSize);
+
+  scf::IfOp::create(rewriter, loc, distribution.workUnitIsActive,
+                    [&](OpBuilder &builder, Location bodyLoc) {
+                      Value row = arith::DivUIOp::create(
+                          builder, bodyLoc, distribution.workUnit, columnCount);
+                      Value column = arith::RemUIOp::create(
+                          builder, bodyLoc, distribution.workUnit, columnCount);
+                      Value result =
+                          buildBody(builder, bodyLoc,
+                                    ThreadDenseOutputElement{row, column});
+                      memref::StoreOp::create(builder, bodyLoc, result, output,
+                                              ValueRange{row, column});
+                      scf::YieldOp::create(builder, bodyLoc);
+                    },
+                    {});
+
+  rewriter.setInsertionPointToEnd(&distribution.launch.getBody().front());
+  gpu::TerminatorOp::create(rewriter, loc);
+  return distribution.launch;
+}
+
 gpu::LaunchOp buildThreadPerCompressedSegment(
     PatternRewriter &rewriter, Location loc, Value segmentCount, Value offsets,
     Value oneIndex, Value blockSize,
