@@ -362,6 +362,81 @@ SmallVector<Value> buildCompressedCoiteration(
   return SmallVector<Value>(loop.getResults().drop_front(2));
 }
 
+BoundedTile buildBoundedTile(OpBuilder &builder, Location loc,
+                             Value firstCoordinate, Value coordinateCount,
+                             int64_t tileSize) {
+  SmallVector<Value> coordinates;
+  coordinates.reserve(tileSize);
+  for (int64_t offset = 0; offset < tileSize; ++offset) {
+    Value offsetValue = arith::ConstantIndexOp::create(builder, loc, offset);
+    coordinates.push_back(
+        arith::AddIOp::create(builder, loc, firstCoordinate, offsetValue));
+  }
+
+  Value tileSizeValue = arith::ConstantIndexOp::create(builder, loc, tileSize);
+  Value tileEnd =
+      arith::AddIOp::create(builder, loc, firstCoordinate, tileSizeValue);
+  Value isFull = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ule,
+                                       tileEnd, coordinateCount);
+  return {std::move(coordinates), coordinateCount, isFull};
+}
+
+SmallVector<Value>
+buildFullOrPartialTileValues(OpBuilder &builder, Location loc,
+                             const BoundedTile &tile, TypeRange resultTypes,
+                             BoundedTileValuesBuilder buildValues) {
+  auto selection = scf::IfOp::create(builder, loc, resultTypes, tile.isFull,
+                                     /*withElseRegion=*/true);
+  builder.setInsertionPointToStart(&selection.getThenRegion().front());
+  SmallVector<Value> fullValues = buildValues(
+      builder, loc, tile.coordinates, /*coordinateIsValid=*/ValueRange{});
+  scf::YieldOp::create(builder, loc, fullValues);
+
+  builder.setInsertionPointToStart(&selection.getElseRegion().front());
+  SmallVector<Value> coordinateIsValid;
+  coordinateIsValid.reserve(tile.coordinates.size());
+  for (Value coordinate : tile.coordinates) {
+    coordinateIsValid.push_back(
+        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ult,
+                              coordinate, tile.coordinateCount));
+  }
+  SmallVector<Value> partialValues =
+      buildValues(builder, loc, tile.coordinates, coordinateIsValid);
+  scf::YieldOp::create(builder, loc, partialValues);
+
+  builder.setInsertionPointAfter(selection);
+  return SmallVector<Value>(selection.getResults());
+}
+
+void buildValidTileResults(OpBuilder &builder, Location loc,
+                           const BoundedTile &tile, ValueRange results,
+                           BoundedTileResultBuilder buildResult) {
+  scf::IfOp::create(
+      builder, loc, tile.isFull,
+      [&](OpBuilder &fullBuilder, Location fullLoc) {
+        for (auto [coordinate, result] :
+             llvm::zip_equal(tile.coordinates, results))
+          buildResult(fullBuilder, fullLoc, coordinate, result);
+        scf::YieldOp::create(fullBuilder, fullLoc);
+      },
+      [&](OpBuilder &partialBuilder, Location partialLoc) {
+        for (size_t index = 0; index < tile.coordinates.size(); ++index) {
+          Value coordinate = tile.coordinates[index];
+          Value result = results[index];
+          Value isValid = arith::CmpIOp::create(
+              partialBuilder, partialLoc, arith::CmpIPredicate::ult, coordinate,
+              tile.coordinateCount);
+          scf::IfOp::create(partialBuilder, partialLoc, isValid,
+                            [&](OpBuilder &resultBuilder, Location resultLoc) {
+                              buildResult(resultBuilder, resultLoc, coordinate,
+                                          result);
+                              scf::YieldOp::create(resultBuilder, resultLoc);
+                            });
+        }
+        scf::YieldOp::create(partialBuilder, partialLoc);
+      });
+}
+
 namespace {
 
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,

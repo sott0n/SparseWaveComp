@@ -79,6 +79,12 @@ struct CompressedPosition {
   Value value;
 };
 
+struct BoundedTile {
+  SmallVector<Value> coordinates;
+  Value coordinateCount;
+  Value isFull;
+};
+
 struct WaveSegmentedReduction {
   Value inclusiveValue;
   Value segmentEnd;
@@ -126,6 +132,12 @@ using BlockReductionResultBuilder =
 
 using ReductionCombinerBuilder =
     llvm::function_ref<Value(OpBuilder &, Location, Value, Value)>;
+
+using BoundedTileValuesBuilder = llvm::function_ref<SmallVector<Value>(
+    OpBuilder &, Location, ValueRange, ValueRange)>;
+
+using BoundedTileResultBuilder =
+    llvm::function_ref<void(OpBuilder &, Location, Value, Value)>;
 
 LinearThreadWorkDistribution
 buildLinearThreadWorkDistribution(PatternRewriter &rewriter, Location loc,
@@ -208,6 +220,27 @@ SmallVector<Value> buildCompressedCoiteration(
     CompressedSegmentBounds rhsBounds, CompressedCoiterationKind kind,
     Value oneIndex, ValueRange initialValues,
     CompressedCoiterationBodyBuilder buildBody);
+
+/// Builds a fixed-width tile beginning at `firstCoordinate` and records
+/// whether every coordinate is within `coordinateCount`.
+BoundedTile buildBoundedTile(OpBuilder &builder, Location loc,
+                             Value firstCoordinate, Value coordinateCount,
+                             int64_t tileSize);
+
+/// Selects between an unguarded full-tile computation and a guarded partial-
+/// tile computation. The callback receives the tile coordinates followed by
+/// an empty validity range for a full tile or one predicate per coordinate for
+/// a partial tile.
+SmallVector<Value>
+buildFullOrPartialTileValues(OpBuilder &builder, Location loc,
+                             const BoundedTile &tile, TypeRange resultTypes,
+                             BoundedTileValuesBuilder buildValues);
+
+/// Invokes the result callback for every coordinate of a full tile and only
+/// the in-bounds coordinates of a partial tile.
+void buildValidTileResults(OpBuilder &builder, Location loc,
+                           const BoundedTile &tile, ValueRange results,
+                           BoundedTileResultBuilder buildResult);
 
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
                          int64_t waveSize);

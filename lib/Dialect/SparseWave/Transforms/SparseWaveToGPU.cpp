@@ -858,28 +858,14 @@ public:
               cast<MemRefType>(op.getValues().getType()).getElementType();
           Value zero = arith::ConstantOp::create(
               builder, bodyLoc, builder.getZeroAttr(valueType));
-          SmallVector<Value> outputColumns;
-          outputColumns.reserve(tileSize);
-          for (int64_t tileColumn = 0; tileColumn < tileSize; ++tileColumn) {
-            Value tileColumnValue =
-                arith::ConstantIndexOp::create(builder, bodyLoc, tileColumn);
-            Value outputColumn = arith::AddIOp::create(
-                builder, bodyLoc, firstOutputColumn, tileColumnValue);
-            outputColumns.push_back(outputColumn);
-          }
+          BoundedTile outputTile = buildBoundedTile(
+              builder, bodyLoc, firstOutputColumn, columnCount, tileSize);
 
           auto buildPartialReductions =
               [&](OpBuilder &tileBuilder, Location tileLoc,
-                  bool guardColumns) -> SmallVector<Value> {
-            SmallVector<Value> activeColumns;
-            if (guardColumns) {
-              activeColumns.reserve(tileSize);
-              for (Value outputColumn : outputColumns) {
-                activeColumns.push_back(arith::CmpIOp::create(
-                    tileBuilder, tileLoc, arith::CmpIPredicate::ult,
-                    outputColumn, columnCount));
-              }
-            }
+                  ValueRange outputColumns,
+                  ValueRange activeColumns) -> SmallVector<Value> {
+            bool guardColumns = !activeColumns.empty();
 
             SmallVector<Value> initialSums(tileSize, zero);
             return buildCompressedPositionTraversal(
@@ -928,65 +914,26 @@ public:
                 });
           };
 
-          Value tileEnd = arith::AddIOp::create(
-              builder, bodyLoc, firstOutputColumn, tileSizeValue);
-          Value isFullTile =
-              arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::ule,
-                                    tileEnd, columnCount);
           SmallVector<Type> reductionTypes(tileSize, valueType);
-          auto tileReductions = scf::IfOp::create(
-              builder, bodyLoc, TypeRange(reductionTypes), isFullTile,
-              /*withElseRegion=*/true);
-          builder.setInsertionPointToStart(
-              &tileReductions.getThenRegion().front());
-          SmallVector<Value> fullTileReductions =
-              buildPartialReductions(builder, bodyLoc, /*guardColumns=*/false);
-          scf::YieldOp::create(builder, bodyLoc, fullTileReductions);
-          builder.setInsertionPointToStart(
-              &tileReductions.getElseRegion().front());
-          SmallVector<Value> tailTileReductions =
-              buildPartialReductions(builder, bodyLoc, /*guardColumns=*/true);
-          scf::YieldOp::create(builder, bodyLoc, tailTileReductions);
-          builder.setInsertionPointAfter(tileReductions);
+          SmallVector<Value> tileReductions = buildFullOrPartialTileValues(
+              builder, bodyLoc, outputTile, TypeRange(reductionTypes),
+              buildPartialReductions);
 
-          SmallVector<Value> waveSums = buildWaveReductions(
-              builder, bodyLoc, tileReductions.getResults(), waveSize);
+          SmallVector<Value> waveSums =
+              buildWaveReductions(builder, bodyLoc, tileReductions, waveSize);
 
           Value laneIsZero = arith::CmpIOp::create(
               builder, bodyLoc, arith::CmpIPredicate::eq, work.lane, zeroIndex);
           scf::IfOp::create(
               builder, bodyLoc, laneIsZero,
               [&](OpBuilder &laneBuilder, Location laneLoc) {
-                scf::IfOp::create(
-                    laneBuilder, laneLoc, isFullTile,
-                    [&](OpBuilder &fullTileBuilder, Location fullTileLoc) {
-                      for (int64_t tileColumn = 0; tileColumn < tileSize;
-                           ++tileColumn) {
-                        memref::StoreOp::create(
-                            fullTileBuilder, fullTileLoc, waveSums[tileColumn],
-                            op.getOutput(),
-                            ValueRange{row, outputColumns[tileColumn]});
-                      }
-                      scf::YieldOp::create(fullTileBuilder, fullTileLoc);
-                    },
-                    [&](OpBuilder &tailTileBuilder, Location tailTileLoc) {
-                      for (int64_t tileColumn = 0; tileColumn < tileSize;
-                           ++tileColumn) {
-                        Value columnIsActive = arith::CmpIOp::create(
-                            tailTileBuilder, tailTileLoc,
-                            arith::CmpIPredicate::ult,
-                            outputColumns[tileColumn], columnCount);
-                        scf::IfOp::create(
-                            tailTileBuilder, tailTileLoc, columnIsActive,
-                            [&](OpBuilder &storeBuilder, Location storeLoc) {
-                              memref::StoreOp::create(
-                                  storeBuilder, storeLoc, waveSums[tileColumn],
-                                  op.getOutput(),
-                                  ValueRange{row, outputColumns[tileColumn]});
-                              scf::YieldOp::create(storeBuilder, storeLoc);
-                            });
-                      }
-                      scf::YieldOp::create(tailTileBuilder, tailTileLoc);
+                buildValidTileResults(
+                    laneBuilder, laneLoc, outputTile, waveSums,
+                    [&](OpBuilder &storeBuilder, Location storeLoc,
+                        Value outputColumn, Value result) {
+                      memref::StoreOp::create(storeBuilder, storeLoc, result,
+                                              op.getOutput(),
+                                              ValueRange{row, outputColumn});
                     });
                 scf::YieldOp::create(laneBuilder, laneLoc);
               });
