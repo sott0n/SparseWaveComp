@@ -437,8 +437,6 @@ void buildValidTileResults(OpBuilder &builder, Location loc,
       });
 }
 
-namespace {
-
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
                          int64_t waveSize, ReductionCombinerBuilder combine) {
   for (int32_t offset = 1; offset < waveSize; offset <<= 1) {
@@ -449,8 +447,6 @@ Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
   }
   return value;
 }
-
-} // namespace
 
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
                          int64_t waveSize) {
@@ -568,11 +564,13 @@ buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
 }
 
 SmallVector<Value> buildWaveReductions(OpBuilder &builder, Location loc,
-                                       ValueRange values, int64_t waveSize) {
+                                       ValueRange values, int64_t waveSize,
+                                       ReductionCombinerBuilder combine) {
   SmallVector<Value> reducedValues;
   reducedValues.reserve(values.size());
   for (Value value : values)
-    reducedValues.push_back(buildWaveReduction(builder, loc, value, waveSize));
+    reducedValues.push_back(
+        buildWaveReduction(builder, loc, value, waveSize, combine));
   return reducedValues;
 }
 

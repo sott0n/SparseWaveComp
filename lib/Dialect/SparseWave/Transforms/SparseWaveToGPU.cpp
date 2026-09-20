@@ -919,8 +919,11 @@ public:
               builder, bodyLoc, outputTile, TypeRange(reductionTypes),
               buildPartialReductions);
 
-          SmallVector<Value> waveSums =
-              buildWaveReductions(builder, bodyLoc, tileReductions, waveSize);
+          SmallVector<Value> waveSums = buildWaveReductions(
+              builder, bodyLoc, tileReductions, waveSize,
+              [](OpBuilder &sumBuilder, Location sumLoc, Value lhs, Value rhs) {
+                return arith::AddFOp::create(sumBuilder, sumLoc, lhs, rhs);
+              });
 
           Value laneIsZero = arith::CmpIOp::create(
               builder, bodyLoc, arith::CmpIPredicate::eq, work.lane, zeroIndex);

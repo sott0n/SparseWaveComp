@@ -242,6 +242,13 @@ void buildValidTileResults(OpBuilder &builder, Location loc,
                            const BoundedTile &tile, ValueRange results,
                            BoundedTileResultBuilder buildResult);
 
+/// Reduces one value per wave lane with the supplied associative and
+/// commutative combiner. The XOR butterfly makes the reduced value available
+/// in every lane but does not preserve a common operand order across lanes.
+Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
+                         int64_t waveSize, ReductionCombinerBuilder combine);
+
+/// Additively reduces one floating-point value per wave lane.
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
                          int64_t waveSize);
 
@@ -261,8 +268,11 @@ WaveSegmentedReduction
 buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
                                   Value value, Value active, int64_t waveSize);
 
+/// Independently reduces multiple values across a wave with an associative and
+/// commutative combiner.
 SmallVector<Value> buildWaveReductions(OpBuilder &builder, Location loc,
-                                       ValueRange values, int64_t waveSize);
+                                       ValueRange values, int64_t waveSize,
+                                       ReductionCombinerBuilder combine);
 
 } // namespace mlir::sparsewave
 
