@@ -80,12 +80,12 @@
 // WAVE-NOT: sparsewave.spmv
 
 // BLOCK-LABEL: func.func @spmv(
-// BLOCK: %[[ZERO_INDEX:.*]] = arith.constant 0 : index
-// BLOCK: %[[ONE_INDEX:.*]] = arith.constant 1 : index
-// BLOCK: %[[BLOCK_SIZE:.*]] = arith.constant 128 : index
-// BLOCK: %[[WAVE_SIZE:.*]] = arith.constant 32 : index
-// BLOCK: %[[WAVES_PER_BLOCK:.*]] = arith.constant 4 : index
-// BLOCK: %[[ROWS:.*]] = memref.dim %{{.*}}, %[[ZERO_INDEX]]
+// BLOCK-DAG: %[[ZERO_INDEX:.*]] = arith.constant 0 : index
+// BLOCK-DAG: %[[ONE_INDEX:.*]] = arith.constant 1 : index
+// BLOCK-DAG: %[[BLOCK_SIZE:.*]] = arith.constant 128 : index
+// BLOCK-DAG: %[[WAVE_SIZE:.*]] = arith.constant 32 : index
+// BLOCK-DAG: %[[WAVES_PER_BLOCK:.*]] = arith.constant 4 : index
+// BLOCK-DAG: %[[ROWS:.*]] = memref.dim %{{.*}}, %[[ZERO_INDEX]]
 // BLOCK: %[[GRID:.*]] = arith.maxui %[[ROWS]], %[[ONE_INDEX]]
 // BLOCK: gpu.launch blocks(%[[ROW:.*]], %{{.*}}, %{{.*}}) in (%{{.*}} = %[[GRID]], %{{.*}} = %[[ONE_INDEX]], %{{.*}} = %[[ONE_INDEX]]) threads(%[[THREAD:.*]], %{{.*}}, %{{.*}}) in (%{{.*}} = %[[BLOCK_SIZE]],
 // BLOCK-SAME: workgroup(%[[WAVE_SUMS:.*]] : memref<4xf32, #gpu.address_space<workgroup>>)

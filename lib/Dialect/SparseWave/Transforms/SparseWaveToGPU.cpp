@@ -261,8 +261,6 @@ public:
     Value waveSizeValue =
         arith::ConstantIndexOp::create(rewriter, loc, waveSize);
     int64_t wavesPerBlock = blockSize / waveSize;
-    Value wavesPerBlockValue =
-        arith::ConstantIndexOp::create(rewriter, loc, wavesPerBlock);
     Value rowCount =
         memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
     BlockWorkDistribution distribution = buildBlockWorkDistribution(
@@ -270,12 +268,6 @@ public:
     gpu::LaunchOp launch = distribution.launch;
     auto valueType =
         cast<MemRefType>(op.getValues().getType()).getElementType();
-    auto workgroupAddressSpace = gpu::AddressSpaceAttr::get(
-        rewriter.getContext(), gpu::AddressSpace::Workgroup);
-    auto waveSumsType =
-        MemRefType::get({wavesPerBlock}, valueType, MemRefLayoutAttrInterface{},
-                        Attribute(workgroupAddressSpace));
-    Value waveSums = launch.addWorkgroupAttribution(waveSumsType, loc);
 
     Value thread = distribution.participant;
     Value row = distribution.workUnit;
@@ -312,55 +304,16 @@ public:
                     return SmallVector<Value>{sum};
                   });
 
-          Value waveSum = buildWaveReduction(
-              builder, bodyLoc, partialReduction.front(), waveSize);
-          Value laneIsZero = arith::CmpIOp::create(
-              builder, bodyLoc, arith::CmpIPredicate::eq, lane, zeroIndex);
-          scf::IfOp::create(builder, bodyLoc, laneIsZero,
-                            [&](OpBuilder &storeBuilder, Location storeLoc) {
-                              memref::StoreOp::create(storeBuilder, storeLoc,
-                                                      waveSum, waveSums,
-                                                      waveInBlock);
-                              scf::YieldOp::create(storeBuilder, storeLoc);
-                            });
-
-          gpu::BarrierOp::create(builder, bodyLoc);
-
-          Value waveIsZero =
-              arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
-                                    waveInBlock, zeroIndex);
-          scf::IfOp::create(
-              builder, bodyLoc, waveIsZero,
-              [&](OpBuilder &finalBuilder, Location finalLoc) {
-                Value laneHasWave = arith::CmpIOp::create(
-                    finalBuilder, finalLoc, arith::CmpIPredicate::ult, lane,
-                    wavesPerBlockValue);
-                auto initialWaveSum = scf::IfOp::create(
-                    finalBuilder, finalLoc, TypeRange{valueType}, laneHasWave,
-                    /*withElseRegion=*/true);
-                finalBuilder.setInsertionPointToStart(
-                    &initialWaveSum.getThenRegion().front());
-                Value value = memref::LoadOp::create(finalBuilder, finalLoc,
-                                                     waveSums, lane);
-                scf::YieldOp::create(finalBuilder, finalLoc, value);
-                finalBuilder.setInsertionPointToStart(
-                    &initialWaveSum.getElseRegion().front());
-                scf::YieldOp::create(finalBuilder, finalLoc, zero);
-                finalBuilder.setInsertionPointAfter(initialWaveSum);
-                Value blockSum =
-                    buildWaveReduction(finalBuilder, finalLoc,
-                                       initialWaveSum.getResult(0), waveSize);
-                Value laneIsZero = arith::CmpIOp::create(
-                    finalBuilder, finalLoc, arith::CmpIPredicate::eq, lane,
-                    zeroIndex);
-                scf::IfOp::create(
-                    finalBuilder, finalLoc, laneIsZero,
-                    [&](OpBuilder &storeBuilder, Location storeLoc) {
-                      memref::StoreOp::create(storeBuilder, storeLoc, blockSum,
-                                              op.getOutput(), row);
-                      scf::YieldOp::create(storeBuilder, storeLoc);
-                    });
-                scf::YieldOp::create(finalBuilder, finalLoc);
+          buildBlockReduction(
+              builder, bodyLoc, launch, partialReduction.front(), zero,
+              waveInBlock, lane, zeroIndex, wavesPerBlock, waveSize,
+              [](OpBuilder &sumBuilder, Location sumLoc, Value lhs, Value rhs) {
+                return arith::AddFOp::create(sumBuilder, sumLoc, lhs, rhs);
+              },
+              [&](OpBuilder &resultBuilder, Location resultLoc,
+                  Value blockSum) {
+                memref::StoreOp::create(resultBuilder, resultLoc, blockSum,
+                                        op.getOutput(), row);
               });
           scf::YieldOp::create(builder, bodyLoc);
         },

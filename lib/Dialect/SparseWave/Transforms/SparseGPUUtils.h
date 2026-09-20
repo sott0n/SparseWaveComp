@@ -121,6 +121,12 @@ using ThreadPerCompressedSegmentPairBodyBuilder = llvm::function_ref<void(
 using CompressedCoiterationBodyBuilder = llvm::function_ref<SmallVector<Value>(
     OpBuilder &, Location, CompressedCoiterationEntry, ValueRange)>;
 
+using BlockReductionResultBuilder =
+    llvm::function_ref<void(OpBuilder &, Location, Value)>;
+
+using ReductionCombinerBuilder =
+    llvm::function_ref<Value(OpBuilder &, Location, Value, Value)>;
+
 LinearThreadWorkDistribution
 buildLinearThreadWorkDistribution(PatternRewriter &rewriter, Location loc,
                                   Value workUnitCount, Value oneIndex,
@@ -205,6 +211,16 @@ SmallVector<Value> buildCompressedCoiteration(
 
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
                          int64_t waveSize);
+
+/// Reduces one partial value per block participant using wave shuffles and
+/// workgroup memory. Every participant in the block must execute this helper
+/// along the same control-flow path. The result builder is invoked once by the
+/// block leader with the reduced value.
+void buildBlockReduction(OpBuilder &builder, Location loc, gpu::LaunchOp launch,
+                         Value partialValue, Value identity, Value waveInBlock,
+                         Value lane, Value zeroIndex, int64_t wavesPerBlock,
+                         int64_t waveSize, ReductionCombinerBuilder combine,
+                         BlockReductionResultBuilder buildResult);
 
 /// Builds an inclusive segmented reduction for a prefix of active wave lanes.
 /// Active lanes must be contiguous and start at lane zero.

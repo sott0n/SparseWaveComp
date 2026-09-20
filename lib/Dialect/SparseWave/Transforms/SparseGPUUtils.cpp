@@ -362,15 +362,87 @@ SmallVector<Value> buildCompressedCoiteration(
   return SmallVector<Value>(loop.getResults().drop_front(2));
 }
 
+namespace {
+
 Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
-                         int64_t waveSize) {
+                         int64_t waveSize, ReductionCombinerBuilder combine) {
   for (int32_t offset = 1; offset < waveSize; offset <<= 1) {
     Value shuffled = gpu::ShuffleOp::create(builder, loc, value, offset,
                                             waveSize, gpu::ShuffleMode::XOR)
                          .getShuffleResult();
-    value = arith::AddFOp::create(builder, loc, value, shuffled);
+    value = combine(builder, loc, value, shuffled);
   }
   return value;
+}
+
+} // namespace
+
+Value buildWaveReduction(OpBuilder &builder, Location loc, Value value,
+                         int64_t waveSize) {
+  return buildWaveReduction(
+      builder, loc, value, waveSize,
+      [](OpBuilder &sumBuilder, Location sumLoc, Value lhs, Value rhs) {
+        return arith::AddFOp::create(sumBuilder, sumLoc, lhs, rhs);
+      });
+}
+
+void buildBlockReduction(OpBuilder &builder, Location loc, gpu::LaunchOp launch,
+                         Value partialValue, Value identity, Value waveInBlock,
+                         Value lane, Value zeroIndex, int64_t wavesPerBlock,
+                         int64_t waveSize, ReductionCombinerBuilder combine,
+                         BlockReductionResultBuilder buildResult) {
+  auto workgroupAddressSpace = gpu::AddressSpaceAttr::get(
+      builder.getContext(), gpu::AddressSpace::Workgroup);
+  auto waveValuesType = MemRefType::get({wavesPerBlock}, partialValue.getType(),
+                                        MemRefLayoutAttrInterface{},
+                                        Attribute(workgroupAddressSpace));
+  Value waveValues = launch.addWorkgroupAttribution(waveValuesType, loc);
+
+  Value waveValue =
+      buildWaveReduction(builder, loc, partialValue, waveSize, combine);
+  Value laneIsZero = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::eq, lane, zeroIndex);
+  scf::IfOp::create(builder, loc, laneIsZero,
+                    [&](OpBuilder &storeBuilder, Location storeLoc) {
+                      memref::StoreOp::create(storeBuilder, storeLoc, waveValue,
+                                              waveValues, waveInBlock);
+                      scf::YieldOp::create(storeBuilder, storeLoc);
+                    });
+
+  gpu::BarrierOp::create(builder, loc);
+
+  Value waveIsZero = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::eq, waveInBlock, zeroIndex);
+  scf::IfOp::create(
+      builder, loc, waveIsZero, [&](OpBuilder &waveBuilder, Location waveLoc) {
+        Value waveCount =
+            arith::ConstantIndexOp::create(waveBuilder, waveLoc, wavesPerBlock);
+        Value laneHasWave = arith::CmpIOp::create(
+            waveBuilder, waveLoc, arith::CmpIPredicate::ult, lane, waveCount);
+        auto initialValue = scf::IfOp::create(
+            waveBuilder, waveLoc, TypeRange{partialValue.getType()},
+            laneHasWave, /*withElseRegion=*/true);
+        waveBuilder.setInsertionPointToStart(
+            &initialValue.getThenRegion().front());
+        Value value =
+            memref::LoadOp::create(waveBuilder, waveLoc, waveValues, lane);
+        scf::YieldOp::create(waveBuilder, waveLoc, value);
+        waveBuilder.setInsertionPointToStart(
+            &initialValue.getElseRegion().front());
+        scf::YieldOp::create(waveBuilder, waveLoc, identity);
+        waveBuilder.setInsertionPointAfter(initialValue);
+
+        Value blockValue = buildWaveReduction(
+            waveBuilder, waveLoc, initialValue.getResult(0), waveSize, combine);
+        Value blockLeader = arith::CmpIOp::create(
+            waveBuilder, waveLoc, arith::CmpIPredicate::eq, lane, zeroIndex);
+        scf::IfOp::create(waveBuilder, waveLoc, blockLeader,
+                          [&](OpBuilder &resultBuilder, Location resultLoc) {
+                            buildResult(resultBuilder, resultLoc, blockValue);
+                            scf::YieldOp::create(resultBuilder, resultLoc);
+                          });
+        scf::YieldOp::create(waveBuilder, waveLoc);
+      });
 }
 
 WaveSegmentedReduction
