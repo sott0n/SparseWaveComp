@@ -19,6 +19,14 @@ struct LinearThreadWorkDistribution {
   Value workUnitIsActive;
 };
 
+struct BlockWorkDistribution {
+  gpu::LaunchOp launch;
+  Value participant;
+  Value participantCount;
+  Value workUnit;
+  Value workUnitIsActive;
+};
+
 struct ThreadDenseOutputElement {
   Value row;
   Value column;
@@ -117,6 +125,14 @@ LinearThreadWorkDistribution
 buildLinearThreadWorkDistribution(PatternRewriter &rewriter, Location loc,
                                   Value workUnitCount, Value oneIndex,
                                   Value blockSize);
+
+/// Assigns one logical work unit to each GPU block. Threads in the block are
+/// exposed as participants in that work unit.
+BlockWorkDistribution buildBlockWorkDistribution(PatternRewriter &rewriter,
+                                                 Location loc,
+                                                 Value workUnitCount,
+                                                 Value oneIndex,
+                                                 Value blockSize);
 
 /// Assigns one element of a rank-2 dense output to each GPU thread. The body
 /// computes the value stored at the assigned row and column.

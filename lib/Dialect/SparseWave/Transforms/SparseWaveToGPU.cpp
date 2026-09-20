@@ -93,17 +93,13 @@ public:
       break;
     }
     case PositionMapping::Block: {
-      Value gridSize =
-          arith::MaxUIOp::create(rewriter, loc, op.getWorkerCount(), one);
-      launch = gpu::LaunchOp::create(rewriter, loc, gridSize, one, one,
-                                     blockSizeValue, one, one);
-      rewriter.setInsertionPointToStart(&launch.getBody().front());
-      workerId = launch.getBlockIds().x;
-      participantId = launch.getThreadIds().x;
-      participantCount = launch.getBlockSize().x;
-      workerIsActive =
-          arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
-                                workerId, op.getWorkerCount());
+      BlockWorkDistribution distribution = buildBlockWorkDistribution(
+          rewriter, loc, op.getWorkerCount(), one, blockSizeValue);
+      launch = distribution.launch;
+      workerId = distribution.workUnit;
+      participantId = distribution.participant;
+      participantCount = distribution.participantCount;
+      workerIsActive = distribution.workUnitIsActive;
       break;
     }
     }
@@ -269,11 +265,9 @@ public:
         arith::ConstantIndexOp::create(rewriter, loc, wavesPerBlock);
     Value rowCount =
         memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
-    Value gridSize = arith::MaxUIOp::create(rewriter, loc, rowCount, oneIndex);
-
-    gpu::LaunchOp launch =
-        gpu::LaunchOp::create(rewriter, loc, gridSize, oneIndex, oneIndex,
-                              blockSizeValue, oneIndex, oneIndex);
+    BlockWorkDistribution distribution = buildBlockWorkDistribution(
+        rewriter, loc, rowCount, oneIndex, blockSizeValue);
+    gpu::LaunchOp launch = distribution.launch;
     auto valueType =
         cast<MemRefType>(op.getValues().getType()).getElementType();
     auto workgroupAddressSpace = gpu::AddressSpaceAttr::get(
@@ -283,17 +277,17 @@ public:
                         Attribute(workgroupAddressSpace));
     Value waveSums = launch.addWorkgroupAttribution(waveSumsType, loc);
 
-    rewriter.setInsertionPointToStart(&launch.getBody().front());
-    Value thread = launch.getThreadIds().x;
-    Value row = launch.getBlockIds().x;
+    Value thread = distribution.participant;
+    Value row = distribution.workUnit;
+    rewriter.setInsertionPoint(distribution.workUnitIsActive.getDefiningOp());
     Value waveInBlock =
         arith::DivUIOp::create(rewriter, loc, thread, waveSizeValue);
     Value lane = arith::RemUIOp::create(rewriter, loc, thread, waveSizeValue);
-    Value rowIsActive = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::ult, row, rowCount);
+    rewriter.setInsertionPointAfter(
+        distribution.workUnitIsActive.getDefiningOp());
 
     scf::IfOp::create(
-        rewriter, loc, rowIsActive,
+        rewriter, loc, distribution.workUnitIsActive,
         [&](OpBuilder &builder, Location bodyLoc) {
           CompressedSegmentBounds rowBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getRowOffsets(), row, oneIndex);

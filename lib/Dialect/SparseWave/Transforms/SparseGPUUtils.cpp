@@ -31,6 +31,26 @@ buildLinearThreadWorkDistribution(PatternRewriter &rewriter, Location loc,
   return {launch, workUnit, workUnitIsActive};
 }
 
+BlockWorkDistribution buildBlockWorkDistribution(PatternRewriter &rewriter,
+                                                 Location loc,
+                                                 Value workUnitCount,
+                                                 Value oneIndex,
+                                                 Value blockSize) {
+  Value gridSize =
+      arith::MaxUIOp::create(rewriter, loc, workUnitCount, oneIndex);
+  gpu::LaunchOp launch =
+      gpu::LaunchOp::create(rewriter, loc, gridSize, oneIndex, oneIndex,
+                            blockSize, oneIndex, oneIndex);
+  rewriter.setInsertionPointToStart(&launch.getBody().front());
+
+  Value workUnit = launch.getBlockIds().x;
+  Value participant = launch.getThreadIds().x;
+  Value participantCount = launch.getBlockSize().x;
+  Value workUnitIsActive = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::ult, workUnit, workUnitCount);
+  return {launch, participant, participantCount, workUnit, workUnitIsActive};
+}
+
 gpu::LaunchOp buildThreadPerDenseOutputElement(
     PatternRewriter &rewriter, Location loc, Value output, Value zeroIndex,
     Value oneIndex, Value blockSize,
