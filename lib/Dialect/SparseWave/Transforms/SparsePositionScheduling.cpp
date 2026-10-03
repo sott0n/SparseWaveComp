@@ -30,6 +30,35 @@ struct CompressedSegmentState {
   Value nextBoundary;
 };
 
+/// Materializes the operator semantics independently from the selected
+/// position schedule.
+class PositionReductionSemantics {
+public:
+  static PositionReductionSemantics get(PositionReduceOp reduction) {
+    assert(reduction.getKind() == "sum" &&
+           "expected a verified position reduction kind");
+    return PositionReductionSemantics();
+  }
+
+  Value buildIdentity(OpBuilder &builder, Location loc, Type valueType) const {
+    return arith::ConstantOp::create(builder, loc,
+                                     builder.getZeroAttr(valueType));
+  }
+
+  Value combine(OpBuilder &builder, Location loc, Value lhs, Value rhs) const {
+    return arith::AddFOp::create(builder, loc, lhs, rhs);
+  }
+
+  void atomicAccumulate(OpBuilder &builder, Location loc, Value value,
+                        Value output, Value key) const {
+    memref::AtomicRMWOp::create(builder, loc, arith::AtomicRMWKind::addf, value,
+                                output, ValueRange{key});
+  }
+
+private:
+  PositionReductionSemantics() = default;
+};
+
 Value buildCollapsedIterationCount(OpBuilder &builder, Location loc,
                                    PositionReduceOp reduction) {
   Value count;
@@ -415,6 +444,7 @@ public:
   LogicalResult matchAndRewrite(PositionReduceOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
+    PositionReductionSemantics semantics = PositionReductionSemantics::get(op);
     Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value chunkSizeValue =
         arith::ConstantIndexOp::create(rewriter, loc, chunkSize);
@@ -422,8 +452,7 @@ public:
         memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
     Type valueType =
         cast<MemRefType>(op.getOutput().getType()).getElementType();
-    Value zero = arith::ConstantOp::create(rewriter, loc,
-                                           rewriter.getZeroAttr(valueType));
+    Value zero = semantics.buildIdentity(rewriter, loc, valueType);
     PositionParallelOp initialization = buildOutputInitialization(
         rewriter, loc, op.getOutput(), outputSize, zero, blockSize);
 
@@ -452,9 +481,8 @@ public:
         buildLogicalCoordinates(rewriter, loc, op, chunkBody->getArgument(0));
     KeyedContribution contribution =
         cloneContributionBody(rewriter, op, coordinates);
-    memref::AtomicRMWOp::create(rewriter, loc, arith::AtomicRMWKind::addf,
-                                contribution.value, op.getOutput(),
-                                ValueRange{contribution.key});
+    semantics.atomicAccumulate(rewriter, loc, contribution.value,
+                               op.getOutput(), contribution.key);
     YieldOp::create(rewriter, loc);
     rewriter.setInsertionPointAfter(chunk);
     YieldOp::create(rewriter, loc);
@@ -478,6 +506,7 @@ public:
   LogicalResult matchAndRewrite(PositionReduceOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
+    PositionReductionSemantics semantics = PositionReductionSemantics::get(op);
     Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
     Value chunkSizeValue =
@@ -486,8 +515,7 @@ public:
         memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
     Type valueType =
         cast<MemRefType>(op.getOutput().getType()).getElementType();
-    Value zero = arith::ConstantOp::create(rewriter, loc,
-                                           rewriter.getZeroAttr(valueType));
+    Value zero = semantics.buildIdentity(rewriter, loc, valueType);
     PositionParallelOp initialization = buildOutputInitialization(
         rewriter, loc, op.getOutput(), outputSize, zero, blockSize);
 
@@ -561,17 +589,16 @@ public:
           Value sameKey =
               arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
                                     currentKey, contribution.key);
-          Value combined = arith::AddFOp::create(builder, bodyLoc, currentValue,
-                                                 contribution.value);
+          Value combined = semantics.combine(builder, bodyLoc, currentValue,
+                                             contribution.value);
           scf::IfOp::create(
               builder, bodyLoc, sameKey,
               [&](OpBuilder &thenBuilder, Location thenLoc) {
                 scf::YieldOp::create(thenBuilder, thenLoc);
               },
               [&](OpBuilder &elseBuilder, Location elseLoc) {
-                memref::AtomicRMWOp::create(
-                    elseBuilder, elseLoc, arith::AtomicRMWKind::addf,
-                    currentValue, op.getOutput(), ValueRange{currentKey});
+                semantics.atomicAccumulate(elseBuilder, elseLoc, currentValue,
+                                           op.getOutput(), currentKey);
                 scf::YieldOp::create(elseBuilder, elseLoc);
               });
           Value nextValue = arith::SelectOp::create(
@@ -581,9 +608,8 @@ public:
             nextState.push_back(nextBoundary);
           scf::YieldOp::create(builder, bodyLoc, nextState);
         });
-    memref::AtomicRMWOp::create(rewriter, loc, arith::AtomicRMWKind::addf,
-                                reduction.getResult(1), op.getOutput(),
-                                ValueRange{reduction.getResult(0)});
+    semantics.atomicAccumulate(rewriter, loc, reduction.getResult(1),
+                               op.getOutput(), reduction.getResult(0));
     YieldOp::create(rewriter, loc);
     rewriter.eraseOp(op);
     return success();
@@ -604,6 +630,7 @@ public:
   LogicalResult matchAndRewrite(PositionReduceOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
+    PositionReductionSemantics semantics = PositionReductionSemantics::get(op);
     Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
     Value blockSizeValue =
@@ -614,8 +641,7 @@ public:
         memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
     Type valueType =
         cast<MemRefType>(op.getOutput().getType()).getElementType();
-    Value zero = arith::ConstantOp::create(rewriter, loc,
-                                           rewriter.getZeroAttr(valueType));
+    Value zero = semantics.buildIdentity(rewriter, loc, valueType);
     PositionParallelOp initialization = buildOutputInitialization(
         rewriter, loc, op.getOutput(), outputSize, zero, blockSize);
 
@@ -665,15 +691,14 @@ public:
         arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), key);
     WaveSegmentedReduction reduction = buildWavePrefixSegmentedReduction(
         rewriter, loc, keyI64, entry.getResult(1), active, waveSize,
-        [](OpBuilder &builder, Location bodyLoc, Value lhs, Value rhs) {
-          return arith::AddFOp::create(builder, bodyLoc, lhs, rhs);
+        [&](OpBuilder &builder, Location bodyLoc, Value lhs, Value rhs) {
+          return semantics.combine(builder, bodyLoc, lhs, rhs);
         });
     scf::IfOp::create(rewriter, loc, reduction.segmentEnd,
                       [&](OpBuilder &builder, Location bodyLoc) {
-                        memref::AtomicRMWOp::create(
-                            builder, bodyLoc, arith::AtomicRMWKind::addf,
-                            reduction.inclusiveValue, op.getOutput(),
-                            ValueRange{key});
+                        semantics.atomicAccumulate(builder, bodyLoc,
+                                                   reduction.inclusiveValue,
+                                                   op.getOutput(), key);
                         scf::YieldOp::create(builder, bodyLoc);
                       });
     YieldOp::create(rewriter, loc);
@@ -704,13 +729,13 @@ public:
       return rewriter.notifyMatchFailure(op, "cooperative axis was not found");
 
     Location loc = op.getLoc();
+    PositionReductionSemantics semantics = PositionReductionSemantics::get(op);
     Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value outputSize =
         memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
     Type valueType =
         cast<MemRefType>(op.getOutput().getType()).getElementType();
-    Value zero = arith::ConstantOp::create(rewriter, loc,
-                                           rewriter.getZeroAttr(valueType));
+    Value zero = semantics.buildIdentity(rewriter, loc, valueType);
     PositionParallelOp initialization = buildOutputInitialization(
         rewriter, loc, op.getOutput(), outputSize, zero, blockSize);
 
@@ -763,10 +788,8 @@ public:
           rewriter, loc, active, [&](OpBuilder &builder, Location bodyLoc) {
             KeyedContribution contribution =
                 cloneRemainingContributionBody(builder, op, mapping);
-            memref::AtomicRMWOp::create(builder, bodyLoc,
-                                        arith::AtomicRMWKind::addf,
-                                        contribution.value, op.getOutput(),
-                                        ValueRange{contribution.key});
+            semantics.atomicAccumulate(builder, bodyLoc, contribution.value,
+                                       op.getOutput(), contribution.key);
             scf::YieldOp::create(builder, bodyLoc);
           });
       YieldOp::create(rewriter, loc);
@@ -814,14 +837,13 @@ public:
               arith::AndIOp::create(builder, bodyLoc, active, keyChanged);
           scf::IfOp::create(builder, bodyLoc, flush,
                             [&](OpBuilder &flushBuilder, Location flushLoc) {
-                              memref::AtomicRMWOp::create(
-                                  flushBuilder, flushLoc,
-                                  arith::AtomicRMWKind::addf, iterArgs[1],
-                                  op.getOutput(), ValueRange{iterArgs[0]});
+                              semantics.atomicAccumulate(
+                                  flushBuilder, flushLoc, iterArgs[1],
+                                  op.getOutput(), iterArgs[0]);
                               scf::YieldOp::create(flushBuilder, flushLoc);
                             });
           Value combined =
-              arith::AddFOp::create(builder, bodyLoc, iterArgs[1], next.value);
+              semantics.combine(builder, bodyLoc, iterArgs[1], next.value);
           Value nextKey = arith::SelectOp::create(builder, bodyLoc, sameKey,
                                                   iterArgs[0], next.key);
           Value nextValue = arith::SelectOp::create(builder, bodyLoc, sameKey,
@@ -831,10 +853,8 @@ public:
         });
     scf::IfOp::create(
         rewriter, loc, active, [&](OpBuilder &builder, Location bodyLoc) {
-          memref::AtomicRMWOp::create(builder, bodyLoc,
-                                      arith::AtomicRMWKind::addf,
-                                      reduction.getResult(1), op.getOutput(),
-                                      ValueRange{reduction.getResult(0)});
+          semantics.atomicAccumulate(builder, bodyLoc, reduction.getResult(1),
+                                     op.getOutput(), reduction.getResult(0));
           scf::YieldOp::create(builder, bodyLoc);
         });
     YieldOp::create(rewriter, loc);
