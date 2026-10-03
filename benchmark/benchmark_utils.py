@@ -441,6 +441,60 @@ def parse_kernel_trace(
     }
 
 
+def parse_kernel_phase_trace(path, kernel_names, warmup, iterations):
+    with path.open(newline="", encoding="utf-8-sig") as stream:
+        reader = csv.DictReader(stream)
+        if not reader.fieldnames:
+            raise ValueError(f"trace has no CSV header: {path}")
+        kernel_column = find_column(reader.fieldnames, TRACE_COLUMNS["kernel"])
+        start_column = find_column(reader.fieldnames, TRACE_COLUMNS["start"])
+        end_column = find_column(reader.fieldnames, TRACE_COLUMNS["end"])
+        phase_durations = {phase: [] for phase in kernel_names}
+        for row in reader:
+            matches = [
+                phase
+                for phase, kernel_name in kernel_names.items()
+                if kernel_name in row[kernel_column]
+            ]
+            if not matches:
+                continue
+            if len(matches) != 1:
+                raise ValueError(
+                    f"kernel record matches multiple phases: {row}"
+                )
+            start = int(row[start_column])
+            end = int(row[end_column])
+            if end < start:
+                raise ValueError(f"trace contains a negative duration: {row}")
+            phase_durations[matches[0]].append((end - start) / 1000.0)
+
+    expected = warmup + iterations
+    for phase, durations in phase_durations.items():
+        if len(durations) != expected:
+            raise ValueError(
+                f"expected {expected} '{kernel_names[phase]}' kernel "
+                f"records, found {len(durations)} in {path}"
+            )
+
+    total_durations = [
+        sum(phase_durations[phase][index] for phase in kernel_names)
+        for index in range(expected)
+    ]
+    measured_total = sum(total_durations[warmup:])
+    result = {
+        "total": summarize_timings(total_durations, warmup, iterations)
+    }
+    for phase, durations in phase_durations.items():
+        timing = summarize_timings(durations, warmup, iterations)
+        timing["fraction"] = (
+            sum(durations[warmup:]) / measured_total
+            if measured_total
+            else 0.0
+        )
+        result[phase] = timing
+    return result
+
+
 def summarize_timings(durations, warmup, iterations):
     expected = warmup + iterations
     if len(durations) != expected:
@@ -647,11 +701,10 @@ def compile_mlir(
     block_size,
     pipeline_options=(),
 ):
-    lowering_options = [
-        f"{operation}-mapping={mapping}",
-        f"{operation}-block-size={block_size}",
-        *pipeline_options,
-    ]
+    lowering_options = [f"{operation}-block-size={block_size}"]
+    if mapping is not None:
+        lowering_options.insert(0, f"{operation}-mapping={mapping}")
+    lowering_options.extend(pipeline_options)
     pipeline = (
         "builtin.module(convert-scf-to-cf,"
         "sparsewave-to-amdgpu-pipeline{"
@@ -1109,6 +1162,7 @@ class BenchmarkReport:
 
 
 REPORT_COLUMNS = {
+    "operation": TableColumn("operation", "operation", 9, alignment="<"),
     "implementation": TableColumn(
         "implementation", "implementation", 14, alignment="<"
     ),
@@ -1141,10 +1195,31 @@ REPORT_COLUMNS = {
     "position_reduction": TableColumn(
         "reduction", "position_reduction", 9, alignment="<"
     ),
+    "overlap_percent": TableColumn(
+        "overlap", "overlap_percent", 7, "d", "%"
+    ),
     "tile_size": TableColumn("tile", "tile_size", 4, "d"),
     "mapping": TableColumn("mapping", "mapping", 18, alignment="<"),
     "median_us": TableColumn("median", "median_us", 11, ".2f", " us"),
     "p95_us": TableColumn("p95", "p95_us", 11, ".2f", " us"),
+    "symbolic_median_us": TableColumn(
+        "symbolic", "symbolic_median_us", 11, ".2f", " us"
+    ),
+    "symbolic_fraction": TableColumn(
+        "symbolic share", "symbolic_fraction", 14, ".1%"
+    ),
+    "prefix_median_us": TableColumn(
+        "prefix", "prefix_median_us", 11, ".2f", " us"
+    ),
+    "numeric_median_us": TableColumn(
+        "numeric", "numeric_median_us", 11, ".2f", " us"
+    ),
+    "numeric_fraction": TableColumn(
+        "numeric share", "numeric_fraction", 13, ".1%"
+    ),
+    "prefix_fraction": TableColumn(
+        "prefix share", "prefix_fraction", 12, ".1%"
+    ),
     "gnnz_per_sec": TableColumn(
         "GNNZ/s", "gnnz_per_sec", 8, ".2f"
     ),

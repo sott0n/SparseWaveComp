@@ -14,9 +14,11 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/Twine.h"
 
 #include <cassert>
 #include <limits>
+#include <string>
 
 namespace mlir::sparsewave {
 #define GEN_PASS_DEF_CONVERTSPARSEWAVETOGPU
@@ -29,6 +31,17 @@ void propagateKernelName(Operation *source, gpu::LaunchOp launch) {
   if (!name)
     return;
   auto symbol = FlatSymbolRefAttr::get(source->getContext(), name.getValue());
+  launch.setModuleAttr(symbol);
+  launch.setFunctionAttr(symbol);
+}
+
+void propagateKernelName(Operation *source, gpu::LaunchOp launch,
+                         StringRef suffix) {
+  auto name = source->getAttrOfType<StringAttr>("sparsewave.kernel_name");
+  if (!name)
+    return;
+  std::string phaseName = (llvm::Twine(name.getValue()) + "_" + suffix).str();
+  auto symbol = FlatSymbolRefAttr::get(source->getContext(), phaseName);
   launch.setModuleAttr(symbol);
   launch.setFunctionAttr(symbol);
 }
@@ -665,7 +678,7 @@ public:
 
     Type offsetType =
         cast<MemRefType>(op.getOutputRowOffsets().getType()).getElementType();
-    buildThreadPerCompressedOutputAssembly(
+    CompressedOutputAssembly assembly = buildThreadPerCompressedOutputAssembly(
         rewriter, loc, rowCount, op.getOutputRowOffsets(), op.getOutputNnz(),
         zeroIndex, oneIndex, blockSizeValue,
         [&](OpBuilder &builder, Location bodyLoc, Value row) {
@@ -755,6 +768,9 @@ public:
                 return SmallVector<Value>{nextOutputPosition};
               });
         });
+    propagateKernelName(op, assembly.symbolic, "symbolic");
+    propagateKernelName(op, assembly.prefix, "prefix");
+    propagateKernelName(op, assembly.numeric, "numeric");
     rewriter.eraseOp(op);
     return success();
   }

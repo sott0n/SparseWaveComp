@@ -1,0 +1,189 @@
+func.func @elementwise(
+    %lhsOffsets: memref<?xi32>,
+    %lhsColumns: memref<?xi32>,
+    %lhsValues: memref<?xf32>,
+    %rhsOffsets: memref<?xi32>,
+    %rhsColumns: memref<?xi32>,
+    %rhsValues: memref<?xf32>,
+    %outputOffsets: memref<?xi32>,
+    %outputColumns: memref<?xi32>,
+    %outputValues: memref<?xf32>,
+    %outputNnz: memref<?xi32>) {
+  sparsewave.csr_elementwise
+      %lhsOffsets, %lhsColumns, %lhsValues,
+      %rhsOffsets, %rhsColumns, %rhsValues,
+      %outputOffsets, %outputColumns, %outputValues, %outputNnz
+      kind = "@KIND@" {sparsewave.kernel_name = "elementwise"}
+      : memref<?xi32>, memref<?xi32>, memref<?xf32>,
+        memref<?xi32>, memref<?xi32>, memref<?xf32>,
+        memref<?xi32>, memref<?xi32>, memref<?xf32>, memref<?xi32>
+  return
+}
+
+func.func @main() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c0I64 = arith.constant 0 : i64
+  %c1I64 = arith.constant 1 : i64
+  %c1F32 = arith.constant 1.0 : f32
+  %c2F32 = arith.constant 2.0 : f32
+  %c3F32 = arith.constant 3.0 : f32
+  %cRows = arith.constant @ROWS@ : index
+  %cRowsPlusOne = arith.constant @ROWS_PLUS_ONE@ : index
+  %cColumns = arith.constant @COLUMNS@ : index
+  %cInputNnzPerRow = arith.constant @INPUT_NNZ_PER_ROW@ : index
+  %cInputNnz = arith.constant @INPUT_NNZ@ : index
+  %cOverlapNnz = arith.constant @OVERLAP_NNZ@ : index
+  %cOutputNnzPerRow = arith.constant @OUTPUT_NNZ_PER_ROW@ : index
+  %cOutputNnz = arith.constant @OUTPUT_NNZ@ : index
+  %cDispatches = arith.constant @DISPATCHES@ : index
+
+  %hostLhsOffsets = memref.alloc(%cRowsPlusOne) : memref<?xi32>
+  %hostLhsColumns = memref.alloc(%cInputNnz) : memref<?xi32>
+  %hostLhsValues = memref.alloc(%cInputNnz) : memref<?xf32>
+  %hostRhsOffsets = memref.alloc(%cRowsPlusOne) : memref<?xi32>
+  %hostRhsColumns = memref.alloc(%cInputNnz) : memref<?xi32>
+  %hostRhsValues = memref.alloc(%cInputNnz) : memref<?xf32>
+  %hostOutputOffsets = memref.alloc(%cRowsPlusOne) : memref<?xi32>
+  %hostOutputColumns = memref.alloc(%cOutputNnz) : memref<?xi32>
+  %hostOutputValues = memref.alloc(%cOutputNnz) : memref<?xf32>
+  %hostOutputNnz = memref.alloc(%c1) : memref<?xi32>
+  %errorOutput = memref.alloc() : memref<1xi64>
+
+  scf.for %row = %c0 to %cRowsPlusOne step %c1 {
+    %offset = arith.muli %row, %cInputNnzPerRow : index
+    %offsetI32 = arith.index_cast %offset : index to i32
+    memref.store %offsetI32, %hostLhsOffsets[%row] : memref<?xi32>
+    memref.store %offsetI32, %hostRhsOffsets[%row] : memref<?xi32>
+  }
+  scf.for %position = %c0 to %cInputNnz step %c1 {
+    %localPosition = arith.remui %position, %cInputNnzPerRow : index
+    %isShared = arith.cmpi ult, %localPosition, %cOverlapNnz : index
+    %rhsUniquePosition = arith.subi %localPosition, %cOverlapNnz : index
+    %rhsUniqueColumn = arith.addi %cInputNnzPerRow, %rhsUniquePosition : index
+    %rhsColumn = arith.select %isShared, %localPosition,
+        %rhsUniqueColumn : index
+    %lhsColumnI32 = arith.index_cast %localPosition : index to i32
+    %rhsColumnI32 = arith.index_cast %rhsColumn : index to i32
+    memref.store %lhsColumnI32, %hostLhsColumns[%position] : memref<?xi32>
+    memref.store %rhsColumnI32, %hostRhsColumns[%position] : memref<?xi32>
+    memref.store %c1F32, %hostLhsValues[%position] : memref<?xf32>
+    memref.store %c2F32, %hostRhsValues[%position] : memref<?xf32>
+  }
+
+  %start = gpu.wait async
+  %deviceLhsOffsets, %alloc0 = gpu.alloc async [%start] (%cRowsPlusOne)
+      : memref<?xi32>
+  %deviceLhsColumns, %alloc1 = gpu.alloc async [%alloc0] (%cInputNnz)
+      : memref<?xi32>
+  %deviceLhsValues, %alloc2 = gpu.alloc async [%alloc1] (%cInputNnz)
+      : memref<?xf32>
+  %deviceRhsOffsets, %alloc3 = gpu.alloc async [%alloc2] (%cRowsPlusOne)
+      : memref<?xi32>
+  %deviceRhsColumns, %alloc4 = gpu.alloc async [%alloc3] (%cInputNnz)
+      : memref<?xi32>
+  %deviceRhsValues, %alloc5 = gpu.alloc async [%alloc4] (%cInputNnz)
+      : memref<?xf32>
+  %deviceOutputOffsets, %alloc6 = gpu.alloc async [%alloc5] (%cRowsPlusOne)
+      : memref<?xi32>
+  %deviceOutputColumns, %alloc7 = gpu.alloc async [%alloc6] (%cOutputNnz)
+      : memref<?xi32>
+  %deviceOutputValues, %alloc8 = gpu.alloc async [%alloc7] (%cOutputNnz)
+      : memref<?xf32>
+  %deviceOutputNnz, %alloc9 = gpu.alloc async [%alloc8] (%c1)
+      : memref<?xi32>
+
+  %copy0 = gpu.memcpy async [%alloc9] %deviceLhsOffsets, %hostLhsOffsets
+      : memref<?xi32>, memref<?xi32>
+  %copy1 = gpu.memcpy async [%copy0] %deviceLhsColumns, %hostLhsColumns
+      : memref<?xi32>, memref<?xi32>
+  %copy2 = gpu.memcpy async [%copy1] %deviceLhsValues, %hostLhsValues
+      : memref<?xf32>, memref<?xf32>
+  %copy3 = gpu.memcpy async [%copy2] %deviceRhsOffsets, %hostRhsOffsets
+      : memref<?xi32>, memref<?xi32>
+  %copy4 = gpu.memcpy async [%copy3] %deviceRhsColumns, %hostRhsColumns
+      : memref<?xi32>, memref<?xi32>
+  %copy5 = gpu.memcpy async [%copy4] %deviceRhsValues, %hostRhsValues
+      : memref<?xf32>, memref<?xf32>
+  gpu.wait [%copy5]
+
+  scf.for %iteration = %c0 to %cDispatches step %c1 {
+    func.call @elementwise(
+        %deviceLhsOffsets, %deviceLhsColumns, %deviceLhsValues,
+        %deviceRhsOffsets, %deviceRhsColumns, %deviceRhsValues,
+        %deviceOutputOffsets, %deviceOutputColumns, %deviceOutputValues,
+        %deviceOutputNnz)
+        : (memref<?xi32>, memref<?xi32>, memref<?xf32>,
+           memref<?xi32>, memref<?xi32>, memref<?xf32>,
+           memref<?xi32>, memref<?xi32>, memref<?xf32>, memref<?xi32>) -> ()
+  }
+
+  %outputStart = gpu.wait async
+  %copy6 = gpu.memcpy async [%outputStart]
+      %hostOutputOffsets, %deviceOutputOffsets : memref<?xi32>, memref<?xi32>
+  %copy7 = gpu.memcpy async [%copy6]
+      %hostOutputColumns, %deviceOutputColumns : memref<?xi32>, memref<?xi32>
+  %copy8 = gpu.memcpy async [%copy7]
+      %hostOutputValues, %deviceOutputValues : memref<?xf32>, memref<?xf32>
+  %copy9 = gpu.memcpy async [%copy8]
+      %hostOutputNnz, %deviceOutputNnz : memref<?xi32>, memref<?xi32>
+  gpu.wait [%copy9]
+
+  %actualNnz = memref.load %hostOutputNnz[%c0] : memref<?xi32>
+  %expectedNnz = arith.index_cast %cOutputNnz : index to i32
+  %nnzMismatch = arith.cmpi ne, %actualNnz, %expectedNnz : i32
+  %nnzError = arith.select %nnzMismatch, %c1I64, %c0I64 : i64
+  %offsetErrors = scf.for %row = %c0 to %cRowsPlusOne step %c1
+      iter_args(%count = %nnzError) -> i64 {
+    %actualOffset = memref.load %hostOutputOffsets[%row] : memref<?xi32>
+    %expectedOffset = arith.muli %row, %cOutputNnzPerRow : index
+    %expectedOffsetI32 = arith.index_cast %expectedOffset : index to i32
+    %mismatch = arith.cmpi ne, %actualOffset, %expectedOffsetI32 : i32
+    %increment = arith.select %mismatch, %c1I64, %c0I64 : i64
+    %next = arith.addi %count, %increment : i64
+    scf.yield %next : i64
+  }
+  %errors = scf.for %position = %c0 to %cOutputNnz step %c1
+      iter_args(%count = %offsetErrors) -> i64 {
+    %localPosition = arith.remui %position, %cOutputNnzPerRow : index
+    %actualColumn = memref.load %hostOutputColumns[%position] : memref<?xi32>
+    %expectedColumn = arith.index_cast %localPosition : index to i32
+    %columnMismatch = arith.cmpi ne, %actualColumn, %expectedColumn : i32
+    %actualValue = memref.load %hostOutputValues[%position] : memref<?xf32>
+    @EXPECTED_VALUE@
+    %valueMismatch = arith.cmpf une, %actualValue, %expectedValue : f32
+    %mismatch = arith.ori %columnMismatch, %valueMismatch : i1
+    %increment = arith.select %mismatch, %c1I64, %c0I64 : i64
+    %next = arith.addi %count, %increment : i64
+    scf.yield %next : i64
+  }
+  memref.store %errors, %errorOutput[%c0] : memref<1xi64>
+  %errorOutputUnranked =
+      memref.cast %errorOutput : memref<1xi64> to memref<*xi64>
+  func.call @printMemrefI64(%errorOutputUnranked) : (memref<*xi64>) -> ()
+
+  gpu.dealloc %deviceLhsOffsets : memref<?xi32>
+  gpu.dealloc %deviceLhsColumns : memref<?xi32>
+  gpu.dealloc %deviceLhsValues : memref<?xf32>
+  gpu.dealloc %deviceRhsOffsets : memref<?xi32>
+  gpu.dealloc %deviceRhsColumns : memref<?xi32>
+  gpu.dealloc %deviceRhsValues : memref<?xf32>
+  gpu.dealloc %deviceOutputOffsets : memref<?xi32>
+  gpu.dealloc %deviceOutputColumns : memref<?xi32>
+  gpu.dealloc %deviceOutputValues : memref<?xf32>
+  gpu.dealloc %deviceOutputNnz : memref<?xi32>
+  memref.dealloc %hostLhsOffsets : memref<?xi32>
+  memref.dealloc %hostLhsColumns : memref<?xi32>
+  memref.dealloc %hostLhsValues : memref<?xf32>
+  memref.dealloc %hostRhsOffsets : memref<?xi32>
+  memref.dealloc %hostRhsColumns : memref<?xi32>
+  memref.dealloc %hostRhsValues : memref<?xf32>
+  memref.dealloc %hostOutputOffsets : memref<?xi32>
+  memref.dealloc %hostOutputColumns : memref<?xi32>
+  memref.dealloc %hostOutputValues : memref<?xf32>
+  memref.dealloc %hostOutputNnz : memref<?xi32>
+  memref.dealloc %errorOutput : memref<1xi64>
+  return
+}
+
+func.func private @printMemrefI64(memref<*xi64>)
