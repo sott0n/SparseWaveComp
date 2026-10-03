@@ -262,11 +262,13 @@ void buildBlockReduction(OpBuilder &builder, Location loc, gpu::LaunchOp launch,
                          int64_t waveSize, ReductionCombinerBuilder combine,
                          BlockReductionResultBuilder buildResult);
 
-/// Builds an inclusive segmented reduction for a prefix of active wave lanes.
-/// Active lanes must be contiguous and start at lane zero.
+/// Builds an inclusive segmented reduction for a prefix of active wave lanes
+/// with the supplied associative and commutative combiner. Active lanes must
+/// be contiguous and start at lane zero.
 WaveSegmentedReduction
 buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
-                                  Value value, Value active, int64_t waveSize);
+                                  Value value, Value active, int64_t waveSize,
+                                  ReductionCombinerBuilder combine);
 
 /// Independently reduces multiple values across a wave with an associative and
 /// commutative combiner.

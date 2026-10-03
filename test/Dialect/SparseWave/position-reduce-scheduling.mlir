@@ -37,6 +37,7 @@
 // WAVE: arith.remui
 // WAVE: memref.load
 // WAVE: gpu.shuffle up
+// WAVE: arith.addf
 // WAVE: memref.atomic_rmw addf
 
 // SEGMENTED-LABEL: func.func @keyed_sum(

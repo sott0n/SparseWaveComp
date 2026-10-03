@@ -518,7 +518,8 @@ void buildBlockReduction(OpBuilder &builder, Location loc, gpu::LaunchOp launch,
 
 WaveSegmentedReduction
 buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
-                                  Value value, Value active, int64_t waveSize) {
+                                  Value value, Value active, int64_t waveSize,
+                                  ReductionCombinerBuilder combine) {
   Value activeI32 =
       arith::ExtUIOp::create(builder, loc, builder.getI32Type(), active);
   Value zeroI32 = arith::ConstantIntOp::create(builder, loc, 0, 32);
@@ -534,13 +535,14 @@ buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
                               shuffledKey.getShuffleResult());
     // Valid source lanes below an active lane are active because the active
     // lanes form a prefix, so no active-state shuffle is required here.
-    Value combine = arith::AndIOp::create(
+    Value shouldCombine = arith::AndIOp::create(
         builder, loc, active,
         arith::AndIOp::create(builder, loc, shuffledKey.getValid(),
                               sameSegment));
-    Value accumulated = arith::AddFOp::create(builder, loc, value,
-                                              shuffledValue.getShuffleResult());
-    value = arith::SelectOp::create(builder, loc, combine, accumulated, value);
+    Value accumulated =
+        combine(builder, loc, value, shuffledValue.getShuffleResult());
+    value = arith::SelectOp::create(builder, loc, shouldCombine, accumulated,
+                                    value);
   }
 
   auto nextKey = gpu::ShuffleOp::create(builder, loc, key, 1, waveSize,

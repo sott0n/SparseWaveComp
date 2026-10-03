@@ -664,7 +664,10 @@ public:
     Value keyI64 =
         arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), key);
     WaveSegmentedReduction reduction = buildWavePrefixSegmentedReduction(
-        rewriter, loc, keyI64, entry.getResult(1), active, waveSize);
+        rewriter, loc, keyI64, entry.getResult(1), active, waveSize,
+        [](OpBuilder &builder, Location bodyLoc, Value lhs, Value rhs) {
+          return arith::AddFOp::create(builder, bodyLoc, lhs, rhs);
+        });
     scf::IfOp::create(rewriter, loc, reduction.segmentEnd,
                       [&](OpBuilder &builder, Location bodyLoc) {
                         memref::AtomicRMWOp::create(
