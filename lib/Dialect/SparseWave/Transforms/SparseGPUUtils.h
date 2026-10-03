@@ -85,6 +85,18 @@ struct BoundedTile {
   Value isFull;
 };
 
+struct WaveCompressedTile {
+  WaveCompressedWorkUnit work;
+  ValueRange coordinates;
+  ValueRange activeCoordinates;
+};
+
+struct WaveCompressedTileResult {
+  Value segment;
+  Value coordinate;
+  Value value;
+};
+
 struct WaveSegmentedReduction {
   Value inclusiveValue;
   Value segmentEnd;
@@ -132,6 +144,12 @@ using BlockReductionResultBuilder =
 
 using ReductionCombinerBuilder =
     llvm::function_ref<Value(OpBuilder &, Location, Value, Value)>;
+
+using WaveCompressedTileValuesBuilder = llvm::function_ref<SmallVector<Value>(
+    OpBuilder &, Location, WaveCompressedTile)>;
+
+using WaveCompressedTileResultBuilder =
+    llvm::function_ref<void(OpBuilder &, Location, WaveCompressedTileResult)>;
 
 using BoundedTileValuesBuilder = llvm::function_ref<SmallVector<Value>(
     OpBuilder &, Location, ValueRange, ValueRange)>;
@@ -189,6 +207,17 @@ gpu::LaunchOp buildWavePerCompressedWorkUnit(
     Value oneIndex, Value blockSize, Value waveSize, Value wavesPerBlock,
     CompressedSegmentMappingBuilder mapSegment,
     WavePerCompressedWorkUnitBodyBuilder buildBody);
+
+/// Assigns one compressed segment and one bounded coordinate tile to each GPU
+/// wave. The lane callback computes one partial value per tile coordinate;
+/// those values are reduced across the wave and emitted once by lane zero.
+gpu::LaunchOp buildWavePerCompressedTile(
+    PatternRewriter &rewriter, Location loc, Value segmentCount, Value offsets,
+    Value coordinateCount, Value oneIndex, Value blockSize, Value waveSizeValue,
+    Value wavesPerBlock, Value tileSizeValue, int64_t waveSize,
+    int64_t tileSize, TypeRange resultTypes, ReductionCombinerBuilder combine,
+    WaveCompressedTileValuesBuilder buildLaneValues,
+    WaveCompressedTileResultBuilder buildResult);
 
 WaveWorkDistribution
 buildWaveWorkDistribution(PatternRewriter &rewriter, Location loc,

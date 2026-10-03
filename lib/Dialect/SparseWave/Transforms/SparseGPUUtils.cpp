@@ -576,4 +576,62 @@ SmallVector<Value> buildWaveReductions(OpBuilder &builder, Location loc,
   return reducedValues;
 }
 
+gpu::LaunchOp buildWavePerCompressedTile(
+    PatternRewriter &rewriter, Location loc, Value segmentCount, Value offsets,
+    Value coordinateCount, Value oneIndex, Value blockSize, Value waveSizeValue,
+    Value wavesPerBlock, Value tileSizeValue, int64_t waveSize,
+    int64_t tileSize, TypeRange resultTypes, ReductionCombinerBuilder combine,
+    WaveCompressedTileValuesBuilder buildLaneValues,
+    WaveCompressedTileResultBuilder buildResult) {
+  Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value tilesPerSegment =
+      arith::CeilDivUIOp::create(rewriter, loc, coordinateCount, tileSizeValue);
+  Value workUnitCount =
+      arith::MulIOp::create(rewriter, loc, segmentCount, tilesPerSegment);
+
+  return buildWavePerCompressedWorkUnit(
+      rewriter, loc, workUnitCount, offsets, oneIndex, blockSize, waveSizeValue,
+      wavesPerBlock,
+      [&](OpBuilder &builder, Location bodyLoc, Value workUnit) {
+        return arith::DivUIOp::create(builder, bodyLoc, workUnit,
+                                      tilesPerSegment);
+      },
+      [&](OpBuilder &builder, Location bodyLoc, WaveCompressedWorkUnit work) {
+        Value tile = arith::RemUIOp::create(builder, bodyLoc, work.workUnit,
+                                            tilesPerSegment);
+        Value firstCoordinate =
+            arith::MulIOp::create(builder, bodyLoc, tile, tileSizeValue);
+        BoundedTile boundedTile = buildBoundedTile(
+            builder, bodyLoc, firstCoordinate, coordinateCount, tileSize);
+
+        SmallVector<Value> laneValues = buildFullOrPartialTileValues(
+            builder, bodyLoc, boundedTile, resultTypes,
+            [&](OpBuilder &tileBuilder, Location tileLoc,
+                ValueRange coordinates,
+                ValueRange activeCoordinates) -> SmallVector<Value> {
+              return buildLaneValues(
+                  tileBuilder, tileLoc,
+                  WaveCompressedTile{work, coordinates, activeCoordinates});
+            });
+        SmallVector<Value> reducedValues = buildWaveReductions(
+            builder, bodyLoc, laneValues, waveSize, combine);
+
+        Value laneIsZero = arith::CmpIOp::create(
+            builder, bodyLoc, arith::CmpIPredicate::eq, work.lane, zeroIndex);
+        scf::IfOp::create(
+            builder, bodyLoc, laneIsZero,
+            [&](OpBuilder &laneBuilder, Location laneLoc) {
+              buildValidTileResults(
+                  laneBuilder, laneLoc, boundedTile, reducedValues,
+                  [&](OpBuilder &resultBuilder, Location resultLoc,
+                      Value coordinate, Value result) {
+                    buildResult(resultBuilder, resultLoc,
+                                WaveCompressedTileResult{work.segment,
+                                                         coordinate, result});
+                  });
+              scf::YieldOp::create(laneBuilder, laneLoc);
+            });
+      });
+}
+
 } // namespace mlir::sparsewave
