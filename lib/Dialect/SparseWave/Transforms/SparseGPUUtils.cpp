@@ -130,6 +130,90 @@ gpu::LaunchOp buildThreadPerCompressedSegmentPair(
   return distribution.launch;
 }
 
+CompressedOutputAssembly buildThreadPerCompressedOutputAssembly(
+    PatternRewriter &rewriter, Location loc, Value segmentCount,
+    Value outputOffsets, Value outputElementCount, Value zeroIndex,
+    Value oneIndex, Value blockSize, CompressedOutputCountBuilder buildCount,
+    CompressedOutputValuesBuilder buildValues) {
+  Type offsetType = cast<MemRefType>(outputOffsets.getType()).getElementType();
+
+  // Symbolic phase: count the output elements owned by each segment.
+  LinearThreadWorkDistribution symbolicDistribution =
+      buildLinearThreadWorkDistribution(rewriter, loc, segmentCount, oneIndex,
+                                        blockSize);
+  scf::IfOp::create(
+      rewriter, loc, symbolicDistribution.workUnitIsActive,
+      [&](OpBuilder &builder, Location bodyLoc) {
+        Value count =
+            buildCount(builder, bodyLoc, symbolicDistribution.workUnit);
+        Value nextSegment = arith::AddIOp::create(
+            builder, bodyLoc, symbolicDistribution.workUnit, oneIndex);
+        Value storedCount =
+            castIndexToType(builder, bodyLoc, count, offsetType);
+        memref::StoreOp::create(builder, bodyLoc, storedCount, outputOffsets,
+                                nextSegment);
+        scf::YieldOp::create(builder, bodyLoc);
+      },
+      {});
+  rewriter.setInsertionPointToEnd(
+      &symbolicDistribution.launch.getBody().front());
+  gpu::TerminatorOp::create(rewriter, loc);
+  gpu::LaunchOp symbolic = symbolicDistribution.launch;
+
+  // Prefix phase: turn per-segment counts into output offsets and publish the
+  // complete output size. This sequential scan can be replaced independently
+  // from the symbolic and numeric callbacks.
+  rewriter.setInsertionPointAfter(symbolic);
+  gpu::LaunchOp prefix =
+      gpu::LaunchOp::create(rewriter, loc, oneIndex, oneIndex, oneIndex,
+                            oneIndex, oneIndex, oneIndex);
+  rewriter.setInsertionPointToStart(&prefix.getBody().front());
+  Value zeroOffset = arith::ConstantOp::create(
+      rewriter, loc, rewriter.getZeroAttr(offsetType));
+  memref::StoreOp::create(rewriter, loc, zeroOffset, outputOffsets, zeroIndex);
+  auto scan = scf::ForOp::create(
+      rewriter, loc, zeroIndex, segmentCount, oneIndex, ValueRange{zeroOffset},
+      [&](OpBuilder &builder, Location bodyLoc, Value segment,
+          ValueRange iterArgs) {
+        Value nextSegment =
+            arith::AddIOp::create(builder, bodyLoc, segment, oneIndex);
+        Value outputCount = memref::LoadOp::create(builder, bodyLoc,
+                                                   outputOffsets, nextSegment);
+        Value total = arith::AddIOp::create(builder, bodyLoc, iterArgs.front(),
+                                            outputCount);
+        memref::StoreOp::create(builder, bodyLoc, total, outputOffsets,
+                                nextSegment);
+        scf::YieldOp::create(builder, bodyLoc, total);
+      });
+  memref::StoreOp::create(rewriter, loc, scan.getResult(0), outputElementCount,
+                          zeroIndex);
+  gpu::TerminatorOp::create(rewriter, loc);
+
+  // Numeric phase: replay the caller's traversal within the assigned output
+  // range for each segment.
+  rewriter.setInsertionPointAfter(prefix);
+  LinearThreadWorkDistribution numericDistribution =
+      buildLinearThreadWorkDistribution(rewriter, loc, segmentCount, oneIndex,
+                                        blockSize);
+  scf::IfOp::create(
+      rewriter, loc, numericDistribution.workUnitIsActive,
+      [&](OpBuilder &builder, Location bodyLoc) {
+        Value outputStartValue = memref::LoadOp::create(
+            builder, bodyLoc, outputOffsets, numericDistribution.workUnit);
+        Value outputStart = castToIndex(builder, bodyLoc, outputStartValue);
+        buildValues(builder, bodyLoc,
+                    ThreadCompressedOutputSegment{numericDistribution.workUnit,
+                                                  outputStart});
+        scf::YieldOp::create(builder, bodyLoc);
+      },
+      {});
+  rewriter.setInsertionPointToEnd(
+      &numericDistribution.launch.getBody().front());
+  gpu::TerminatorOp::create(rewriter, loc);
+
+  return {symbolic, prefix, numericDistribution.launch};
+}
+
 gpu::LaunchOp buildWavePerCompressedSegment(
     PatternRewriter &rewriter, Location loc, Value segmentCount, Value offsets,
     Value oneIndex, Value blockSize, Value waveSize, Value wavesPerBlock,

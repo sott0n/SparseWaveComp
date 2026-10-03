@@ -73,6 +73,17 @@ struct ThreadCompressedSegmentPair {
   CompressedSegmentBounds rhsBounds;
 };
 
+struct ThreadCompressedOutputSegment {
+  Value segment;
+  Value outputStart;
+};
+
+struct CompressedOutputAssembly {
+  gpu::LaunchOp symbolic;
+  gpu::LaunchOp prefix;
+  gpu::LaunchOp numeric;
+};
+
 struct CompressedPosition {
   Value position;
   Value coordinate;
@@ -136,6 +147,12 @@ using WavePerCompressedWorkUnitBodyBuilder =
 using ThreadPerCompressedSegmentPairBodyBuilder = llvm::function_ref<void(
     OpBuilder &, Location, ThreadCompressedSegmentPair)>;
 
+using CompressedOutputCountBuilder =
+    llvm::function_ref<Value(OpBuilder &, Location, Value)>;
+
+using CompressedOutputValuesBuilder = llvm::function_ref<void(
+    OpBuilder &, Location, ThreadCompressedOutputSegment)>;
+
 using CompressedCoiterationBodyBuilder = llvm::function_ref<SmallVector<Value>(
     OpBuilder &, Location, CompressedCoiterationEntry, ValueRange)>;
 
@@ -191,6 +208,16 @@ gpu::LaunchOp buildThreadPerCompressedSegmentPair(
     PatternRewriter &rewriter, Location loc, Value segmentCount,
     Value lhsOffsets, Value rhsOffsets, Value oneIndex, Value blockSize,
     ThreadPerCompressedSegmentPairBodyBuilder buildBody);
+
+/// Assembles a compressed sparse output in three ordered GPU phases. The
+/// symbolic callback returns the output count for one segment, a sequential
+/// prefix phase converts those counts to offsets, and the numeric callback
+/// writes the segment contents beginning at its assigned output position.
+CompressedOutputAssembly buildThreadPerCompressedOutputAssembly(
+    PatternRewriter &rewriter, Location loc, Value segmentCount,
+    Value outputOffsets, Value outputElementCount, Value zeroIndex,
+    Value oneIndex, Value blockSize, CompressedOutputCountBuilder buildCount,
+    CompressedOutputValuesBuilder buildValues);
 
 /// Assigns one compressed segment to each GPU wave and builds the active
 /// segment body with lane-strided position bounds.

@@ -7,6 +7,9 @@ namespace mlir::sparsewave {
 
 Value castToIndex(OpBuilder &builder, Location loc, Value value);
 
+Value castIndexToType(OpBuilder &builder, Location loc, Value value,
+                      Type targetType);
+
 } // namespace mlir::sparsewave
 
 #endif // SPARSEWAVE_LIB_DIALECT_SPARSEWAVE_TRANSFORMS_SPARSELOWERINGUTILS_H

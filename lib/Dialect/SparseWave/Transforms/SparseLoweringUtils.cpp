@@ -14,4 +14,13 @@ Value castToIndex(OpBuilder &builder, Location loc, Value value) {
                                     value);
 }
 
+Value castIndexToType(OpBuilder &builder, Location loc, Value value,
+                      Type targetType) {
+  if (targetType.isIndex())
+    return value;
+  if (cast<IntegerType>(targetType).isUnsigned())
+    return arith::IndexCastUIOp::create(builder, loc, targetType, value);
+  return arith::IndexCastOp::create(builder, loc, targetType, value);
+}
+
 } // namespace mlir::sparsewave
