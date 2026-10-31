@@ -10,44 +10,111 @@ namespace mlir::sparsewave {
 
 namespace {
 
-Value buildWorkgroupInclusiveScan(OpBuilder &builder, Location loc,
-                                  gpu::LaunchOp launch, Value participant,
-                                  Value value, Value zero, int64_t blockSize) {
-  auto workgroupAddressSpace = gpu::AddressSpaceAttr::get(
-      builder.getContext(), gpu::AddressSpace::Workgroup);
-  auto valuesType =
-      MemRefType::get({blockSize}, value.getType(), MemRefLayoutAttrInterface{},
-                      Attribute(workgroupAddressSpace));
-  Value values = launch.addWorkgroupAttribution(valuesType, loc);
-  memref::StoreOp::create(builder, loc, value, values, participant);
-  gpu::BarrierOp::create(builder, loc);
-
-  for (int64_t offset = 1; offset < blockSize; offset <<= 1) {
-    Value current = memref::LoadOp::create(builder, loc, values, participant);
+Value buildWaveInclusiveScan(OpBuilder &builder, Location loc, Value lane,
+                             Value value, int64_t waveSize) {
+  for (int32_t offset = 1; offset < waveSize; offset <<= 1) {
+    auto predecessor = gpu::ShuffleOp::create(builder, loc, value, offset,
+                                              waveSize, gpu::ShuffleMode::UP);
+    Value total = arith::AddIOp::create(builder, loc, value,
+                                        predecessor.getShuffleResult());
     Value offsetValue = arith::ConstantIndexOp::create(builder, loc, offset);
     Value hasPredecessor = arith::CmpIOp::create(
-        builder, loc, arith::CmpIPredicate::uge, participant, offsetValue);
-    auto predecessor = scf::IfOp::create(
-        builder, loc, TypeRange{value.getType()}, hasPredecessor,
-        /*withElseRegion=*/true);
-    builder.setInsertionPointToStart(&predecessor.getThenRegion().front());
-    Value predecessorIndex =
-        arith::SubIOp::create(builder, loc, participant, offsetValue);
-    Value predecessorValue =
-        memref::LoadOp::create(builder, loc, values, predecessorIndex);
-    scf::YieldOp::create(builder, loc, predecessorValue);
-    builder.setInsertionPointToStart(&predecessor.getElseRegion().front());
-    scf::YieldOp::create(builder, loc, zero);
-    builder.setInsertionPointAfter(predecessor);
-
-    // Finish all reads before any participant overwrites the previous step.
-    gpu::BarrierOp::create(builder, loc);
-    Value total =
-        arith::AddIOp::create(builder, loc, current, predecessor.getResult(0));
-    memref::StoreOp::create(builder, loc, total, values, participant);
-    gpu::BarrierOp::create(builder, loc);
+        builder, loc, arith::CmpIPredicate::uge, lane, offsetValue);
+    value = arith::SelectOp::create(builder, loc, hasPredecessor, total, value);
   }
-  return memref::LoadOp::create(builder, loc, values, participant);
+  return value;
+}
+
+Value buildWorkgroupInclusiveScan(OpBuilder &builder, Location loc,
+                                  gpu::LaunchOp launch, Value participant,
+                                  Value value, Value zero, int64_t blockSize,
+                                  int64_t waveSize) {
+  int64_t wavesPerBlock = (blockSize + waveSize - 1) / waveSize;
+  auto workgroupAddressSpace = gpu::AddressSpaceAttr::get(
+      builder.getContext(), gpu::AddressSpace::Workgroup);
+  auto waveTotalsType = MemRefType::get({wavesPerBlock}, value.getType(),
+                                        MemRefLayoutAttrInterface{},
+                                        Attribute(workgroupAddressSpace));
+  Value waveTotals = launch.addWorkgroupAttribution(waveTotalsType, loc);
+
+  Value waveSizeValue = arith::ConstantIndexOp::create(builder, loc, waveSize);
+  Value wave = arith::DivUIOp::create(builder, loc, participant, waveSizeValue);
+  Value lane = arith::RemUIOp::create(builder, loc, participant, waveSizeValue);
+  Value wavePrefix =
+      buildWaveInclusiveScan(builder, loc, lane, value, waveSize);
+
+  // The final active lane records the total for its wave. This also handles a
+  // block whose final wave contains fewer than waveSize participants.
+  Value one = arith::ConstantIndexOp::create(builder, loc, 1);
+  Value waveBase = arith::MulIOp::create(builder, loc, wave, waveSizeValue);
+  Value fullWaveEnd =
+      arith::AddIOp::create(builder, loc, waveBase, waveSizeValue);
+  Value blockSizeValue =
+      arith::ConstantIndexOp::create(builder, loc, blockSize);
+  Value waveEnd =
+      arith::MinUIOp::create(builder, loc, fullWaveEnd, blockSizeValue);
+  Value finalParticipant = arith::SubIOp::create(builder, loc, waveEnd, one);
+  Value isFinalLane = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::eq, participant, finalParticipant);
+  scf::IfOp::create(builder, loc, isFinalLane,
+                    [&](OpBuilder &storeBuilder, Location storeLoc) {
+                      memref::StoreOp::create(storeBuilder, storeLoc,
+                                              wavePrefix, waveTotals, wave);
+                      scf::YieldOp::create(storeBuilder, storeLoc);
+                    });
+  gpu::BarrierOp::create(builder, loc);
+
+  // The first wave scans one total per wave and writes the inclusive wave
+  // prefixes back to LDS. AMD blocks contain at most one wave of wave totals.
+  Value zeroIndex = arith::ConstantIndexOp::create(builder, loc, 0);
+  Value isFirstWave = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::eq, wave, zeroIndex);
+  scf::IfOp::create(
+      builder, loc, isFirstWave, [&](OpBuilder &scanBuilder, Location scanLoc) {
+        Value waveCount =
+            arith::ConstantIndexOp::create(scanBuilder, scanLoc, wavesPerBlock);
+        Value hasWave = arith::CmpIOp::create(
+            scanBuilder, scanLoc, arith::CmpIPredicate::ult, lane, waveCount);
+        auto waveTotal =
+            scf::IfOp::create(scanBuilder, scanLoc, TypeRange{value.getType()},
+                              hasWave, /*withElseRegion=*/true);
+        scanBuilder.setInsertionPointToStart(
+            &waveTotal.getThenRegion().front());
+        Value loaded =
+            memref::LoadOp::create(scanBuilder, scanLoc, waveTotals, lane);
+        scf::YieldOp::create(scanBuilder, scanLoc, loaded);
+        scanBuilder.setInsertionPointToStart(
+            &waveTotal.getElseRegion().front());
+        scf::YieldOp::create(scanBuilder, scanLoc, zero);
+        scanBuilder.setInsertionPointAfter(waveTotal);
+
+        Value total = buildWaveInclusiveScan(scanBuilder, scanLoc, lane,
+                                             waveTotal.getResult(0), waveSize);
+        scf::IfOp::create(scanBuilder, scanLoc, hasWave,
+                          [&](OpBuilder &storeBuilder, Location storeLoc) {
+                            memref::StoreOp::create(storeBuilder, storeLoc,
+                                                    total, waveTotals, lane);
+                            scf::YieldOp::create(storeBuilder, storeLoc);
+                          });
+        scf::YieldOp::create(scanBuilder, scanLoc);
+      });
+  gpu::BarrierOp::create(builder, loc);
+
+  Value hasPriorWave = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::ugt, wave, zeroIndex);
+  auto priorWaveTotal =
+      scf::IfOp::create(builder, loc, TypeRange{value.getType()}, hasPriorWave,
+                        /*withElseRegion=*/true);
+  builder.setInsertionPointToStart(&priorWaveTotal.getThenRegion().front());
+  Value priorWave = arith::SubIOp::create(builder, loc, wave, one);
+  Value priorTotal =
+      memref::LoadOp::create(builder, loc, waveTotals, priorWave);
+  scf::YieldOp::create(builder, loc, priorTotal);
+  builder.setInsertionPointToStart(&priorWaveTotal.getElseRegion().front());
+  scf::YieldOp::create(builder, loc, zero);
+  builder.setInsertionPointAfter(priorWaveTotal);
+  return arith::AddIOp::create(builder, loc, wavePrefix,
+                               priorWaveTotal.getResult(0));
 }
 
 } // namespace
@@ -177,7 +244,7 @@ gpu::LaunchOp buildThreadPerCompressedSegmentPair(
 CompressedOutputAssembly buildThreadPerCompressedOutputAssembly(
     PatternRewriter &rewriter, Location loc, Value segmentCount,
     Value outputOffsets, Value outputElementCount, Value zeroIndex,
-    Value oneIndex, Value blockSize, int64_t staticBlockSize,
+    Value oneIndex, Value blockSize, int64_t staticBlockSize, int64_t waveSize,
     CompressedOutputCountBuilder buildCount,
     CompressedOutputValuesBuilder buildValues) {
   Type offsetType = cast<MemRefType>(outputOffsets.getType()).getElementType();
@@ -238,7 +305,7 @@ CompressedOutputAssembly buildThreadPerCompressedOutputAssembly(
   rewriter.setInsertionPointAfter(count);
   Value localTotal = buildWorkgroupInclusiveScan(
       rewriter, loc, localPrefix, localPrefix.getThreadIds().x,
-      count.getResult(0), zeroOffset, staticBlockSize);
+      count.getResult(0), zeroOffset, staticBlockSize, waveSize);
   scf::IfOp::create(rewriter, loc, segmentIsActive,
                     [&](OpBuilder &builder, Location bodyLoc) {
                       Value outputIndex = arith::AddIOp::create(
@@ -299,7 +366,7 @@ CompressedOutputAssembly buildThreadPerCompressedOutputAssembly(
       });
   Value inclusiveChunkTotal = buildWorkgroupInclusiveScan(
       rewriter, loc, blockPrefix, blockPrefix.getThreadIds().x,
-      localBlockScan.getResult(0), zeroOffset, staticBlockSize);
+      localBlockScan.getResult(0), zeroOffset, staticBlockSize, waveSize);
   Value priorChunkTotal = arith::SubIOp::create(
       rewriter, loc, inclusiveChunkTotal, localBlockScan.getResult(0));
   scf::ForOp::create(

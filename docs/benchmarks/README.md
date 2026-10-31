@@ -85,8 +85,9 @@ or shape.
 The CSR elementwise runner reports the complete dispatch as three logical
 phases with separate symbolic, prefix, and numeric medians. The prefix phase
 sums its block-local scan, block-total scan, and block-offset addition kernels.
-Generated input pairs use sorted unique columns and controlled structural
-overlap:
+Each block scan uses wave shuffle instructions for lane-local prefixes and LDS
+only for the totals exchanged between waves. Generated input pairs use sorted
+unique columns and controlled structural overlap:
 
 ```sh
 python3 benchmark/run_elementwise_benchmark.py \

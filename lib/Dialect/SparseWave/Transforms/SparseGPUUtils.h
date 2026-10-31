@@ -219,7 +219,7 @@ gpu::LaunchOp buildThreadPerCompressedSegmentPair(
 CompressedOutputAssembly buildThreadPerCompressedOutputAssembly(
     PatternRewriter &rewriter, Location loc, Value segmentCount,
     Value outputOffsets, Value outputElementCount, Value zeroIndex,
-    Value oneIndex, Value blockSize, int64_t staticBlockSize,
+    Value oneIndex, Value blockSize, int64_t staticBlockSize, int64_t waveSize,
     CompressedOutputCountBuilder buildCount,
     CompressedOutputValuesBuilder buildValues);
 

@@ -658,8 +658,10 @@ private:
 class ThreadPerRowCSRElementwisePattern
     : public OpRewritePattern<CSRElementwiseOp> {
 public:
-  ThreadPerRowCSRElementwisePattern(MLIRContext *context, int64_t blockSize)
-      : OpRewritePattern<CSRElementwiseOp>(context), blockSize(blockSize) {}
+  ThreadPerRowCSRElementwisePattern(MLIRContext *context, int64_t blockSize,
+                                    int64_t waveSize)
+      : OpRewritePattern<CSRElementwiseOp>(context), blockSize(blockSize),
+        waveSize(waveSize) {}
 
   LogicalResult matchAndRewrite(CSRElementwiseOp op,
                                 PatternRewriter &rewriter) const override {
@@ -680,7 +682,7 @@ public:
         cast<MemRefType>(op.getOutputRowOffsets().getType()).getElementType();
     CompressedOutputAssembly assembly = buildThreadPerCompressedOutputAssembly(
         rewriter, loc, rowCount, op.getOutputRowOffsets(), op.getOutputNnz(),
-        zeroIndex, oneIndex, blockSizeValue, blockSize,
+        zeroIndex, oneIndex, blockSizeValue, blockSize, waveSize,
         [&](OpBuilder &builder, Location bodyLoc, Value row) {
           CompressedSegmentBounds lhsBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getLhsRowOffsets(), row, oneIndex);
@@ -779,6 +781,7 @@ public:
 
 private:
   int64_t blockSize;
+  int64_t waveSize;
 };
 
 class WavePerRowTileSpMMPattern : public OpRewritePattern<SpMMOp> {
@@ -967,6 +970,19 @@ public:
       signalPassFailure();
       return;
     }
+    bool hasCompressedOutputAssembly = false;
+    getOperation().walk([&](CSRElementwiseOp) {
+      hasCompressedOutputAssembly = true;
+      return WalkResult::interrupt();
+    });
+    if (hasCompressedOutputAssembly && waveSize != 32 && waveSize != 64) {
+      getOperation().emitError()
+          << "compressed output assembly requires a wave size of 32 or 64, "
+             "but got "
+          << waveSize.getValue();
+      signalPassFailure();
+      return;
+    }
     if (spmmMapping == "wave-per-row-tile" && waveSize != 32) {
       getOperation().emitError()
           << "wave-per-row-tile currently requires Wave32, but got wave size "
@@ -1035,8 +1051,8 @@ public:
                                                   rowReductionBlockSize);
     patterns.add<ThreadPerRowCSRRowwiseMapPattern>(&getContext(),
                                                    rowwiseMapBlockSize);
-    patterns.add<ThreadPerRowCSRElementwisePattern>(&getContext(),
-                                                    elementwiseBlockSize);
+    patterns.add<ThreadPerRowCSRElementwisePattern>(
+        &getContext(), elementwiseBlockSize, waveSize);
     patterns.add<ThreadPerOutputBSRSpMMPattern>(&getContext(), spmmBlockSize);
     if (spmmMapping == "thread-per-output")
       patterns.add<ThreadPerOutputSpMMPattern>(&getContext(), spmmBlockSize);

@@ -1,6 +1,20 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --convert-sparsewave-to-gpu='elementwise-block-size=64' \
 // RUN:   | FileCheck %s
+// RUN: sparsewave-opt %s \
+// RUN:   --convert-sparsewave-to-gpu='elementwise-block-size=64 wave-size=64' \
+// RUN:   | FileCheck %s --check-prefix=WAVE64
+// RUN: not sparsewave-opt %s \
+// RUN:   --convert-sparsewave-to-gpu='wave-size=16' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-WAVE-SIZE
+
+// INVALID-WAVE-SIZE: compressed output assembly requires a wave size of 32 or 64, but got 16
+
+// WAVE64-LABEL: func.func @csr_add(
+// WAVE64: gpu.launch
+// WAVE64: gpu.launch
+// WAVE64-SAME: workgroup(%{{.*}} : memref<1xi32, #gpu.address_space<workgroup>>)
+// WAVE64: gpu.shuffle up
 
 // CHECK-LABEL: func.func @csr_add(
 // CHECK: %[[ZERO:.*]] = arith.constant 0 : index
@@ -15,12 +29,14 @@
 // CHECK: arith.ori
 // CHECK: memref.store {{.*}}, %[[OUTPUT_OFFSETS]]
 // CHECK: gpu.launch
-// CHECK-SAME: workgroup(%{{.*}} : memref<64xi32, #gpu.address_space<workgroup>>)
+// CHECK-SAME: workgroup(%{{.*}} : memref<2xi32, #gpu.address_space<workgroup>>)
+// CHECK: gpu.shuffle up
 // CHECK: gpu.barrier
 // CHECK: memref.store {{.*}}, %[[OUTPUT_OFFSETS]]
 // CHECK: gpu.launch
-// CHECK-SAME: workgroup(%{{.*}} : memref<64xi32, #gpu.address_space<workgroup>>)
+// CHECK-SAME: workgroup(%{{.*}} : memref<2xi32, #gpu.address_space<workgroup>>)
 // CHECK: scf.for
+// CHECK: gpu.shuffle up
 // CHECK: gpu.barrier
 // CHECK: memref.store {{.*}}, %{{.*}}[%[[ZERO]]
 // CHECK: gpu.launch
@@ -52,10 +68,12 @@ func.func @csr_add(
 // CHECK: scf.while
 // CHECK: arith.andi
 // CHECK: gpu.launch
-// CHECK-SAME: workgroup(%{{.*}} : memref<64xi32, #gpu.address_space<workgroup>>)
+// CHECK-SAME: workgroup(%{{.*}} : memref<2xi32, #gpu.address_space<workgroup>>)
+// CHECK: gpu.shuffle up
 // CHECK: gpu.barrier
 // CHECK: gpu.launch
 // CHECK: scf.for
+// CHECK: gpu.shuffle up
 // CHECK: gpu.launch
 // CHECK: arith.divui
 // CHECK: gpu.launch
