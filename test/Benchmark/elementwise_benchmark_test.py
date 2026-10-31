@@ -72,13 +72,19 @@ class ElementwiseBenchmarkTest(unittest.TestCase):
         trace = TEMPORARY_ROOT / "kernel_trace.csv"
         durations = (
             ("elementwise_symbolic", 100_000),
-            ("elementwise_prefix", 100_000),
+            ("elementwise_prefix_local", 30_000),
+            ("elementwise_prefix_blocks", 40_000),
+            ("elementwise_prefix_add", 30_000),
             ("elementwise_numeric", 100_000),
             ("elementwise_symbolic", 1_000),
-            ("elementwise_prefix", 2_000),
+            ("elementwise_prefix_local", 500),
+            ("elementwise_prefix_blocks", 1_000),
+            ("elementwise_prefix_add", 500),
             ("elementwise_numeric", 3_000),
             ("elementwise_symbolic", 2_000),
-            ("elementwise_prefix", 4_000),
+            ("elementwise_prefix_local", 1_000),
+            ("elementwise_prefix_blocks", 2_000),
+            ("elementwise_prefix_add", 1_000),
             ("elementwise_numeric", 6_000),
         )
         with trace.open("w", newline="", encoding="utf-8") as stream:

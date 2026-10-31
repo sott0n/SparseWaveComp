@@ -8,6 +8,50 @@
 
 namespace mlir::sparsewave {
 
+namespace {
+
+Value buildWorkgroupInclusiveScan(OpBuilder &builder, Location loc,
+                                  gpu::LaunchOp launch, Value participant,
+                                  Value value, Value zero, int64_t blockSize) {
+  auto workgroupAddressSpace = gpu::AddressSpaceAttr::get(
+      builder.getContext(), gpu::AddressSpace::Workgroup);
+  auto valuesType =
+      MemRefType::get({blockSize}, value.getType(), MemRefLayoutAttrInterface{},
+                      Attribute(workgroupAddressSpace));
+  Value values = launch.addWorkgroupAttribution(valuesType, loc);
+  memref::StoreOp::create(builder, loc, value, values, participant);
+  gpu::BarrierOp::create(builder, loc);
+
+  for (int64_t offset = 1; offset < blockSize; offset <<= 1) {
+    Value current = memref::LoadOp::create(builder, loc, values, participant);
+    Value offsetValue = arith::ConstantIndexOp::create(builder, loc, offset);
+    Value hasPredecessor = arith::CmpIOp::create(
+        builder, loc, arith::CmpIPredicate::uge, participant, offsetValue);
+    auto predecessor = scf::IfOp::create(
+        builder, loc, TypeRange{value.getType()}, hasPredecessor,
+        /*withElseRegion=*/true);
+    builder.setInsertionPointToStart(&predecessor.getThenRegion().front());
+    Value predecessorIndex =
+        arith::SubIOp::create(builder, loc, participant, offsetValue);
+    Value predecessorValue =
+        memref::LoadOp::create(builder, loc, values, predecessorIndex);
+    scf::YieldOp::create(builder, loc, predecessorValue);
+    builder.setInsertionPointToStart(&predecessor.getElseRegion().front());
+    scf::YieldOp::create(builder, loc, zero);
+    builder.setInsertionPointAfter(predecessor);
+
+    // Finish all reads before any participant overwrites the previous step.
+    gpu::BarrierOp::create(builder, loc);
+    Value total =
+        arith::AddIOp::create(builder, loc, current, predecessor.getResult(0));
+    memref::StoreOp::create(builder, loc, total, values, participant);
+    gpu::BarrierOp::create(builder, loc);
+  }
+  return memref::LoadOp::create(builder, loc, values, participant);
+}
+
+} // namespace
+
 LinearThreadWorkDistribution
 buildLinearThreadWorkDistribution(PatternRewriter &rewriter, Location loc,
                                   Value workUnitCount, Value oneIndex,
@@ -133,7 +177,8 @@ gpu::LaunchOp buildThreadPerCompressedSegmentPair(
 CompressedOutputAssembly buildThreadPerCompressedOutputAssembly(
     PatternRewriter &rewriter, Location loc, Value segmentCount,
     Value outputOffsets, Value outputElementCount, Value zeroIndex,
-    Value oneIndex, Value blockSize, CompressedOutputCountBuilder buildCount,
+    Value oneIndex, Value blockSize, int64_t staticBlockSize,
+    CompressedOutputCountBuilder buildCount,
     CompressedOutputValuesBuilder buildValues) {
   Type offsetType = cast<MemRefType>(outputOffsets.getType()).getElementType();
 
@@ -160,38 +205,177 @@ CompressedOutputAssembly buildThreadPerCompressedOutputAssembly(
   gpu::TerminatorOp::create(rewriter, loc);
   gpu::LaunchOp symbolic = symbolicDistribution.launch;
 
-  // Prefix phase: turn per-segment counts into output offsets and publish the
-  // complete output size. This sequential scan can be replaced independently
-  // from the symbolic and numeric callbacks.
+  // Prefix phase 1: scan each block of segment counts independently. The last
+  // offset in each block also serves as its block total, avoiding a temporary
+  // device allocation for the next phase.
   rewriter.setInsertionPointAfter(symbolic);
-  gpu::LaunchOp prefix =
-      gpu::LaunchOp::create(rewriter, loc, oneIndex, oneIndex, oneIndex,
-                            oneIndex, oneIndex, oneIndex);
-  rewriter.setInsertionPointToStart(&prefix.getBody().front());
+  Value prefixBlockCount =
+      arith::CeilDivUIOp::create(rewriter, loc, segmentCount, blockSize);
+  Value prefixGridSize =
+      arith::MaxUIOp::create(rewriter, loc, prefixBlockCount, oneIndex);
+  gpu::LaunchOp localPrefix =
+      gpu::LaunchOp::create(rewriter, loc, prefixGridSize, oneIndex, oneIndex,
+                            blockSize, oneIndex, oneIndex);
+  rewriter.setInsertionPointToStart(&localPrefix.getBody().front());
   Value zeroOffset = arith::ConstantOp::create(
       rewriter, loc, rewriter.getZeroAttr(offsetType));
-  memref::StoreOp::create(rewriter, loc, zeroOffset, outputOffsets, zeroIndex);
-  auto scan = scf::ForOp::create(
-      rewriter, loc, zeroIndex, segmentCount, oneIndex, ValueRange{zeroOffset},
-      [&](OpBuilder &builder, Location bodyLoc, Value segment,
+  Value segmentBase = arith::MulIOp::create(
+      rewriter, loc, localPrefix.getBlockIds().x, blockSize);
+  Value segment = arith::AddIOp::create(rewriter, loc, segmentBase,
+                                        localPrefix.getThreadIds().x);
+  Value segmentIsActive = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::ult, segment, segmentCount);
+  auto count =
+      scf::IfOp::create(rewriter, loc, TypeRange{offsetType}, segmentIsActive,
+                        /*withElseRegion=*/true);
+  rewriter.setInsertionPointToStart(&count.getThenRegion().front());
+  Value nextSegment = arith::AddIOp::create(rewriter, loc, segment, oneIndex);
+  Value storedCount =
+      memref::LoadOp::create(rewriter, loc, outputOffsets, nextSegment);
+  scf::YieldOp::create(rewriter, loc, storedCount);
+  rewriter.setInsertionPointToStart(&count.getElseRegion().front());
+  scf::YieldOp::create(rewriter, loc, zeroOffset);
+  rewriter.setInsertionPointAfter(count);
+  Value localTotal = buildWorkgroupInclusiveScan(
+      rewriter, loc, localPrefix, localPrefix.getThreadIds().x,
+      count.getResult(0), zeroOffset, staticBlockSize);
+  scf::IfOp::create(rewriter, loc, segmentIsActive,
+                    [&](OpBuilder &builder, Location bodyLoc) {
+                      Value outputIndex = arith::AddIOp::create(
+                          builder, bodyLoc, segment, oneIndex);
+                      memref::StoreOp::create(builder, bodyLoc, localTotal,
+                                              outputOffsets, outputIndex);
+                      scf::YieldOp::create(builder, bodyLoc);
+                    });
+  Value blockIsFirst =
+      arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                            localPrefix.getBlockIds().x, zeroIndex);
+  Value threadIsFirst =
+      arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                            localPrefix.getThreadIds().x, zeroIndex);
+  Value initializesFirstOffset =
+      arith::AndIOp::create(rewriter, loc, blockIsFirst, threadIsFirst);
+  scf::IfOp::create(rewriter, loc, initializesFirstOffset,
+                    [&](OpBuilder &builder, Location bodyLoc) {
+                      memref::StoreOp::create(builder, bodyLoc, zeroOffset,
+                                              outputOffsets, zeroIndex);
+                      scf::YieldOp::create(builder, bodyLoc);
+                    });
+  gpu::TerminatorOp::create(rewriter, loc);
+
+  // Prefix phase 2: one workgroup scans the block totals. Each participant
+  // first scans a contiguous chunk, then the workgroup scan carries the sum
+  // between chunks. This also handles more blocks than workgroup threads.
+  rewriter.setInsertionPointAfter(localPrefix);
+  gpu::LaunchOp blockPrefix =
+      gpu::LaunchOp::create(rewriter, loc, oneIndex, oneIndex, oneIndex,
+                            blockSize, oneIndex, oneIndex);
+  rewriter.setInsertionPointToStart(&blockPrefix.getBody().front());
+  Value blocksPerParticipant =
+      arith::CeilDivUIOp::create(rewriter, loc, prefixBlockCount, blockSize);
+  Value firstBlock = arith::MulIOp::create(
+      rewriter, loc, blockPrefix.getThreadIds().x, blocksPerParticipant);
+  Value blockLimit =
+      arith::AddIOp::create(rewriter, loc, firstBlock, blocksPerParticipant);
+  Value lastBlock =
+      arith::MinUIOp::create(rewriter, loc, blockLimit, prefixBlockCount);
+  auto localBlockScan = scf::ForOp::create(
+      rewriter, loc, firstBlock, lastBlock, oneIndex, ValueRange{zeroOffset},
+      [&](OpBuilder &builder, Location bodyLoc, Value block,
           ValueRange iterArgs) {
-        Value nextSegment =
-            arith::AddIOp::create(builder, bodyLoc, segment, oneIndex);
-        Value outputCount = memref::LoadOp::create(builder, bodyLoc,
-                                                   outputOffsets, nextSegment);
+        Value nextBlock =
+            arith::AddIOp::create(builder, bodyLoc, block, oneIndex);
+        Value fullBlockEnd =
+            arith::MulIOp::create(builder, bodyLoc, nextBlock, blockSize);
+        Value blockEnd = arith::MinUIOp::create(builder, bodyLoc, fullBlockEnd,
+                                                segmentCount);
+        Value blockTotal =
+            memref::LoadOp::create(builder, bodyLoc, outputOffsets, blockEnd);
         Value total = arith::AddIOp::create(builder, bodyLoc, iterArgs.front(),
-                                            outputCount);
+                                            blockTotal);
         memref::StoreOp::create(builder, bodyLoc, total, outputOffsets,
-                                nextSegment);
+                                blockEnd);
         scf::YieldOp::create(builder, bodyLoc, total);
       });
-  memref::StoreOp::create(rewriter, loc, scan.getResult(0), outputElementCount,
-                          zeroIndex);
+  Value inclusiveChunkTotal = buildWorkgroupInclusiveScan(
+      rewriter, loc, blockPrefix, blockPrefix.getThreadIds().x,
+      localBlockScan.getResult(0), zeroOffset, staticBlockSize);
+  Value priorChunkTotal = arith::SubIOp::create(
+      rewriter, loc, inclusiveChunkTotal, localBlockScan.getResult(0));
+  scf::ForOp::create(
+      rewriter, loc, firstBlock, lastBlock, oneIndex, ValueRange{},
+      [&](OpBuilder &builder, Location bodyLoc, Value block, ValueRange) {
+        Value nextBlock =
+            arith::AddIOp::create(builder, bodyLoc, block, oneIndex);
+        Value fullBlockEnd =
+            arith::MulIOp::create(builder, bodyLoc, nextBlock, blockSize);
+        Value blockEnd = arith::MinUIOp::create(builder, bodyLoc, fullBlockEnd,
+                                                segmentCount);
+        Value localEnd =
+            memref::LoadOp::create(builder, bodyLoc, outputOffsets, blockEnd);
+        Value globalEnd =
+            arith::AddIOp::create(builder, bodyLoc, localEnd, priorChunkTotal);
+        memref::StoreOp::create(builder, bodyLoc, globalEnd, outputOffsets,
+                                blockEnd);
+        scf::YieldOp::create(builder, bodyLoc);
+      });
+  gpu::BarrierOp::create(rewriter, loc);
+  Value blockPrefixLeader =
+      arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                            blockPrefix.getThreadIds().x, zeroIndex);
+  scf::IfOp::create(rewriter, loc, blockPrefixLeader,
+                    [&](OpBuilder &builder, Location bodyLoc) {
+                      Value total = memref::LoadOp::create(
+                          builder, bodyLoc, outputOffsets, segmentCount);
+                      memref::StoreOp::create(builder, bodyLoc, total,
+                                              outputElementCount, zeroIndex);
+                      scf::YieldOp::create(builder, bodyLoc);
+                    });
+  gpu::TerminatorOp::create(rewriter, loc);
+
+  // Prefix phase 3: add each preceding block total to the locally scanned
+  // offsets. Block endpoints already contain their global totals from phase 2.
+  rewriter.setInsertionPointAfter(blockPrefix);
+  LinearThreadWorkDistribution addDistribution =
+      buildLinearThreadWorkDistribution(rewriter, loc, segmentCount, oneIndex,
+                                        blockSize);
+  Value outputIndex =
+      arith::AddIOp::create(rewriter, loc, addDistribution.workUnit, oneIndex);
+  Value block = arith::DivUIOp::create(rewriter, loc, addDistribution.workUnit,
+                                       blockSize);
+  Value nextBlock = arith::AddIOp::create(rewriter, loc, block, oneIndex);
+  Value fullBlockEnd =
+      arith::MulIOp::create(rewriter, loc, nextBlock, blockSize);
+  Value blockEnd =
+      arith::MinUIOp::create(rewriter, loc, fullBlockEnd, segmentCount);
+  Value hasPriorBlock = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::ugt, block, zeroIndex);
+  Value isNotBlockEnd = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::ult, outputIndex, blockEnd);
+  Value needsBlockOffset = arith::AndIOp::create(
+      rewriter, loc, addDistribution.workUnitIsActive,
+      arith::AndIOp::create(rewriter, loc, hasPriorBlock, isNotBlockEnd));
+  scf::IfOp::create(
+      rewriter, loc, needsBlockOffset,
+      [&](OpBuilder &builder, Location bodyLoc) {
+        Value priorBlockEnd =
+            arith::MulIOp::create(builder, bodyLoc, block, blockSize);
+        Value blockOffset = memref::LoadOp::create(
+            builder, bodyLoc, outputOffsets, priorBlockEnd);
+        Value localOffset = memref::LoadOp::create(builder, bodyLoc,
+                                                   outputOffsets, outputIndex);
+        Value globalOffset =
+            arith::AddIOp::create(builder, bodyLoc, localOffset, blockOffset);
+        memref::StoreOp::create(builder, bodyLoc, globalOffset, outputOffsets,
+                                outputIndex);
+        scf::YieldOp::create(builder, bodyLoc);
+      });
+  rewriter.setInsertionPointToEnd(&addDistribution.launch.getBody().front());
   gpu::TerminatorOp::create(rewriter, loc);
 
   // Numeric phase: replay the caller's traversal within the assigned output
   // range for each segment.
-  rewriter.setInsertionPointAfter(prefix);
+  rewriter.setInsertionPointAfter(addDistribution.launch);
   LinearThreadWorkDistribution numericDistribution =
       buildLinearThreadWorkDistribution(rewriter, loc, segmentCount, oneIndex,
                                         blockSize);
@@ -211,7 +395,8 @@ CompressedOutputAssembly buildThreadPerCompressedOutputAssembly(
       &numericDistribution.launch.getBody().front());
   gpu::TerminatorOp::create(rewriter, loc);
 
-  return {symbolic, prefix, numericDistribution.launch};
+  return {symbolic, localPrefix, blockPrefix, addDistribution.launch,
+          numericDistribution.launch};
 }
 
 gpu::LaunchOp buildWavePerCompressedSegment(

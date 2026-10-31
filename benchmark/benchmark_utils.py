@@ -442,6 +442,10 @@ def parse_kernel_trace(
 
 
 def parse_kernel_phase_trace(path, kernel_names, warmup, iterations):
+    phase_kernels = {
+        phase: (names,) if isinstance(names, str) else tuple(names)
+        for phase, names in kernel_names.items()
+    }
     with path.open(newline="", encoding="utf-8-sig") as stream:
         reader = csv.DictReader(stream)
         if not reader.fieldnames:
@@ -449,12 +453,16 @@ def parse_kernel_phase_trace(path, kernel_names, warmup, iterations):
         kernel_column = find_column(reader.fieldnames, TRACE_COLUMNS["kernel"])
         start_column = find_column(reader.fieldnames, TRACE_COLUMNS["start"])
         end_column = find_column(reader.fieldnames, TRACE_COLUMNS["end"])
-        phase_durations = {phase: [] for phase in kernel_names}
+        kernel_durations = {
+            phase: {kernel: [] for kernel in kernels}
+            for phase, kernels in phase_kernels.items()
+        }
         for row in reader:
             matches = [
-                phase
-                for phase, kernel_name in kernel_names.items()
-                if kernel_name in row[kernel_column]
+                (phase, kernel)
+                for phase, kernels in phase_kernels.items()
+                for kernel in kernels
+                if kernel in row[kernel_column]
             ]
             if not matches:
                 continue
@@ -466,15 +474,25 @@ def parse_kernel_phase_trace(path, kernel_names, warmup, iterations):
             end = int(row[end_column])
             if end < start:
                 raise ValueError(f"trace contains a negative duration: {row}")
-            phase_durations[matches[0]].append((end - start) / 1000.0)
+            phase, kernel = matches[0]
+            kernel_durations[phase][kernel].append((end - start) / 1000.0)
 
     expected = warmup + iterations
-    for phase, durations in phase_durations.items():
-        if len(durations) != expected:
-            raise ValueError(
-                f"expected {expected} '{kernel_names[phase]}' kernel "
-                f"records, found {len(durations)} in {path}"
-            )
+    for phase, kernels in kernel_durations.items():
+        for kernel, durations in kernels.items():
+            if len(durations) != expected:
+                raise ValueError(
+                    f"expected {expected} '{kernel}' kernel records for "
+                    f"phase '{phase}', found {len(durations)} in {path}"
+                )
+
+    phase_durations = {
+        phase: [
+            sum(kernels[kernel][index] for kernel in kernels)
+            for index in range(expected)
+        ]
+        for phase, kernels in kernel_durations.items()
+    }
 
     total_durations = [
         sum(phase_durations[phase][index] for phase in kernel_names)

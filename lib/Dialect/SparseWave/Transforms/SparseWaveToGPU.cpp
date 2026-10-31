@@ -680,7 +680,7 @@ public:
         cast<MemRefType>(op.getOutputRowOffsets().getType()).getElementType();
     CompressedOutputAssembly assembly = buildThreadPerCompressedOutputAssembly(
         rewriter, loc, rowCount, op.getOutputRowOffsets(), op.getOutputNnz(),
-        zeroIndex, oneIndex, blockSizeValue,
+        zeroIndex, oneIndex, blockSizeValue, blockSize,
         [&](OpBuilder &builder, Location bodyLoc, Value row) {
           CompressedSegmentBounds lhsBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getLhsRowOffsets(), row, oneIndex);
@@ -769,7 +769,9 @@ public:
               });
         });
     propagateKernelName(op, assembly.symbolic, "symbolic");
-    propagateKernelName(op, assembly.prefix, "prefix");
+    propagateKernelName(op, assembly.localPrefix, "prefix_local");
+    propagateKernelName(op, assembly.blockPrefix, "prefix_blocks");
+    propagateKernelName(op, assembly.prefixAdd, "prefix_add");
     propagateKernelName(op, assembly.numeric, "numeric");
     rewriter.eraseOp(op);
     return success();

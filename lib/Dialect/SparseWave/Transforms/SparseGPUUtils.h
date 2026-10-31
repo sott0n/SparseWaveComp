@@ -80,7 +80,9 @@ struct ThreadCompressedOutputSegment {
 
 struct CompressedOutputAssembly {
   gpu::LaunchOp symbolic;
-  gpu::LaunchOp prefix;
+  gpu::LaunchOp localPrefix;
+  gpu::LaunchOp blockPrefix;
+  gpu::LaunchOp prefixAdd;
   gpu::LaunchOp numeric;
 };
 
@@ -210,13 +212,15 @@ gpu::LaunchOp buildThreadPerCompressedSegmentPair(
     ThreadPerCompressedSegmentPairBodyBuilder buildBody);
 
 /// Assembles a compressed sparse output in three ordered GPU phases. The
-/// symbolic callback returns the output count for one segment, a sequential
-/// prefix phase converts those counts to offsets, and the numeric callback
-/// writes the segment contents beginning at its assigned output position.
+/// symbolic callback returns the output count for one segment, a hierarchical
+/// parallel prefix phase converts those counts to offsets, and the numeric
+/// callback writes the segment contents beginning at its assigned output
+/// position.
 CompressedOutputAssembly buildThreadPerCompressedOutputAssembly(
     PatternRewriter &rewriter, Location loc, Value segmentCount,
     Value outputOffsets, Value outputElementCount, Value zeroIndex,
-    Value oneIndex, Value blockSize, CompressedOutputCountBuilder buildCount,
+    Value oneIndex, Value blockSize, int64_t staticBlockSize,
+    CompressedOutputCountBuilder buildCount,
     CompressedOutputValuesBuilder buildValues);
 
 /// Assigns one compressed segment to each GPU wave and builds the active

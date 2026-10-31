@@ -15,7 +15,7 @@ be included as CSR baselines.
 | SpMV | COO | `--formats=coo` | `thread-per-nonzero` |
 | SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths; `--position-chunk-sizes` selects consecutive position-space points per thread or cooperative wave; `--position-orders=position-major,rhs-major` reorders the position and RHS-column axes; `--position-reductions=atomic,segmented` selects thread contribution aggregation | `thread-per-output`, `wave-per-row-tile`, `thread-per-position`, `wave-per-position-tile` |
 | SpMM | BSR | `--formats=bsr`; `--bsr-block-sizes` selects square storage block sizes | `thread-per-output` |
-| Elementwise add/multiply | CSR | `--nnz-per-row` controls both input row lengths; `--overlaps` controls their structural overlap and therefore the assembled output size | `thread-per-row` symbolic and numeric phases with a sequential prefix phase |
+| Elementwise add/multiply | CSR | `--nnz-per-row` controls both input row lengths; `--overlaps` controls their structural overlap and therefore the assembled output size | `thread-per-row` symbolic and numeric phases with a hierarchical GPU prefix scan |
 
 Multiple formats can be evaluated in one invocation, for example
 `--formats=csr,coo` for SpMV or `--formats=csr,bsr` for SpMM. The common
@@ -82,9 +82,11 @@ or the chunk ends. Reorder and collapse are not included in this
 one-dimensional SpMV ablation because they do not change its iteration order
 or shape.
 
-The CSR elementwise runner reports the complete three-kernel dispatch together
-with separate symbolic, prefix, and numeric medians. Its generated input pairs
-use sorted unique columns and controlled structural overlap:
+The CSR elementwise runner reports the complete dispatch as three logical
+phases with separate symbolic, prefix, and numeric medians. The prefix phase
+sums its block-local scan, block-total scan, and block-offset addition kernels.
+Generated input pairs use sorted unique columns and controlled structural
+overlap:
 
 ```sh
 python3 benchmark/run_elementwise_benchmark.py \
@@ -99,8 +101,8 @@ python3 benchmark/run_elementwise_benchmark.py \
 ```
 
 Each phase share is calculated from the sum of measured per-dispatch phase
-durations after warmup. In particular, `prefix share` exposes when the current
-sequential prefix phase becomes a material part of sparse output assembly.
+durations after warmup. In particular, `prefix share` exposes the total cost of
+constructing compressed output offsets.
 
 Each recorded result contains its workload definition, measurement method,
 environment, reproduction commands, performance data, and interpretation:

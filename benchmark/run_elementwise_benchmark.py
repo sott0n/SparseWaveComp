@@ -10,7 +10,11 @@ import benchmark_utils as common
 OPERATIONS = ("add", "multiply")
 PHASE_KERNELS = {
     "symbolic": "elementwise_symbolic",
-    "prefix": "elementwise_prefix",
+    "prefix": (
+        "elementwise_prefix_local",
+        "elementwise_prefix_blocks",
+        "elementwise_prefix_add",
+    ),
     "numeric": "elementwise_numeric",
 }
 RESULT_COLUMNS = (

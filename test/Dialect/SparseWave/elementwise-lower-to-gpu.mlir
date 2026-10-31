@@ -15,9 +15,17 @@
 // CHECK: arith.ori
 // CHECK: memref.store {{.*}}, %[[OUTPUT_OFFSETS]]
 // CHECK: gpu.launch
-// CHECK: scf.for
+// CHECK-SAME: workgroup(%{{.*}} : memref<64xi32, #gpu.address_space<workgroup>>)
+// CHECK: gpu.barrier
 // CHECK: memref.store {{.*}}, %[[OUTPUT_OFFSETS]]
+// CHECK: gpu.launch
+// CHECK-SAME: workgroup(%{{.*}} : memref<64xi32, #gpu.address_space<workgroup>>)
+// CHECK: scf.for
+// CHECK: gpu.barrier
 // CHECK: memref.store {{.*}}, %{{.*}}[%[[ZERO]]
+// CHECK: gpu.launch
+// CHECK: arith.divui
+// CHECK: memref.store {{.*}}, %[[OUTPUT_OFFSETS]]
 // CHECK: gpu.launch
 // CHECK: scf.while
 // CHECK: arith.addf
@@ -44,7 +52,12 @@ func.func @csr_add(
 // CHECK: scf.while
 // CHECK: arith.andi
 // CHECK: gpu.launch
+// CHECK-SAME: workgroup(%{{.*}} : memref<64xi32, #gpu.address_space<workgroup>>)
+// CHECK: gpu.barrier
+// CHECK: gpu.launch
 // CHECK: scf.for
+// CHECK: gpu.launch
+// CHECK: arith.divui
 // CHECK: gpu.launch
 // CHECK: scf.while
 // CHECK: arith.mulf
