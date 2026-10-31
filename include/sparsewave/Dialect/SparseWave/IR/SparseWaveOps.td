@@ -314,9 +314,12 @@ def SparseWave_CSRElementwiseOp : SparseWave_Op<"csr_elementwise"> {
     The caller preallocates the three output buffers. For addition, the column
     and value capacity must be at least the sum of both input NNZ counts. For
     multiplication, it must be at least the smaller input NNZ count. The
-    operation writes the actual result NNZ to the one-element `outputNnz`
-    buffer, and the final row offset equals this value. Output buffers must not
-    alias either input.
+    operation writes the required result NNZ to the one-element `outputNnz`
+    buffer, and the final row offset equals this value. When a dynamically
+    sized column or value buffer is too small, writes are limited to their
+    common capacity and `outputNnz` reports the capacity required for a valid
+    result. The required NNZ must be representable by the row-offset element
+    type. Output buffers must not alias either input.
 
     Example:
 

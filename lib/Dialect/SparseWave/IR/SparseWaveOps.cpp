@@ -547,6 +547,11 @@ LogicalResult CSRElementwiseOp::verify() {
                                      outputRowOffsetsType.getDimSize(0)))
     return emitOpError()
            << "left, right, and output row offsets must have the same size";
+  int64_t outputRowOffsetsSize = outputRowOffsetsType.getDimSize(0);
+  if (!ShapedType::isDynamic(outputRowOffsetsSize) && outputRowOffsetsSize < 1)
+    return emitOpError()
+           << "row offsets must contain at least one element, but got "
+           << outputRowOffsetsSize;
 
   Type indexType = lhsRowOffsetsType.getElementType();
   if (rhsRowOffsetsType.getElementType() != indexType ||
@@ -585,6 +590,12 @@ LogicalResult CSRElementwiseOp::verify() {
     } else {
       requiredCapacity = std::min(lhsNnzCapacity, rhsNnzCapacity);
     }
+    if (auto integerType = dyn_cast<IntegerType>(indexType);
+        integerType && integerType.getWidth() < 64 &&
+        requiredCapacity >
+            APInt::getSignedMaxValue(integerType.getWidth()).getSExtValue())
+      return emitOpError() << "required output capacity " << requiredCapacity
+                           << " cannot be represented by " << indexType;
     if (outputCapacity < requiredCapacity)
       return emitOpError() << "output capacity for '" << getKind()
                            << "' must be at least " << requiredCapacity

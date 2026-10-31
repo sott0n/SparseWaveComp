@@ -76,6 +76,7 @@ struct ThreadCompressedSegmentPair {
 struct ThreadCompressedOutputSegment {
   Value segment;
   Value outputStart;
+  Value outputLimit;
 };
 
 struct CompressedOutputAssembly {
@@ -215,12 +216,13 @@ gpu::LaunchOp buildThreadPerCompressedSegmentPair(
 /// symbolic callback returns the output count for one segment, a hierarchical
 /// parallel prefix phase converts those counts to offsets, and the numeric
 /// callback writes the segment contents beginning at its assigned output
-/// position.
+/// position. The numeric callback receives the common output buffer limit so
+/// it can preserve the required count while avoiding out-of-bounds writes.
 CompressedOutputAssembly buildThreadPerCompressedOutputAssembly(
     PatternRewriter &rewriter, Location loc, Value segmentCount,
-    Value outputOffsets, Value outputElementCount, Value zeroIndex,
-    Value oneIndex, Value blockSize, int64_t staticBlockSize, int64_t waveSize,
-    CompressedOutputCountBuilder buildCount,
+    Value outputOffsets, Value outputElementCount, Value outputCapacity,
+    Value zeroIndex, Value oneIndex, Value blockSize, int64_t staticBlockSize,
+    int64_t waveSize, CompressedOutputCountBuilder buildCount,
     CompressedOutputValuesBuilder buildValues);
 
 /// Assigns one compressed segment to each GPU wave and builds the active

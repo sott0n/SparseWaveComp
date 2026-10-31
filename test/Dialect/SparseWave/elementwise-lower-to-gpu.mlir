@@ -22,6 +22,9 @@
 // CHECK: %[[BLOCK_SIZE:.*]] = arith.constant 64 : index
 // CHECK: %[[OFFSET_COUNT:.*]] = memref.dim %[[OUTPUT_OFFSETS:.*]], %[[ZERO]]
 // CHECK: %[[ROW_COUNT:.*]] = arith.subi %[[OFFSET_COUNT]], %[[ONE]]
+// CHECK: %[[COLUMN_CAPACITY:.*]] = memref.dim %[[OUTPUT_COLUMNS:.*]], %[[ZERO]]
+// CHECK: %[[VALUE_CAPACITY:.*]] = memref.dim %[[OUTPUT_VALUES:.*]], %[[ZERO]]
+// CHECK: %[[OUTPUT_CAPACITY:.*]] = arith.minui %[[COLUMN_CAPACITY]], %[[VALUE_CAPACITY]]
 // CHECK: gpu.launch
 // CHECK-SAME: threads(
 // CHECK-SAME: = %[[BLOCK_SIZE]],
@@ -45,7 +48,10 @@
 // CHECK: gpu.launch
 // CHECK: scf.while
 // CHECK: arith.addf
-// CHECK: memref.store {{.*}}, %{{.*}}[%{{.*}}]
+// CHECK: %[[IN_BOUNDS:.*]] = arith.cmpi ult, %{{.*}}, %[[OUTPUT_CAPACITY]]
+// CHECK: scf.if %[[IN_BOUNDS]]
+// CHECK: memref.store {{.*}}, %[[OUTPUT_COLUMNS]][%{{.*}}]
+// CHECK: memref.store {{.*}}, %[[OUTPUT_VALUES]][%{{.*}}]
 // CHECK-NOT: sparsewave.csr_elementwise
 func.func @csr_add(
     %lhsOffsets: memref<?xi32>, %lhsColumns: memref<?xi32>,

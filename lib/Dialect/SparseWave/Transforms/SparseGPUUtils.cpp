@@ -243,9 +243,9 @@ gpu::LaunchOp buildThreadPerCompressedSegmentPair(
 
 CompressedOutputAssembly buildThreadPerCompressedOutputAssembly(
     PatternRewriter &rewriter, Location loc, Value segmentCount,
-    Value outputOffsets, Value outputElementCount, Value zeroIndex,
-    Value oneIndex, Value blockSize, int64_t staticBlockSize, int64_t waveSize,
-    CompressedOutputCountBuilder buildCount,
+    Value outputOffsets, Value outputElementCount, Value outputCapacity,
+    Value zeroIndex, Value oneIndex, Value blockSize, int64_t staticBlockSize,
+    int64_t waveSize, CompressedOutputCountBuilder buildCount,
     CompressedOutputValuesBuilder buildValues) {
   Type offsetType = cast<MemRefType>(outputOffsets.getType()).getElementType();
 
@@ -454,7 +454,7 @@ CompressedOutputAssembly buildThreadPerCompressedOutputAssembly(
         Value outputStart = castToIndex(builder, bodyLoc, outputStartValue);
         buildValues(builder, bodyLoc,
                     ThreadCompressedOutputSegment{numericDistribution.workUnit,
-                                                  outputStart});
+                                                  outputStart, outputCapacity});
         scf::YieldOp::create(builder, bodyLoc);
       },
       {});

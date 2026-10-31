@@ -674,6 +674,12 @@ public:
         rewriter, loc, op.getOutputRowOffsets(), zeroIndex);
     Value rowCount =
         arith::SubIOp::create(rewriter, loc, rowOffsetCount, oneIndex);
+    Value outputColumnCapacity = memref::DimOp::create(
+        rewriter, loc, op.getOutputColumnIndices(), zeroIndex);
+    Value outputValueCapacity =
+        memref::DimOp::create(rewriter, loc, op.getOutputValues(), zeroIndex);
+    Value outputCapacity = arith::MinUIOp::create(
+        rewriter, loc, outputColumnCapacity, outputValueCapacity);
     CompressedCoiterationKind coiterationKind =
         op.getKind() == "add" ? CompressedCoiterationKind::Union
                               : CompressedCoiterationKind::Intersection;
@@ -682,7 +688,8 @@ public:
         cast<MemRefType>(op.getOutputRowOffsets().getType()).getElementType();
     CompressedOutputAssembly assembly = buildThreadPerCompressedOutputAssembly(
         rewriter, loc, rowCount, op.getOutputRowOffsets(), op.getOutputNnz(),
-        zeroIndex, oneIndex, blockSizeValue, blockSize, waveSize,
+        outputCapacity, zeroIndex, oneIndex, blockSizeValue, blockSize,
+        waveSize,
         [&](OpBuilder &builder, Location bodyLoc, Value row) {
           CompressedSegmentBounds lhsBounds = buildCompressedSegmentBounds(
               builder, bodyLoc, op.getLhsRowOffsets(), row, oneIndex);
@@ -760,11 +767,20 @@ public:
 
                 Value outputColumn = castIndexToType(
                     entryBuilder, entryLoc, entry.coordinate, offsetType);
-                memref::StoreOp::create(entryBuilder, entryLoc, outputColumn,
-                                        op.getOutputColumnIndices(),
-                                        outputPosition);
-                memref::StoreOp::create(entryBuilder, entryLoc, outputValue,
-                                        op.getOutputValues(), outputPosition);
+                Value outputIsInBounds = arith::CmpIOp::create(
+                    entryBuilder, entryLoc, arith::CmpIPredicate::ult,
+                    outputPosition, output.outputLimit);
+                scf::IfOp::create(
+                    entryBuilder, entryLoc, outputIsInBounds,
+                    [&](OpBuilder &storeBuilder, Location storeLoc) {
+                      memref::StoreOp::create(
+                          storeBuilder, storeLoc, outputColumn,
+                          op.getOutputColumnIndices(), outputPosition);
+                      memref::StoreOp::create(storeBuilder, storeLoc,
+                                              outputValue, op.getOutputValues(),
+                                              outputPosition);
+                      scf::YieldOp::create(storeBuilder, storeLoc);
+                    });
                 Value nextOutputPosition = arith::AddIOp::create(
                     entryBuilder, entryLoc, outputPosition, oneIndex);
                 return SmallVector<Value>{nextOutputPosition};

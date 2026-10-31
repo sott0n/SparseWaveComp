@@ -51,86 +51,109 @@ func.func @csr_multiply(
 // [1 0  2 0]
 // [0 3  0 0]
 // [4 0  0 0]
+// [0 0  0 0]
 //
 // Right CSR matrix:
 // [0 5 -2 0]
 // [0 7  0 8]
 // [0 0  9 0]
+// [0 0  0 0]
 //
 // Addition retains the structural zero at (0, 2).
-// CHECK: [0, 3, 5, 7]
+// CHECK: [0, 3, 5, 7, 7]
 // CHECK: [0, 1, 2, 1, 3, 0, 2, 0, 0]
 // CHECK: [1, 5, 0, 10, 8, 4, 9, 0, 0]
 // CHECK: [7]
-// CHECK: [0, 1, 2, 2]
+// CHECK: [0, 1, 2, 2, 2]
 // CHECK: [2, 1, 0, 0]
 // CHECK: [-4, 21, 0, 0]
 // CHECK: [2]
+// A dynamic output with insufficient capacity stores only its bounded prefix
+// while reporting the full required NNZ.
+// CHECK: [0, 3, 5, 7, 7]
+// CHECK: [0, 1, 2, 0]
+// CHECK: [1, 5, 0]
+// CHECK: [7]
 func.func @main() {
   %zeroI32 = arith.constant 0 : i32
   %zeroF32 = arith.constant 0.0 : f32
-  %lhsOffsetsTensor = arith.constant dense<[0, 2, 3, 4]> : tensor<4xi32>
+  %lhsOffsetsTensor = arith.constant dense<[0, 2, 3, 4, 4]> : tensor<5xi32>
   %lhsColumnsTensor = arith.constant dense<[0, 2, 1, 0]> : tensor<4xi32>
   %lhsValuesTensor = arith.constant dense<[1.0, 2.0, 3.0, 4.0]>
       : tensor<4xf32>
-  %rhsOffsetsTensor = arith.constant dense<[0, 2, 4, 5]> : tensor<4xi32>
+  %rhsOffsetsTensor = arith.constant dense<[0, 2, 4, 5, 5]> : tensor<5xi32>
   %rhsColumnsTensor = arith.constant dense<[1, 2, 1, 3, 2]> : tensor<5xi32>
   %rhsValuesTensor = arith.constant dense<[5.0, -2.0, 7.0, 8.0, 9.0]>
       : tensor<5xf32>
 
   %lhsOffsets = bufferization.to_buffer %lhsOffsetsTensor read_only
-      : tensor<4xi32> to memref<4xi32>
+      : tensor<5xi32> to memref<5xi32>
   %lhsColumns = bufferization.to_buffer %lhsColumnsTensor read_only
       : tensor<4xi32> to memref<4xi32>
   %lhsValues = bufferization.to_buffer %lhsValuesTensor read_only
       : tensor<4xf32> to memref<4xf32>
   %rhsOffsets = bufferization.to_buffer %rhsOffsetsTensor read_only
-      : tensor<4xi32> to memref<4xi32>
+      : tensor<5xi32> to memref<5xi32>
   %rhsColumns = bufferization.to_buffer %rhsColumnsTensor read_only
       : tensor<5xi32> to memref<5xi32>
   %rhsValues = bufferization.to_buffer %rhsValuesTensor read_only
       : tensor<5xf32> to memref<5xf32>
 
-  %addOffsets = memref.alloc() : memref<4xi32>
+  %addOffsets = memref.alloc() : memref<5xi32>
   %addColumns = memref.alloc() : memref<9xi32>
   %addValues = memref.alloc() : memref<9xf32>
   %addNnz = memref.alloc() : memref<1xi32>
   linalg.fill ins(%zeroI32 : i32) outs(%addColumns : memref<9xi32>)
   linalg.fill ins(%zeroF32 : f32) outs(%addValues : memref<9xf32>)
 
-  %multiplyOffsets = memref.alloc() : memref<4xi32>
+  %multiplyOffsets = memref.alloc() : memref<5xi32>
   %multiplyColumns = memref.alloc() : memref<4xi32>
   %multiplyValues = memref.alloc() : memref<4xf32>
   %multiplyNnz = memref.alloc() : memref<1xi32>
   linalg.fill ins(%zeroI32 : i32) outs(%multiplyColumns : memref<4xi32>)
   linalg.fill ins(%zeroF32 : f32) outs(%multiplyValues : memref<4xf32>)
 
+  %limitedOffsets = memref.alloc() : memref<5xi32>
+  %limitedColumns = memref.alloc() : memref<4xi32>
+  %limitedValues = memref.alloc() : memref<3xf32>
+  %limitedNnz = memref.alloc() : memref<1xi32>
+  linalg.fill ins(%zeroI32 : i32) outs(%limitedColumns : memref<4xi32>)
+  linalg.fill ins(%zeroF32 : f32) outs(%limitedValues : memref<3xf32>)
+
   %lhsOffsetsDynamic = memref.cast %lhsOffsets
-      : memref<4xi32> to memref<?xi32>
+      : memref<5xi32> to memref<?xi32>
   %lhsColumnsDynamic = memref.cast %lhsColumns
       : memref<4xi32> to memref<?xi32>
   %lhsValuesDynamic = memref.cast %lhsValues
       : memref<4xf32> to memref<?xf32>
   %rhsOffsetsDynamic = memref.cast %rhsOffsets
-      : memref<4xi32> to memref<?xi32>
+      : memref<5xi32> to memref<?xi32>
   %rhsColumnsDynamic = memref.cast %rhsColumns
       : memref<5xi32> to memref<?xi32>
   %rhsValuesDynamic = memref.cast %rhsValues
       : memref<5xf32> to memref<?xf32>
   %addOffsetsDynamic = memref.cast %addOffsets
-      : memref<4xi32> to memref<?xi32>
+      : memref<5xi32> to memref<?xi32>
   %addColumnsDynamic = memref.cast %addColumns
       : memref<9xi32> to memref<?xi32>
   %addValuesDynamic = memref.cast %addValues
       : memref<9xf32> to memref<?xf32>
   %addNnzDynamic = memref.cast %addNnz : memref<1xi32> to memref<?xi32>
   %multiplyOffsetsDynamic = memref.cast %multiplyOffsets
-      : memref<4xi32> to memref<?xi32>
+      : memref<5xi32> to memref<?xi32>
   %multiplyColumnsDynamic = memref.cast %multiplyColumns
       : memref<4xi32> to memref<?xi32>
   %multiplyValuesDynamic = memref.cast %multiplyValues
       : memref<4xf32> to memref<?xf32>
   %multiplyNnzDynamic = memref.cast %multiplyNnz
+      : memref<1xi32> to memref<?xi32>
+  %limitedOffsetsDynamic = memref.cast %limitedOffsets
+      : memref<5xi32> to memref<?xi32>
+  %limitedColumnsDynamic = memref.cast %limitedColumns
+      : memref<4xi32> to memref<?xi32>
+  %limitedValuesDynamic = memref.cast %limitedValues
+      : memref<3xf32> to memref<?xf32>
+  %limitedNnzDynamic = memref.cast %limitedNnz
       : memref<1xi32> to memref<?xi32>
 
   %lhsOffsetsUnranked = memref.cast %lhsOffsetsDynamic
@@ -161,6 +184,14 @@ func.func @main() {
       : memref<?xf32> to memref<*xf32>
   %multiplyNnzUnranked = memref.cast %multiplyNnzDynamic
       : memref<?xi32> to memref<*xi32>
+  %limitedOffsetsUnranked = memref.cast %limitedOffsetsDynamic
+      : memref<?xi32> to memref<*xi32>
+  %limitedColumnsUnranked = memref.cast %limitedColumnsDynamic
+      : memref<?xi32> to memref<*xi32>
+  %limitedValuesUnranked = memref.cast %limitedValuesDynamic
+      : memref<?xf32> to memref<*xf32>
+  %limitedNnzUnranked = memref.cast %limitedNnzDynamic
+      : memref<?xi32> to memref<*xi32>
 
   gpu.host_register %lhsOffsetsUnranked : memref<*xi32>
   gpu.host_register %lhsColumnsUnranked : memref<*xi32>
@@ -176,6 +207,10 @@ func.func @main() {
   gpu.host_register %multiplyColumnsUnranked : memref<*xi32>
   gpu.host_register %multiplyValuesUnranked : memref<*xf32>
   gpu.host_register %multiplyNnzUnranked : memref<*xi32>
+  gpu.host_register %limitedOffsetsUnranked : memref<*xi32>
+  gpu.host_register %limitedColumnsUnranked : memref<*xi32>
+  gpu.host_register %limitedValuesUnranked : memref<*xf32>
+  gpu.host_register %limitedNnzUnranked : memref<*xi32>
 
   %lhsOffsetsDevice = call @mgpuMemGetDeviceMemRef1dInt32(%lhsOffsetsDynamic)
       : (memref<?xi32>) -> memref<?xi32>
@@ -205,6 +240,14 @@ func.func @main() {
       %multiplyValuesDynamic) : (memref<?xf32>) -> memref<?xf32>
   %multiplyNnzDevice = call @mgpuMemGetDeviceMemRef1dInt32(
       %multiplyNnzDynamic) : (memref<?xi32>) -> memref<?xi32>
+  %limitedOffsetsDevice = call @mgpuMemGetDeviceMemRef1dInt32(
+      %limitedOffsetsDynamic) : (memref<?xi32>) -> memref<?xi32>
+  %limitedColumnsDevice = call @mgpuMemGetDeviceMemRef1dInt32(
+      %limitedColumnsDynamic) : (memref<?xi32>) -> memref<?xi32>
+  %limitedValuesDevice = call @mgpuMemGetDeviceMemRef1dFloat(
+      %limitedValuesDynamic) : (memref<?xf32>) -> memref<?xf32>
+  %limitedNnzDevice = call @mgpuMemGetDeviceMemRef1dInt32(%limitedNnzDynamic)
+      : (memref<?xi32>) -> memref<?xi32>
 
   call @csr_add(
       %lhsOffsetsDevice, %lhsColumnsDevice, %lhsValuesDevice,
@@ -221,6 +264,14 @@ func.func @main() {
       : (memref<?xi32>, memref<?xi32>, memref<?xf32>,
          memref<?xi32>, memref<?xi32>, memref<?xf32>,
          memref<?xi32>, memref<?xi32>, memref<?xf32>, memref<?xi32>) -> ()
+  call @csr_add(
+      %lhsOffsetsDevice, %lhsColumnsDevice, %lhsValuesDevice,
+      %rhsOffsetsDevice, %rhsColumnsDevice, %rhsValuesDevice,
+      %limitedOffsetsDevice, %limitedColumnsDevice, %limitedValuesDevice,
+      %limitedNnzDevice)
+      : (memref<?xi32>, memref<?xi32>, memref<?xf32>,
+         memref<?xi32>, memref<?xi32>, memref<?xf32>,
+         memref<?xi32>, memref<?xi32>, memref<?xf32>, memref<?xi32>) -> ()
 
   call @printMemrefI32(%addOffsetsUnranked) : (memref<*xi32>) -> ()
   call @printMemrefI32(%addColumnsUnranked) : (memref<*xi32>) -> ()
@@ -230,6 +281,10 @@ func.func @main() {
   call @printMemrefI32(%multiplyColumnsUnranked) : (memref<*xi32>) -> ()
   call @printMemrefF32(%multiplyValuesUnranked) : (memref<*xf32>) -> ()
   call @printMemrefI32(%multiplyNnzUnranked) : (memref<*xi32>) -> ()
+  call @printMemrefI32(%limitedOffsetsUnranked) : (memref<*xi32>) -> ()
+  call @printMemrefI32(%limitedColumnsUnranked) : (memref<*xi32>) -> ()
+  call @printMemrefF32(%limitedValuesUnranked) : (memref<*xf32>) -> ()
+  call @printMemrefI32(%limitedNnzUnranked) : (memref<*xi32>) -> ()
   return
 }
 

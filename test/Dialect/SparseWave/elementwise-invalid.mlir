@@ -153,3 +153,41 @@ func.func @multiply_output_capacity_must_cover_intersection(
         memref<5xi32>, memref<6xi32>, memref<6xf32>, memref<1xi32>
   return
 }
+
+// -----
+
+func.func @row_offsets_must_represent_zero_rows(
+    %lhsOffsets: memref<0xi32>, %lhsColumns: memref<0xi32>,
+    %lhsValues: memref<0xf32>, %rhsOffsets: memref<0xi32>,
+    %rhsColumns: memref<0xi32>, %rhsValues: memref<0xf32>,
+    %outputOffsets: memref<0xi32>, %outputColumns: memref<0xi32>,
+    %outputValues: memref<0xf32>, %outputNnz: memref<1xi32>) {
+  // expected-error @+1 {{row offsets must contain at least one element, but got 0}}
+  sparsewave.csr_elementwise
+      %lhsOffsets, %lhsColumns, %lhsValues,
+      %rhsOffsets, %rhsColumns, %rhsValues,
+      %outputOffsets, %outputColumns, %outputValues, %outputNnz kind = "add"
+      : memref<0xi32>, memref<0xi32>, memref<0xf32>,
+        memref<0xi32>, memref<0xi32>, memref<0xf32>,
+        memref<0xi32>, memref<0xi32>, memref<0xf32>, memref<1xi32>
+  return
+}
+
+// -----
+
+func.func @output_nnz_must_fit_offset_type(
+    %lhsOffsets: memref<2xi8>, %lhsColumns: memref<100xi8>,
+    %lhsValues: memref<100xf32>, %rhsOffsets: memref<2xi8>,
+    %rhsColumns: memref<100xi8>, %rhsValues: memref<100xf32>,
+    %outputOffsets: memref<2xi8>, %outputColumns: memref<200xi8>,
+    %outputValues: memref<200xf32>, %outputNnz: memref<1xi8>) {
+  // expected-error @+1 {{required output capacity 200 cannot be represented by 'i8'}}
+  sparsewave.csr_elementwise
+      %lhsOffsets, %lhsColumns, %lhsValues,
+      %rhsOffsets, %rhsColumns, %rhsValues,
+      %outputOffsets, %outputColumns, %outputValues, %outputNnz kind = "add"
+      : memref<2xi8>, memref<100xi8>, memref<100xf32>,
+        memref<2xi8>, memref<100xi8>, memref<100xf32>,
+        memref<2xi8>, memref<200xi8>, memref<200xf32>, memref<1xi8>
+  return
+}
