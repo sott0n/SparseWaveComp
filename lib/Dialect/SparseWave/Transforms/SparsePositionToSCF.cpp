@@ -8,6 +8,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -79,19 +80,36 @@ public:
         arith::SelectOp::create(rewriter, loc, active, boundedSize, zero);
     Value end = arith::AddIOp::create(rewriter, loc, begin, size);
 
-    auto loop = scf::ForOp::create(rewriter, loc, begin, end, one);
+    auto loop =
+        scf::ForOp::create(rewriter, loc, begin, end, one, op.getInitArgs());
     Block *loopBody = loop.getBody();
     rewriter.setInsertionPointToStart(loopBody);
     Value inner =
         arith::SubIOp::create(rewriter, loc, loop.getInductionVar(), begin);
 
-    auto sparseYield = cast<YieldOp>(op.getBody().front().getTerminator());
-    rewriter.setInsertionPoint(sparseYield);
-    scf::YieldOp::create(rewriter, sparseYield.getLoc());
-    rewriter.eraseOp(sparseYield);
-    rewriter.eraseOp(loopBody->getTerminator());
-    rewriter.mergeBlocks(&op.getBody().front(), loopBody,
-                         ValueRange{loop.getInductionVar(), inner});
+    SmallVector<Value> bodyArguments{loop.getInductionVar(), inner};
+    llvm::append_range(bodyArguments, loop.getRegionIterArgs());
+    Block &sourceBody = op.getBody().front();
+    IRMapping mapping;
+    mapping.map(sourceBody.getArguments(), bodyArguments);
+    Operation *loopTerminator =
+        op.getInitArgs().empty() ? loopBody->getTerminator() : nullptr;
+    if (loopTerminator)
+      rewriter.setInsertionPoint(loopTerminator);
+    else
+      rewriter.setInsertionPointToEnd(loopBody);
+    for (Operation &nested : sourceBody.without_terminator())
+      rewriter.clone(nested, mapping);
+
+    auto sparseYield = cast<YieldOp>(sourceBody.getTerminator());
+    SmallVector<Value> yieldedValues;
+    llvm::transform(sparseYield.getResults(), std::back_inserter(yieldedValues),
+                    [&](Value value) { return mapping.lookup(value); });
+    if (loopTerminator)
+      loopTerminator->setOperands(yieldedValues);
+    else
+      scf::YieldOp::create(rewriter, sparseYield.getLoc(), yieldedValues);
+    rewriter.replaceAllUsesWith(op.getResults(), loop.getResults());
     rewriter.eraseOp(op);
     return success();
   }

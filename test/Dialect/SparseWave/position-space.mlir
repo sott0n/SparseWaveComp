@@ -40,6 +40,23 @@ func.func @position_for(%lower: index, %upper: index, %workerId: index,
   return
 }
 
+// CHECK-LABEL: func.func @position_for_with_state(
+// CHECK: %[[RESULT:.*]] = sparsewave.position_for
+// CHECK-SAME: iter_args(%{{.*}} : index) -> (index)
+// CHECK: ^bb0(%{{.*}}: index, %{{.*}}: index, %[[STATE:.*]]: index):
+// CHECK: sparsewave.yield %[[STATE]] : index
+func.func @position_for_with_state(%lower: index, %upper: index,
+                                   %workerId: index,
+                                   %initial: index) -> index {
+  %result = sparsewave.position_for
+      %workerId in %lower to %upper by 8 : index
+      iter_args(%initial : index) -> (index) {
+  ^bb0(%position: index, %inner: index, %state: index):
+    sparsewave.yield %state : index
+  }
+  return %result : index
+}
+
 // CHECK-LABEL: func.func @position_reorder(
 func.func @position_reorder(%lower0: index, %lower1: index, %upper0: index,
                             %upper1: index, %output: memref<?x?xindex>) {

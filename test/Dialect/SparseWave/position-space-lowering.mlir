@@ -48,6 +48,27 @@ func.func @position_for(%lower: index, %upper: index, %worker: index,
   return
 }
 
+// CHECK-LABEL: func.func @position_for_with_state(
+// CHECK-SAME: %[[LOWER:[^,]+]]: index, %[[UPPER:[^,]+]]: index,
+// CHECK-SAME: %[[WORKER:[^,]+]]: index, %[[INITIAL:[^)]+]]: index)
+// CHECK: %[[RESULT:.*]] = scf.for %[[POSITION:.*]] = %{{[^ ]+}} to %{{[^ ]+}} step %{{[^ ]+}} iter_args(%[[STATE:.*]] = %[[INITIAL]]) -> (index) {
+// CHECK: %[[NEXT:.*]] = arith.addi %[[STATE]], %[[POSITION]] : index
+// CHECK: scf.yield %[[NEXT]] : index
+// CHECK: return %[[RESULT]] : index
+// CHECK-NOT: sparsewave.position_for
+func.func @position_for_with_state(%lower: index, %upper: index,
+                                   %worker: index,
+                                   %initial: index) -> index {
+  %result = sparsewave.position_for
+      %worker in %lower to %upper by 8 : index
+      iter_args(%initial : index) -> (index) {
+  ^bb0(%position: index, %inner: index, %state: index):
+    %next = arith.addi %state, %position : index
+    sparsewave.yield %next : index
+  }
+  return %result : index
+}
+
 // The order permutation controls loop nesting, while body arguments remain in
 // logical axis order.
 // CHECK-LABEL: func.func @position_reorder(

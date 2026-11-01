@@ -724,18 +724,48 @@ LogicalResult PositionForOp::verify() {
     return emitOpError() << "worker ID must be nonnegative, but got "
                          << *workerId;
 
+  if (getInitArgs().size() != getNumResults())
+    return emitOpError()
+           << "must have one result per loop-carried initial value, but got "
+           << getInitArgs().size() << " initial values and " << getNumResults()
+           << " results";
+  for (auto [init, result] : llvm::zip_equal(getInitArgs(), getResults()))
+    if (init.getType() != result.getType())
+      return emitOpError()
+             << "loop-carried initial value and result types must match, but "
+                "got "
+             << init.getType() << " and " << result.getType();
+
   Block &body = getBody().front();
-  if (body.getNumArguments() != 2)
-    return emitOpError() << "body must have position and inner arguments, but "
-                            "got "
-                         << body.getNumArguments();
-  for (BlockArgument argument : body.getArguments())
-    if (!argument.getType().isIndex())
-      return emitOpError() << "body arguments must have index type";
+  unsigned expectedArguments = 2 + getInitArgs().size();
+  if (body.getNumArguments() != expectedArguments)
+    return emitOpError()
+           << "body must have position, inner, and one argument per "
+              "loop-carried value, but got "
+           << body.getNumArguments() << " arguments; expected "
+           << expectedArguments;
+  if (!body.getArgument(0).getType().isIndex() ||
+      !body.getArgument(1).getType().isIndex())
+    return emitOpError() << "position and inner body arguments must have "
+                            "index type";
+  for (auto [argument, init] :
+       llvm::zip_equal(body.getArguments().drop_front(2), getInitArgs()))
+    if (argument.getType() != init.getType())
+      return emitOpError()
+             << "loop-carried body argument type must match its initial "
+                "value, but got "
+             << argument.getType() << " and " << init.getType();
 
   auto yield = dyn_cast<YieldOp>(body.getTerminator());
-  if (!yield || !yield.getResults().empty())
-    return emitOpError() << "body must yield no values";
+  if (!yield || yield.getResults().size() != getNumResults())
+    return emitOpError() << "body must yield one value per result, but got "
+                         << (yield ? yield.getResults().size() : 0)
+                         << " values for " << getNumResults() << " results";
+  for (auto [yielded, result] :
+       llvm::zip_equal(yield.getResults(), getResults()))
+    if (yielded.getType() != result.getType())
+      return emitOpError() << "yielded and result types must match, but got "
+                           << yielded.getType() << " and " << result.getType();
 
   return success();
 }

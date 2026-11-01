@@ -70,7 +70,7 @@ func.func @position_for_negative_worker() {
 
 func.func @position_for_body_arguments(
     %lower: index, %upper: index, %workerId: index) {
-  // expected-error @+1 {{body must have position and inner arguments, but got 1}}
+  // expected-error @+1 {{body must have position, inner, and one argument per loop-carried value, but got 1 arguments; expected 2}}
   sparsewave.position_for %workerId in %lower to %upper by 8 : index {
   ^bb0(%position: index):
     sparsewave.yield
@@ -82,10 +82,38 @@ func.func @position_for_body_arguments(
 
 func.func @position_for_must_not_yield_values(
     %lower: index, %upper: index, %workerId: index) {
-  // expected-error @+1 {{body must yield no values}}
+  // expected-error @+1 {{body must yield one value per result, but got 1 values for 0 results}}
   sparsewave.position_for %workerId in %lower to %upper by 8 : index {
   ^bb0(%position: index, %inner: index):
     sparsewave.yield %position : index
+  }
+  return
+}
+
+// -----
+
+func.func @position_for_result_count(
+    %lower: index, %upper: index, %workerId: index, %initial: index) {
+  // expected-error @+1 {{must have one result per loop-carried initial value, but got 1 initial values and 2 results}}
+  %result:2 = sparsewave.position_for
+      %workerId in %lower to %upper by 8 : index
+      iter_args(%initial : index) -> (index, index) {
+  ^bb0(%position: index, %inner: index, %state: index):
+    sparsewave.yield %state, %state : index, index
+  }
+  return
+}
+
+// -----
+
+func.func @position_for_body_state_type(
+    %lower: index, %upper: index, %workerId: index, %initial: index) {
+  // expected-error @+1 {{loop-carried body argument type must match its initial value, but got 'i32' and 'index'}}
+  %result = sparsewave.position_for
+      %workerId in %lower to %upper by 8 : index
+      iter_args(%initial : index) -> (index) {
+  ^bb0(%position: index, %inner: index, %state: i32):
+    sparsewave.yield %initial : index
   }
   return
 }

@@ -59,8 +59,9 @@
 // SEGMENTED: %[[BOUNDARY_INDEX:.*]] = arith.addi %[[FIRST_ROW]], %{{.*}} : index
 // SEGMENTED: %[[BOUNDARY_RAW:.*]] = memref.load %[[OFFSETS]][%[[BOUNDARY_INDEX]]]
 // SEGMENTED: %[[BOUNDARY:.*]] = arith.index_cast %[[BOUNDARY_RAW]]
-// SEGMENTED: %{{.*}}:3 = scf.for
-// SEGMENTED-SAME: iter_args(%{{.*}} = %[[FIRST_ROW]], %{{.*}} = %{{.*}}, %{{.*}} = %[[BOUNDARY]])
+// SEGMENTED: %{{.*}}:3 = sparsewave.position_for
+// SEGMENTED-SAME: iter_args(%[[FIRST_ROW]], %{{.*}}, %[[BOUNDARY]] : index, f32, index)
+// SEGMENTED-SAME: -> (index, f32, index)
 // SEGMENTED: scf.while (%{{.*}} = %{{.*}}, %[[CURRENT_BOUNDARY:.*]] = %{{.*}})
 // SEGMENTED-NOT: memref.load %[[OFFSETS]]
 // SEGMENTED: arith.cmpi ule, %[[CURRENT_BOUNDARY]], %{{.*}} : index

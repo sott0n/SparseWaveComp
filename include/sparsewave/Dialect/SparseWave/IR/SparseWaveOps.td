@@ -404,7 +404,8 @@ def SparseWave_PositionForOp : SparseWave_Op<"position_for",
     `sparsewave.position_for` materializes the sequential inner iteration of a
     TACO-style position split. The `worker_id` identifies the split `outer`
     coordinate, while the region receives the original `position` and the
-    corresponding `inner` coordinate:
+    corresponding `inner` coordinate. Optional loop-carried values follow the
+    two coordinates and are returned after the chunk completes:
 
     ```text
     position = lower + worker_id * factor + inner
@@ -421,21 +422,26 @@ def SparseWave_PositionForOp : SparseWave_Op<"position_for",
     Example:
 
     ```mlir
-    sparsewave.position_for %worker_id in %lower to %upper by 32 : index {
-    ^bb0(%position: index, %inner: index):
+    %final_key, %final_sum = sparsewave.position_for
+        %worker_id in %lower to %upper by 32 : index
+        iter_args(%initial_key, %initial_sum) -> (index, f32) {
+    ^bb0(%position: index, %inner: index, %key: index, %sum: f32):
       // Process one stored sparse position.
-      sparsewave.yield
+      sparsewave.yield %next_key, %next_sum : index, f32
     }
     ```
   }];
 
   let arguments = (ins Index:$lower, Index:$upper, Index:$workerId,
-                       I64Attr:$factor);
+                       Variadic<AnyType>:$initArgs, I64Attr:$factor);
+  let results = (outs Variadic<AnyType>:$results);
   let regions = (region SizedRegion<1>:$body);
 
   let assemblyFormat = [{
-    $workerId `in` $lower `to` $upper `by` $factor `:` type($lower) $body
-    attr-dict
+    $workerId `in` $lower `to` $upper `by` $factor `:` type($lower)
+    (`iter_args` `(` $initArgs^ `:` type($initArgs) `)`
+      `->` `(` type($results) `)`)?
+    $body attr-dict
   }];
 
   let hasVerifier = 1;

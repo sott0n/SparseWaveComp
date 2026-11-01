@@ -95,7 +95,8 @@ def LowerSparseWavePositionSpace
   let summary = "Lower sparse position-space primitives to structured control flow";
   let description = [{
     Lowers sparsewave.position_split to quotient and remainder arithmetic,
-    sparsewave.position_for to a bounded sequential loop,
+    sparsewave.position_for, including its loop-carried scheduling state, to a
+    bounded sequential loop,
     sparsewave.position_reorder to an SCF loop nest in the requested order,
     sparsewave.position_collapse to coordinate recovery and a guarded region,
     and sparsewave.position_space to integer arithmetic implementing a balanced

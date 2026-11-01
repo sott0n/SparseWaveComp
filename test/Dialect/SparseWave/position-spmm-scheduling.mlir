@@ -55,7 +55,9 @@
 
 // RHS-SEGMENTED-LABEL: func.func @spmm(
 // RHS-SEGMENTED: sparsewave.position_parallel
-// RHS-SEGMENTED: scf.for
+// RHS-SEGMENTED: sparsewave.position_for
+// RHS-SEGMENTED-SAME: iter_args(%{{.*}}, %{{.*}} : index, f32)
+// RHS-SEGMENTED-SAME: -> (index, f32)
 // RHS-SEGMENTED: arith.remui
 // RHS-SEGMENTED: arith.divui
 // RHS-SEGMENTED: arith.cmpi eq

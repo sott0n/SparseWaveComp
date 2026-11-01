@@ -43,7 +43,8 @@
 // SEGMENTED-LABEL: func.func @keyed_sum(
 // SEGMENTED-NOT: sparsewave.position_reduce
 // SEGMENTED: sparsewave.position_parallel %{{.*}} mapping = "thread" block_size = 64 {
-// SEGMENTED: scf.for
+// SEGMENTED: sparsewave.position_for
+// SEGMENTED-SAME: iter_args(%{{.*}}, %{{.*}} : index, f32) -> (index, f32)
 // SEGMENTED: arith.remui
 // SEGMENTED: arith.addf
 // SEGMENTED: memref.atomic_rmw addf
@@ -73,8 +74,9 @@ func.func @keyed_sum(%values: memref<?xf32>, %output: memref<?xf32>) {
 // COMPRESSED-COUNT-1: %[[FIRST:.*]] = sparsewave.compressed_segment_at_position %[[OFFSETS]]
 // COMPRESSED: %[[BOUNDARY_INDEX:.*]] = arith.addi %[[FIRST]], %{{.*}} : index
 // COMPRESSED: %[[BOUNDARY_RAW:.*]] = memref.load %[[OFFSETS]][%[[BOUNDARY_INDEX]]]
-// COMPRESSED: %{{.*}}:3 = scf.for
-// COMPRESSED-SAME: iter_args(%{{.*}} = %[[FIRST]], %{{.*}} = %{{.*}}, %{{.*}} = %{{.*}})
+// COMPRESSED: %{{.*}}:3 = sparsewave.position_for
+// COMPRESSED-SAME: iter_args(%[[FIRST]], %{{.*}}, %{{.*}} : index, f32, index)
+// COMPRESSED-SAME: -> (index, f32, index)
 // COMPRESSED: scf.while
 // COMPRESSED-NOT: sparsewave.compressed_segment_at_position
 

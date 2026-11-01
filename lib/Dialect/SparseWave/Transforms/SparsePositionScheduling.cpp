@@ -470,9 +470,9 @@ public:
                              {loc, loc, loc});
     rewriter.setInsertionPointToStart(body);
     Value worker = body->getArgument(0);
-    auto chunk =
-        PositionForOp::create(rewriter, loc, zeroIndex, iterationCount, worker,
-                              rewriter.getI64IntegerAttr(chunkSize));
+    auto chunk = PositionForOp::create(rewriter, loc, TypeRange{}, zeroIndex,
+                                       iterationCount, worker, ValueRange{},
+                                       rewriter.getI64IntegerAttr(chunkSize));
     Block *chunkBody = rewriter.createBlock(
         &chunk.getBody(), chunk.getBody().end(),
         {rewriter.getIndexType(), rewriter.getIndexType()}, {loc, loc});
@@ -564,50 +564,59 @@ public:
           rewriter, loc, segmentRecovery->getOffsets(), first.key);
       reductionInitializers.push_back(firstBoundary);
     }
-    auto reduction = scf::ForOp::create(
-        rewriter, loc, nextPosition, end, oneIndex, reductionInitializers,
-        [&](OpBuilder &builder, Location bodyLoc, Value linearIteration,
-            ValueRange iterArgs) {
-          Value currentKey = iterArgs[0];
-          Value currentValue = iterArgs[1];
-          Value nextBoundary;
-          SmallVector<Value> coordinates =
-              buildLogicalCoordinates(builder, bodyLoc, op, linearIteration);
-          KeyedContribution contribution;
-          if (segmentRecovery) {
-            CompressedSegmentState segmentState =
-                buildNextCompressedSegmentState(
-                    builder, bodyLoc, segmentRecovery->getOffsets(), currentKey,
-                    iterArgs[2], coordinates[0]);
-            contribution = cloneContributionBodyWithCompressedSegment(
-                builder, op, coordinates, *segmentRecovery,
-                segmentState.segment);
-            nextBoundary = segmentState.nextBoundary;
-          } else {
-            contribution = cloneContributionBody(builder, op, coordinates);
-          }
-          Value sameKey =
-              arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
-                                    currentKey, contribution.key);
-          Value combined = semantics.combine(builder, bodyLoc, currentValue,
-                                             contribution.value);
-          scf::IfOp::create(
-              builder, bodyLoc, sameKey,
-              [&](OpBuilder &thenBuilder, Location thenLoc) {
-                scf::YieldOp::create(thenBuilder, thenLoc);
-              },
-              [&](OpBuilder &elseBuilder, Location elseLoc) {
-                semantics.atomicAccumulate(elseBuilder, elseLoc, currentValue,
-                                           op.getOutput(), currentKey);
-                scf::YieldOp::create(elseBuilder, elseLoc);
-              });
-          Value nextValue = arith::SelectOp::create(
-              builder, bodyLoc, sameKey, combined, contribution.value);
-          SmallVector<Value> nextState{contribution.key, nextValue};
-          if (segmentRecovery)
-            nextState.push_back(nextBoundary);
-          scf::YieldOp::create(builder, bodyLoc, nextState);
+    SmallVector<Type> stateTypes;
+    llvm::transform(reductionInitializers, std::back_inserter(stateTypes),
+                    [](Value value) { return value.getType(); });
+    auto reduction = PositionForOp::create(
+        rewriter, loc, stateTypes, nextPosition, end, zeroIndex,
+        reductionInitializers, rewriter.getI64IntegerAttr(chunkSize));
+    SmallVector<Type> bodyTypes{rewriter.getIndexType(),
+                                rewriter.getIndexType()};
+    llvm::append_range(bodyTypes, stateTypes);
+    SmallVector<Location> bodyLocations(bodyTypes.size(), loc);
+    Block *reductionBody =
+        rewriter.createBlock(&reduction.getBody(), reduction.getBody().end(),
+                             bodyTypes, bodyLocations);
+    rewriter.setInsertionPointToStart(reductionBody);
+    Value linearIteration = reductionBody->getArgument(0);
+    ValueRange iterArgs = reductionBody->getArguments().drop_front(2);
+    Value currentKey = iterArgs[0];
+    Value currentValue = iterArgs[1];
+    Value nextBoundary;
+    SmallVector<Value> coordinates =
+        buildLogicalCoordinates(rewriter, loc, op, linearIteration);
+    KeyedContribution contribution;
+    if (segmentRecovery) {
+      CompressedSegmentState segmentState = buildNextCompressedSegmentState(
+          rewriter, loc, segmentRecovery->getOffsets(), currentKey, iterArgs[2],
+          coordinates[0]);
+      contribution = cloneContributionBodyWithCompressedSegment(
+          rewriter, op, coordinates, *segmentRecovery, segmentState.segment);
+      nextBoundary = segmentState.nextBoundary;
+    } else {
+      contribution = cloneContributionBody(rewriter, op, coordinates);
+    }
+    Value sameKey = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::eq, currentKey, contribution.key);
+    Value combined =
+        semantics.combine(rewriter, loc, currentValue, contribution.value);
+    scf::IfOp::create(
+        rewriter, loc, sameKey,
+        [&](OpBuilder &thenBuilder, Location thenLoc) {
+          scf::YieldOp::create(thenBuilder, thenLoc);
+        },
+        [&](OpBuilder &elseBuilder, Location elseLoc) {
+          semantics.atomicAccumulate(elseBuilder, elseLoc, currentValue,
+                                     op.getOutput(), currentKey);
+          scf::YieldOp::create(elseBuilder, elseLoc);
         });
+    Value nextValue = arith::SelectOp::create(rewriter, loc, sameKey, combined,
+                                              contribution.value);
+    SmallVector<Value> nextState{contribution.key, nextValue};
+    if (segmentRecovery)
+      nextState.push_back(nextBoundary);
+    YieldOp::create(rewriter, loc, nextState);
+    rewriter.setInsertionPointAfter(reduction);
     semantics.atomicAccumulate(rewriter, loc, reduction.getResult(1),
                                op.getOutput(), reduction.getResult(0));
     YieldOp::create(rewriter, loc);
