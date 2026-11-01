@@ -259,9 +259,12 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   // operator-independent pass selects the logical axis order before applying
   // the same position scheduler used by SpMV. Position-major preserves the
   // original schedule; RHS-major exposes adjacent equal-key row segments.
-  // Wave-per-position-tile assigns the RHS axis to cooperating lanes so that
-  // CSR information shared by those columns is loaded once and broadcast.
+  // Wave-per-position combines adjacent equal-key contributions across lanes.
+  // Wave-per-position-tile instead assigns the RHS axis to cooperating lanes
+  // so that CSR information shared by those columns is loaded once and
+  // broadcast.
   bool usesPositionSpMM = options.spmmMapping == "thread-per-position" ||
+                          options.spmmMapping == "wave-per-position" ||
                           options.spmmMapping == "wave-per-position-tile";
   if (usesPositionSpMM) {
     pm.addPass(createDecomposePositionSpMM());
@@ -274,8 +277,8 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
       reorderOptions.order = {options.spmmPositionOrder};
     pm.addPass(createReorderSparseWavePosition(reorderOptions));
     ScheduleSparseWavePositionOptions scheduleOptions;
-    scheduleOptions.mapping =
-        options.spmmMapping == "thread-per-position" ? "thread" : "wave";
+    bool usesThreadPosition = options.spmmMapping == "thread-per-position";
+    scheduleOptions.mapping = usesThreadPosition ? "thread" : "wave";
     scheduleOptions.blockSize = options.spmmBlockSize;
     scheduleOptions.waveSize =
         static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
@@ -284,8 +287,8 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
       scheduleOptions.cooperativeChunkSize = options.spmmPositionChunkSize;
     } else {
       scheduleOptions.threadChunkSize = options.spmmPositionChunkSize;
+      scheduleOptions.threadReduction = options.spmmPositionReduction;
     }
-    scheduleOptions.threadReduction = options.spmmPositionReduction;
     pm.addPass(createScheduleSparseWavePosition(scheduleOptions));
   }
 

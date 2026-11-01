@@ -255,6 +255,22 @@ amdhsa.kernels:
                 ("thread-per-output", 64, None, None, None, None),
                 ("wave-per-row-tile", 64, 4, None, None, None),
                 (
+                    "wave-per-position",
+                    64,
+                    None,
+                    None,
+                    "position-major",
+                    None,
+                ),
+                (
+                    "wave-per-position",
+                    64,
+                    None,
+                    None,
+                    "rhs-major",
+                    None,
+                ),
+                (
                     "wave-per-position-tile",
                     64,
                     None,
@@ -300,6 +316,10 @@ amdhsa.kernels:
     def test_position_mapping_uses_initialization_and_compute_kernels(self):
         self.assertEqual(
             BENCHMARK.sparsewave_kernel_layout("thread-per-position"),
+            (2, 1),
+        )
+        self.assertEqual(
+            BENCHMARK.sparsewave_kernel_layout("wave-per-position"),
             (2, 1),
         )
         self.assertEqual(
@@ -393,6 +413,10 @@ amdhsa.kernels:
         self.assertEqual(
             BENCHMARK.parse_mappings("thread-per-position"),
             ["thread-per-position"],
+        )
+        self.assertEqual(
+            BENCHMARK.parse_mappings("wave-per-position"),
+            ["wave-per-position"],
         )
         self.assertEqual(
             BENCHMARK.parse_mappings("wave-per-position-tile"),

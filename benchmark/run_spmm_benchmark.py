@@ -12,11 +12,13 @@ import benchmark_utils as common
 BASELINE_MAPPING = "thread-per-output"
 TILED_MAPPING = "wave-per-row-tile"
 POSITION_MAPPING = "thread-per-position"
+WAVE_POSITION_MAPPING = "wave-per-position"
 COOPERATIVE_POSITION_MAPPING = "wave-per-position-tile"
 MAPPINGS = (
     BASELINE_MAPPING,
     TILED_MAPPING,
     POSITION_MAPPING,
+    WAVE_POSITION_MAPPING,
     COOPERATIVE_POSITION_MAPPING,
 )
 POSITION_ORDERS = ("position-major", "rhs-major")
@@ -342,6 +344,16 @@ def benchmark_cases(
         if TILED_MAPPING in mappings:
             for tile_size in tile_sizes:
                 yield TILED_MAPPING, block_size, tile_size, None, None, None
+        if WAVE_POSITION_MAPPING in mappings:
+            for order in position_orders:
+                yield (
+                    WAVE_POSITION_MAPPING,
+                    block_size,
+                    None,
+                    None,
+                    order,
+                    None,
+                )
         if COOPERATIVE_POSITION_MAPPING in mappings:
             for chunk_size in position_chunk_sizes:
                 yield (
@@ -367,7 +379,11 @@ def benchmark_cases(
 
 
 def sparsewave_kernel_layout(mapping):
-    if mapping in (POSITION_MAPPING, COOPERATIVE_POSITION_MAPPING):
+    if mapping in (
+        POSITION_MAPPING,
+        WAVE_POSITION_MAPPING,
+        COOPERATIVE_POSITION_MAPPING,
+    ):
         return 2, 1
     return 1, 0
 
@@ -545,14 +561,24 @@ def validate_paths(args):
         "csr" in args.formats
         and COOPERATIVE_POSITION_MAPPING in args.mappings
     )
+    uses_wave_position_mapping = (
+        "csr" in args.formats and WAVE_POSITION_MAPPING in args.mappings
+    )
     common.validate_block_sizes(
         args,
         require_wave_multiple=(
-            uses_tiled_mapping or uses_cooperative_mapping
+            uses_tiled_mapping
+            or uses_wave_position_mapping
+            or uses_cooperative_mapping
         ),
     )
-    if uses_tiled_mapping and args.wave_size != 32:
-        raise ValueError("wave-per-row-tile currently requires wave size 32")
+    if (uses_tiled_mapping or uses_wave_position_mapping) and (
+        args.wave_size != 32
+    ):
+        raise ValueError(
+            "wave-per-row-tile and wave-per-position currently require "
+            "wave size 32"
+        )
     if uses_tiled_mapping and any(
         tile_size > 32 for tile_size in args.tile_sizes
     ):
@@ -638,7 +664,7 @@ def parse_arguments(argv):
         default=list(MAPPINGS),
         help=(
             "Comma-separated CSR mappings: thread-per-output,"
-            "wave-per-row-tile,thread-per-position,"
+            "wave-per-row-tile,thread-per-position,wave-per-position,"
             "wave-per-position-tile."
         ),
     )
@@ -678,8 +704,8 @@ def parse_arguments(argv):
         type=parse_position_orders,
         default=parse_position_orders("position-major,rhs-major"),
         help=(
-            "Comma-separated collapsed iteration orders for "
-            "thread-per-position: position-major,rhs-major."
+            "Comma-separated collapsed iteration orders for position-space "
+            "mappings: position-major,rhs-major."
         ),
     )
     parser.add_argument(
@@ -785,16 +811,22 @@ def main(argv=None):
                             pipeline_options = (
                                 f"spmm-position-chunk-size={chunk_size}",
                             )
-                            if position_order is not None:
+                        if position_order is not None:
+                            if chunk_size is not None:
                                 case_directory = case_directory.with_name(
                                     f"{case_directory.name}-{position_order}"
                                     f"-{position_reduction}"
                                 )
-                                pipeline_options += (
-                                    f"spmm-position-order={position_order}",
-                                    f"spmm-position-reduction="
-                                    f"{position_reduction}",
-                                )
+                            else:
+                                case_directory /= f"order-{position_order}"
+                            pipeline_options += (
+                                f"spmm-position-order={position_order}",
+                            )
+                        if position_reduction is not None:
+                            pipeline_options += (
+                                f"spmm-position-reduction="
+                                f"{position_reduction}",
+                            )
                         kernels_per_dispatch, compute_binary_index = (
                             sparsewave_kernel_layout(mapping)
                         )
