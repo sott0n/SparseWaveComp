@@ -134,6 +134,31 @@ func.func @position_collapse(%worker: index, %lower0: index, %lower1: index,
   return
 }
 
+// Return region values for an active worker and the fallback values otherwise.
+// CHECK-LABEL: func.func @position_collapse_results(
+// CHECK: %[[IN_RANGE:.*]] = arith.cmpi eq
+// CHECK: %[[ACTIVE:.*]] = arith.andi %{{.*}}, %[[IN_RANGE]] : i1
+// CHECK: %[[RESULTS:.*]]:2 = scf.if %[[ACTIVE]] -> (index, index) {
+// CHECK:   %[[SUM:.*]] = arith.addi
+// CHECK:   scf.yield %{{.*}}, %[[SUM]] : index, index
+// CHECK: } else {
+// CHECK:   scf.yield %{{.*}}, %{{.*}} : index, index
+// CHECK: }
+// CHECK: return %[[RESULTS]]#0, %[[RESULTS]]#1 : index, index
+func.func @position_collapse_results(
+    %worker: index, %lower0: index, %lower1: index,
+    %upper0: index, %upper1: index, %fallback0: index,
+    %fallback1: index) -> (index, index) {
+  %result0, %result1 = sparsewave.position_collapse %worker
+      in lower (%lower0, %lower1) upper (%upper0, %upper1) order = [0, 1]
+      fallback (%fallback0, %fallback1 : index, index) -> (index, index) {
+  ^bb0(%axis0: index, %axis1: index):
+    %sum = arith.addi %axis0, %axis1 : index
+    sparsewave.yield %axis0, %sum : index, index
+  }
+  return %result0, %result1 : index, index
+}
+
 // CHECK-LABEL: func.func @partition(
 // CHECK-SAME: %[[LOWER:[^,]+]]: index, %[[UPPER:[^,]+]]: index,
 // CHECK-SAME: %[[WORKER_ID:[^,]+]]: index, %[[WORKER_COUNT:[^)]+]]: index)

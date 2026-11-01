@@ -190,17 +190,24 @@ public:
         rewriter, loc, arith::CmpIPredicate::eq, remaining, zero);
     Value active =
         arith::AndIOp::create(rewriter, loc, nonEmpty, workerInRange);
-    auto guard = scf::IfOp::create(rewriter, loc, active,
-                                   /*withElseRegion=*/false);
+    auto guard = scf::IfOp::create(rewriter, loc, op.getResultTypes(), active,
+                                   /*withElseRegion=*/!op.getResults().empty());
     Block *thenBody = &guard.getThenRegion().front();
 
     auto sparseYield = cast<YieldOp>(op.getBody().front().getTerminator());
     rewriter.setInsertionPoint(sparseYield);
-    scf::YieldOp::create(rewriter, sparseYield.getLoc());
+    scf::YieldOp::create(rewriter, sparseYield.getLoc(),
+                         sparseYield.getResults());
     rewriter.eraseOp(sparseYield);
-    rewriter.eraseOp(thenBody->getTerminator());
+    if (op.getResults().empty())
+      rewriter.eraseOp(thenBody->getTerminator());
     rewriter.mergeBlocks(&op.getBody().front(), thenBody, coordinates);
-    rewriter.eraseOp(op);
+    if (!op.getResults().empty()) {
+      Block &elseBody = guard.getElseRegion().front();
+      rewriter.setInsertionPointToStart(&elseBody);
+      scf::YieldOp::create(rewriter, loc, op.getFallbacks());
+    }
+    rewriter.replaceOp(op, guard.getResults());
     return success();
   }
 };

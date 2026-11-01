@@ -495,7 +495,9 @@ def SparseWave_PositionCollapseOp : SparseWave_Op<"position_collapse",
     `sparsewave.position_collapse` combines a rectangular set of logical axes
     into one linear worker space. The `worker_id` identifies one point in that
     collapsed space. The operation recovers the original logical coordinates
-    and passes them to the region in logical axis order.
+    and passes them to the region in logical axis order. Optional fallback
+    values are returned unchanged when the worker is outside the collapsed
+    space; otherwise the values yielded by the region become the results.
 
     The `order` permutation lists axes from outermost to innermost in the
     linearization. For example, bounds with extents `(3, 4)` and
@@ -508,6 +510,13 @@ def SparseWave_PositionCollapseOp : SparseWave_Op<"position_collapse",
       // Process one point from the collapsed iteration space.
       sparsewave.yield
     }
+
+    %key, %value = sparsewave.position_collapse %worker_id
+        in lower (%zero, %zero) upper (%rows, %columns) order = [0, 1]
+        fallback (%zero_index, %zero_value : index, f32) -> (index, f32) {
+    ^bb0(%row: index, %column: index):
+      sparsewave.yield %computed_key, %computed_value : index, f32
+    }
     ```
 
     A worker outside the collapsed space, or any space containing an empty
@@ -517,12 +526,17 @@ def SparseWave_PositionCollapseOp : SparseWave_Op<"position_collapse",
   }];
 
   let arguments = (ins Index:$workerId, Variadic<Index>:$lower,
-                       Variadic<Index>:$upper, DenseI64ArrayAttr:$order);
+                       Variadic<Index>:$upper, Variadic<AnyType>:$fallbacks,
+                       DenseI64ArrayAttr:$order);
+  let results = (outs Variadic<AnyType>:$results);
   let regions = (region SizedRegion<1>:$body);
 
   let assemblyFormat = [{
     $workerId `in` `lower` `(` $lower `)` `upper` `(` $upper `)`
-    `order` `=` $order $body attr-dict
+    `order` `=` $order
+    (`fallback` `(` $fallbacks^ `:` type($fallbacks) `)`
+      `->` `(` type($results) `)`)?
+    $body attr-dict
   }];
 
   let hasVerifier = 1;

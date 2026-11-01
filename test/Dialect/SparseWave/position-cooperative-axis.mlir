@@ -16,6 +16,7 @@
 // CHECK: %[[COLUMN_GROUP:.*]] = arith.remui %[[WORKER]], %[[GROUPS]] : index
 // CHECK: %[[COLUMN_BASE:.*]] = arith.muli %[[COLUMN_GROUP]], %[[LANES]] : index
 // CHECK: %[[COLUMN:.*]] = arith.addi %[[COLUMN_BASE]], %[[LANE]] : index
+// CHECK: sparsewave.position_collapse %{{.*}} in lower(%{{.*}}, %{{.*}}) upper(%{{.*}}, %{{.*}}) order = [0, 1]
 // CHECK: %[[ACTIVE:.*]] = arith.cmpi ult, %[[COLUMN]], %{{.*}} : index
 // CHECK: %[[LANE_ZERO:.*]] = arith.cmpi eq, %[[LANE]], %{{.*}} : index
 // CHECK: %[[SHARED:.*]] = scf.if %[[LANE_ZERO]] -> (f32) {
@@ -34,9 +35,13 @@
 // CHUNK: %[[CHUNKS:.*]] = arith.ceildivui %{{.*}}, %{{.*}} : index
 // CHUNK: %[[WORKERS:.*]] = arith.muli %[[CHUNKS]], %[[GROUPS]] : index
 // CHUNK: sparsewave.position_parallel %[[WORKERS]] mapping = "wave" block_size = 64 {
+// CHUNK: %{{.*}}:2 = sparsewave.position_collapse
+// CHUNK-SAME: fallback(%{{.*}}, %{{.*}} : index, f32) -> (index, f32)
 // CHUNK: %{{.*}}:2 = sparsewave.position_for
 // CHUNK-SAME: iter_args(%{{.*}}, %{{.*}} : index, f32)
 // CHUNK-SAME: -> (index, f32)
+// CHUNK: %{{.*}}:2 = sparsewave.position_collapse
+// CHUNK-SAME: fallback(%{{.*}}, %{{.*}} : index, f32) -> (index, f32)
 // CHUNK: arith.cmpi eq
 // CHUNK: scf.if
 // CHUNK: memref.atomic_rmw addf

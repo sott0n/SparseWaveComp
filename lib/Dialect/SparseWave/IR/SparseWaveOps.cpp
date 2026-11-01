@@ -275,10 +275,6 @@ LogicalResult verifyPositionAxes(Operation *op, OperandRange lowerBounds,
     if (!argument.getType().isIndex())
       return op->emitOpError() << "body arguments must have index type";
 
-  auto yield = dyn_cast<YieldOp>(bodyBlock.getTerminator());
-  if (!yield || !yield.getResults().empty())
-    return op->emitOpError() << "body must yield no values";
-
   return success();
 }
 
@@ -771,8 +767,13 @@ LogicalResult PositionForOp::verify() {
 }
 
 LogicalResult PositionReorderOp::verify() {
-  return verifyPositionAxes(*this, getLower(), getUpper(), getOrder(),
-                            getBody());
+  if (failed(verifyPositionAxes(*this, getLower(), getUpper(), getOrder(),
+                                getBody())))
+    return failure();
+  auto yield = dyn_cast<YieldOp>(getBody().front().getTerminator());
+  if (!yield || !yield.getResults().empty())
+    return emitOpError() << "body must yield no values";
+  return success();
 }
 
 LogicalResult PositionCollapseOp::verify() {
@@ -781,8 +782,30 @@ LogicalResult PositionCollapseOp::verify() {
     return emitOpError() << "worker ID must be nonnegative, but got "
                          << *workerId;
 
-  return verifyPositionAxes(*this, getLower(), getUpper(), getOrder(),
-                            getBody());
+  if (failed(verifyPositionAxes(*this, getLower(), getUpper(), getOrder(),
+                                getBody())))
+    return failure();
+
+  if (getFallbacks().size() != getNumResults())
+    return emitOpError() << "must have one result per fallback value, but got "
+                         << getFallbacks().size() << " fallback values and "
+                         << getNumResults() << " results";
+  for (auto [fallback, result] : llvm::zip_equal(getFallbacks(), getResults()))
+    if (fallback.getType() != result.getType())
+      return emitOpError() << "fallback and result types must match, but got "
+                           << fallback.getType() << " and " << result.getType();
+
+  auto yield = dyn_cast<YieldOp>(getBody().front().getTerminator());
+  if (!yield || yield.getResults().size() != getNumResults())
+    return emitOpError() << "body must yield one value per result, but got "
+                         << (yield ? yield.getResults().size() : 0)
+                         << " values for " << getNumResults() << " results";
+  for (auto [yielded, result] :
+       llvm::zip_equal(yield.getResults(), getResults()))
+    if (yielded.getType() != result.getType())
+      return emitOpError() << "yielded and result types must match, but got "
+                           << yielded.getType() << " and " << result.getType();
+  return success();
 }
 
 LogicalResult PositionParallelOp::verify() {

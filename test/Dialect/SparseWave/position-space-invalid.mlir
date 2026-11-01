@@ -223,6 +223,36 @@ func.func @position_collapse_requires_two_axes(
 
 // -----
 
+func.func @position_collapse_fallback_count(
+    %worker: index, %lower0: index, %lower1: index,
+    %upper0: index, %upper1: index, %fallback: index) {
+  // expected-error @+1 {{must have one result per fallback value, but got 1 fallback values and 2 results}}
+  %result:2 = sparsewave.position_collapse %worker
+      in lower (%lower0, %lower1) upper (%upper0, %upper1) order = [0, 1]
+      fallback (%fallback : index) -> (index, index) {
+  ^bb0(%axis0: index, %axis1: index):
+    sparsewave.yield %axis0, %axis1 : index, index
+  }
+  return
+}
+
+// -----
+
+func.func @position_collapse_yield_count(
+    %worker: index, %lower0: index, %lower1: index,
+    %upper0: index, %upper1: index, %fallback: index) {
+  // expected-error @+1 {{body must yield one value per result, but got 0 values for 1 results}}
+  %result = sparsewave.position_collapse %worker
+      in lower (%lower0, %lower1) upper (%upper0, %upper1) order = [0, 1]
+      fallback (%fallback : index) -> (index) {
+  ^bb0(%axis0: index, %axis1: index):
+    sparsewave.yield
+  }
+  return
+}
+
+// -----
+
 func.func @position_parallel_invalid_mapping(%workerCount: index) {
   // expected-error @+1 {{mapping must be 'thread', 'wave', or 'block', but got 'lane'}}
   sparsewave.position_parallel %workerCount mapping = "lane" {

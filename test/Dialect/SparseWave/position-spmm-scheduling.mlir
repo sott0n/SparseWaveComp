@@ -47,19 +47,22 @@
 // THREAD: memref.store
 // THREAD: sparsewave.position_parallel %{{.*}} mapping = "thread" block_size = 128 {
 // THREAD: sparsewave.position_for %{{.*}} in %{{.*}} to %{{.*}} by 4
-// THREAD: arith.remui
-// THREAD: arith.divui
+// THREAD: sparsewave.position_collapse %{{.*}} in lower(%{{.*}}, %{{.*}}) upper(%{{.*}}, %{{.*}}) order = [0, 1]
 // THREAD: sparsewave.compressed_segment_at_position
 // THREAD: memref.atomic_rmw addf
 // THREAD-NOT: sparsewave.spmm
 
 // RHS-SEGMENTED-LABEL: func.func @spmm(
 // RHS-SEGMENTED: sparsewave.position_parallel
+// RHS-SEGMENTED: %{{.*}}:2 = sparsewave.position_collapse
+// RHS-SEGMENTED-SAME: order = [1, 0]
+// RHS-SEGMENTED-SAME: fallback(%{{.*}}, %{{.*}} : index, f32) -> (index, f32)
 // RHS-SEGMENTED: sparsewave.position_for
 // RHS-SEGMENTED-SAME: iter_args(%{{.*}}, %{{.*}} : index, f32)
 // RHS-SEGMENTED-SAME: -> (index, f32)
-// RHS-SEGMENTED: arith.remui
-// RHS-SEGMENTED: arith.divui
+// RHS-SEGMENTED: %{{.*}}:2 = sparsewave.position_collapse
+// RHS-SEGMENTED-SAME: order = [1, 0]
+// RHS-SEGMENTED-SAME: fallback(%{{.*}}, %{{.*}} : index, f32) -> (index, f32)
 // RHS-SEGMENTED: arith.cmpi eq
 // RHS-SEGMENTED: arith.addf
 // RHS-SEGMENTED: scf.if
@@ -69,6 +72,7 @@
 
 // WAVE-COOPERATIVE-LABEL: func.func @spmm(
 // WAVE-COOPERATIVE: sparsewave.position_parallel %{{.*}} mapping = "wave" block_size = 64 {
+// WAVE-COOPERATIVE: sparsewave.position_collapse
 // WAVE-COOPERATIVE: scf.if %{{.*}} -> (index) {
 // WAVE-COOPERATIVE:   sparsewave.compressed_segment_at_position
 // WAVE-COOPERATIVE: gpu.shuffle idx %{{.*}} : i64
@@ -86,9 +90,11 @@
 // WAVE-COOPERATIVE-CHUNK-LABEL: func.func @spmm(
 // WAVE-COOPERATIVE-CHUNK: arith.ceildivui %{{.*}}, %{{.*}} : index
 // WAVE-COOPERATIVE-CHUNK: sparsewave.position_parallel %{{.*}} mapping = "wave" block_size = 64 {
+// WAVE-COOPERATIVE-CHUNK: %{{.*}}:2 = sparsewave.position_collapse
 // WAVE-COOPERATIVE-CHUNK: %{{.*}}:2 = sparsewave.position_for
 // WAVE-COOPERATIVE-CHUNK-SAME: iter_args(%{{.*}}, %{{.*}} : index, f32)
 // WAVE-COOPERATIVE-CHUNK-SAME: -> (index, f32)
+// WAVE-COOPERATIVE-CHUNK: %{{.*}}:2 = sparsewave.position_collapse
 // WAVE-COOPERATIVE-CHUNK: sparsewave.compressed_segment_at_position
 // WAVE-COOPERATIVE-CHUNK: arith.cmpi eq
 // WAVE-COOPERATIVE-CHUNK: memref.atomic_rmw addf

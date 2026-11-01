@@ -104,8 +104,7 @@ func.func @compressed_segment_sum(%offsets: memref<?xi32>,
 // MULTI-AXIS-NOT: sparsewave.position_reduce
 // MULTI-AXIS: %[[COUNT:.*]] = arith.muli
 // MULTI-AXIS: sparsewave.position_for
-// MULTI-AXIS: arith.remui
-// MULTI-AXIS: arith.divui
+// MULTI-AXIS: sparsewave.position_collapse %{{.*}} in lower(%{{.*}}, %{{.*}}) upper(%{{.*}}, %{{.*}}) order = [1, 0]
 // MULTI-AXIS: memref.load %{{.*}}[%{{.*}}, %{{.*}}]
 // MULTI-AXIS: memref.atomic_rmw addf
 

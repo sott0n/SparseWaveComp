@@ -77,35 +77,49 @@ Value buildCollapsedIterationCount(OpBuilder &builder, Location loc,
   return count;
 }
 
-SmallVector<Value> buildLogicalCoordinates(OpBuilder &builder, Location loc,
-                                           PositionReduceOp reduction,
-                                           Value linearIteration) {
-  if (reduction.getLower().size() == 1) {
-    Value lower = reduction.getLower().front();
-    if (matchPattern(lower, m_Zero()))
-      return {linearIteration};
-    return {arith::AddIOp::create(builder, loc, lower, linearIteration)};
+template <typename BodyBuilder>
+SmallVector<Value>
+buildCollapsedLogicalPoint(OpBuilder &builder, Location loc,
+                           Value linearIteration, ValueRange lower,
+                           ValueRange upper, DenseI64ArrayAttr order,
+                           ValueRange fallbacks, BodyBuilder buildBody) {
+  if (lower.size() == 1) {
+    Value lowerBound = lower.front();
+    Value coordinate =
+        matchPattern(lowerBound, m_Zero())
+            ? linearIteration
+            : arith::AddIOp::create(builder, loc, lowerBound, linearIteration);
+    return buildBody(builder, loc, ValueRange{coordinate});
   }
 
-  SmallVector<Value> coordinates(reduction.getLower().size());
-  Value remaining = linearIteration;
-  ArrayRef<int64_t> order = reduction.getOrder();
-  for (size_t orderIndex = order.size(); orderIndex > 0; --orderIndex) {
-    int64_t axis = order[orderIndex - 1];
-    Value offset = remaining;
-    if (orderIndex > 1) {
-      Value extent = arith::SubIOp::create(
-          builder, loc, reduction.getUpper()[axis], reduction.getLower()[axis]);
-      offset = arith::RemUIOp::create(builder, loc, remaining, extent);
-      remaining = arith::DivUIOp::create(builder, loc, remaining, extent);
-    }
-    Value lower = reduction.getLower()[axis];
-    if (matchPattern(lower, m_Zero()))
-      coordinates[axis] = offset;
-    else
-      coordinates[axis] = arith::AddIOp::create(builder, loc, lower, offset);
-  }
-  return coordinates;
+  SmallVector<Type> resultTypes;
+  llvm::transform(fallbacks, std::back_inserter(resultTypes),
+                  [](Value value) { return value.getType(); });
+  auto collapse =
+      PositionCollapseOp::create(builder, loc, resultTypes, linearIteration,
+                                 lower, upper, fallbacks, order);
+  SmallVector<Type> coordinateTypes(lower.size(), builder.getIndexType());
+  SmallVector<Location> coordinateLocations(coordinateTypes.size(), loc);
+  Block *body =
+      builder.createBlock(&collapse.getBody(), collapse.getBody().end(),
+                          coordinateTypes, coordinateLocations);
+  builder.setInsertionPointToStart(body);
+  SmallVector<Value> results = buildBody(builder, loc, body->getArguments());
+  YieldOp::create(builder, loc, results);
+  builder.setInsertionPointAfter(collapse);
+  SmallVector<Value> collapsedResults;
+  llvm::append_range(collapsedResults, collapse.getResults());
+  return collapsedResults;
+}
+
+template <typename BodyBuilder>
+SmallVector<Value>
+buildCollapsedLogicalPoint(OpBuilder &builder, Location loc,
+                           PositionReduceOp reduction, Value linearIteration,
+                           ValueRange fallbacks, BodyBuilder buildBody) {
+  return buildCollapsedLogicalPoint(
+      builder, loc, linearIteration, reduction.getLower(), reduction.getUpper(),
+      reduction.getOrderAttr(), fallbacks, buildBody);
 }
 
 std::optional<unsigned> findAxis(PositionReduceOp reduction,
@@ -116,43 +130,40 @@ std::optional<unsigned> findAxis(PositionReduceOp reduction,
   return std::nullopt;
 }
 
-SmallVector<Value> buildCooperativeCoordinates(OpBuilder &builder, Location loc,
-                                               PositionReduceOp reduction,
-                                               Value linearIteration,
-                                               unsigned cooperativeAxis,
-                                               Value axisGroup, Value lane,
-                                               Value participantCount) {
-  unsigned rank = reduction.getLower().size();
-  SmallVector<Value> coordinates(rank);
-  Value remaining = linearIteration;
-  ArrayRef<int64_t> order = reduction.getOrder();
-  // Decode the non-cooperative position domain independently from the axis
-  // group assigned to wave lanes. This lets one wave traverse consecutive
-  // points on that domain without changing its cooperative coordinates.
-  for (size_t orderIndex = order.size(); orderIndex > 0; --orderIndex) {
-    unsigned axis = order[orderIndex - 1];
-    if (axis == cooperativeAxis)
-      continue;
-    Value extent = arith::SubIOp::create(
-        builder, loc, reduction.getUpper()[axis], reduction.getLower()[axis]);
-    Value offset = arith::RemUIOp::create(builder, loc, remaining, extent);
-    remaining = arith::DivUIOp::create(builder, loc, remaining, extent);
-    Value lower = reduction.getLower()[axis];
-    coordinates[axis] =
-        matchPattern(lower, m_Zero())
-            ? offset
-            : arith::AddIOp::create(builder, loc, lower, offset);
-  }
-
+Value buildCooperativeAxisCoordinate(OpBuilder &builder, Location loc,
+                                     PositionReduceOp reduction,
+                                     unsigned cooperativeAxis, Value axisGroup,
+                                     Value lane, Value participantCount) {
   Value groupOffset =
       arith::MulIOp::create(builder, loc, axisGroup, participantCount);
   Value laneOffset = arith::AddIOp::create(builder, loc, groupOffset, lane);
-  Value lower = reduction.getLower()[cooperativeAxis];
-  coordinates[cooperativeAxis] =
-      matchPattern(lower, m_Zero())
-          ? laneOffset
-          : arith::AddIOp::create(builder, loc, lower, laneOffset);
-  return coordinates;
+  Value cooperativeLower = reduction.getLower()[cooperativeAxis];
+  return matchPattern(cooperativeLower, m_Zero())
+             ? laneOffset
+             : arith::AddIOp::create(builder, loc, cooperativeLower,
+                                     laneOffset);
+}
+
+template <typename BodyBuilder>
+SmallVector<Value> buildCooperativeLogicalPoint(
+    OpBuilder &builder, Location loc, PositionReduceOp reduction,
+    Value linearIteration, unsigned cooperativeAxis,
+    Value cooperativeCoordinate, ValueRange fallbacks, BodyBuilder buildBody) {
+  Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+  Value one = arith::ConstantIndexOp::create(builder, loc, 1);
+  SmallVector<Value> lower(reduction.getLower());
+  SmallVector<Value> upper(reduction.getUpper());
+  lower[cooperativeAxis] = zero;
+  upper[cooperativeAxis] = one;
+  return buildCollapsedLogicalPoint(
+      builder, loc, linearIteration, lower, upper, reduction.getOrderAttr(),
+      fallbacks,
+      [&](OpBuilder &nestedBuilder, Location nestedLoc,
+          ValueRange collapsedCoordinates) {
+        SmallVector<Value> coordinates(collapsedCoordinates);
+        coordinates[cooperativeAxis] = cooperativeCoordinate;
+        return buildBody(nestedBuilder, nestedLoc, coordinates);
+      });
 }
 
 Value buildNonCooperativeIterationCount(OpBuilder &builder, Location loc,
@@ -477,12 +488,15 @@ public:
         &chunk.getBody(), chunk.getBody().end(),
         {rewriter.getIndexType(), rewriter.getIndexType()}, {loc, loc});
     rewriter.setInsertionPointToStart(chunkBody);
-    SmallVector<Value> coordinates =
-        buildLogicalCoordinates(rewriter, loc, op, chunkBody->getArgument(0));
-    KeyedContribution contribution =
-        cloneContributionBody(rewriter, op, coordinates);
-    semantics.atomicAccumulate(rewriter, loc, contribution.value,
-                               op.getOutput(), contribution.key);
+    buildCollapsedLogicalPoint(
+        rewriter, loc, op, chunkBody->getArgument(0), ValueRange{},
+        [&](OpBuilder &builder, Location bodyLoc, ValueRange coordinates) {
+          KeyedContribution contribution =
+              cloneContributionBody(builder, op, coordinates);
+          semantics.atomicAccumulate(builder, bodyLoc, contribution.value,
+                                     op.getOutput(), contribution.key);
+          return SmallVector<Value>{};
+        });
     YieldOp::create(rewriter, loc);
     rewriter.setInsertionPointAfter(chunk);
     YieldOp::create(rewriter, loc);
@@ -544,18 +558,22 @@ public:
 
     std::optional<CompressedSegmentAtPositionOp> segmentRecovery =
         matchCompressedSegmentRecovery(op);
-    SmallVector<Value> firstCoordinates =
-        buildLogicalCoordinates(rewriter, loc, op, begin);
-    KeyedContribution first;
-    if (segmentRecovery) {
-      Value firstSegment = CompressedSegmentAtPositionOp::create(
-          rewriter, loc, rewriter.getIndexType(), segmentRecovery->getOffsets(),
-          firstCoordinates[0]);
-      first = cloneContributionBodyWithCompressedSegment(
-          rewriter, op, firstCoordinates, *segmentRecovery, firstSegment);
-    } else {
-      first = cloneContributionBody(rewriter, op, firstCoordinates);
-    }
+    SmallVector<Value> firstResults = buildCollapsedLogicalPoint(
+        rewriter, loc, op, begin, ValueRange{zeroIndex, zero},
+        [&](OpBuilder &builder, Location bodyLoc, ValueRange coordinates) {
+          KeyedContribution first;
+          if (segmentRecovery) {
+            Value firstSegment = CompressedSegmentAtPositionOp::create(
+                builder, bodyLoc, builder.getIndexType(),
+                segmentRecovery->getOffsets(), coordinates[0]);
+            first = cloneContributionBodyWithCompressedSegment(
+                builder, op, coordinates, *segmentRecovery, firstSegment);
+          } else {
+            first = cloneContributionBody(builder, op, coordinates);
+          }
+          return SmallVector<Value>{first.key, first.value};
+        });
+    KeyedContribution first{firstResults[0], firstResults[1]};
 
     Value nextPosition = arith::AddIOp::create(rewriter, loc, begin, oneIndex);
     SmallVector<Value> reductionInitializers{first.key, first.value};
@@ -582,20 +600,32 @@ public:
     ValueRange iterArgs = reductionBody->getArguments().drop_front(2);
     Value currentKey = iterArgs[0];
     Value currentValue = iterArgs[1];
-    Value nextBoundary;
-    SmallVector<Value> coordinates =
-        buildLogicalCoordinates(rewriter, loc, op, linearIteration);
-    KeyedContribution contribution;
-    if (segmentRecovery) {
-      CompressedSegmentState segmentState = buildNextCompressedSegmentState(
-          rewriter, loc, segmentRecovery->getOffsets(), currentKey, iterArgs[2],
-          coordinates[0]);
-      contribution = cloneContributionBodyWithCompressedSegment(
-          rewriter, op, coordinates, *segmentRecovery, segmentState.segment);
-      nextBoundary = segmentState.nextBoundary;
-    } else {
-      contribution = cloneContributionBody(rewriter, op, coordinates);
-    }
+    SmallVector<Value> fallbacks{zeroIndex, zero};
+    if (segmentRecovery)
+      fallbacks.push_back(iterArgs[2]);
+    SmallVector<Value> contributionResults = buildCollapsedLogicalPoint(
+        rewriter, loc, op, linearIteration, fallbacks,
+        [&](OpBuilder &builder, Location bodyLoc, ValueRange coordinates) {
+          KeyedContribution contribution;
+          SmallVector<Value> results;
+          if (segmentRecovery) {
+            CompressedSegmentState segmentState =
+                buildNextCompressedSegmentState(
+                    builder, bodyLoc, segmentRecovery->getOffsets(), currentKey,
+                    iterArgs[2], coordinates[0]);
+            contribution = cloneContributionBodyWithCompressedSegment(
+                builder, op, coordinates, *segmentRecovery,
+                segmentState.segment);
+            results = {contribution.key, contribution.value,
+                       segmentState.nextBoundary};
+          } else {
+            contribution = cloneContributionBody(builder, op, coordinates);
+            results = {contribution.key, contribution.value};
+          }
+          return results;
+        });
+    KeyedContribution contribution{contributionResults[0],
+                                   contributionResults[1]};
     Value sameKey = arith::CmpIOp::create(
         rewriter, loc, arith::CmpIPredicate::eq, currentKey, contribution.key);
     Value combined =
@@ -614,7 +644,7 @@ public:
                                               contribution.value);
     SmallVector<Value> nextState{contribution.key, nextValue};
     if (segmentRecovery)
-      nextState.push_back(nextBoundary);
+      nextState.push_back(contributionResults[2]);
     YieldOp::create(rewriter, loc, nextState);
     rewriter.setInsertionPointAfter(reduction);
     semantics.atomicAccumulate(rewriter, loc, reduction.getResult(1),
@@ -684,13 +714,17 @@ public:
     auto entry = scf::IfOp::create(
         rewriter, loc, active,
         [&](OpBuilder &builder, Location bodyLoc) {
-          SmallVector<Value> coordinates =
-              buildLogicalCoordinates(builder, bodyLoc, op, linearIteration);
-          KeyedContribution contribution =
-              cloneContributionBody(builder, op, coordinates);
-          scf::YieldOp::create(
-              builder, bodyLoc,
-              ValueRange{contribution.key, contribution.value});
+          SmallVector<Value> results = buildCollapsedLogicalPoint(
+              builder, bodyLoc, op, linearIteration,
+              ValueRange{zeroIndex, zero},
+              [&](OpBuilder &nestedBuilder, Location nestedLoc,
+                  ValueRange coordinates) {
+                KeyedContribution contribution =
+                    cloneContributionBody(nestedBuilder, op, coordinates);
+                return SmallVector<Value>{contribution.key, contribution.value};
+              });
+          scf::YieldOp::create(builder, bodyLoc,
+                               ValueRange{results[0], results[1]});
         },
         [&](OpBuilder &builder, Location bodyLoc) {
           scf::YieldOp::create(builder, bodyLoc, ValueRange{zeroIndex, zero});
@@ -786,20 +820,28 @@ public:
         arith::RemUIOp::create(rewriter, loc, worker, axisGroupCount);
     Value chunk = arith::DivUIOp::create(rewriter, loc, worker, axisGroupCount);
     if (chunkSize == 1) {
-      SmallVector<Value> coordinates = buildCooperativeCoordinates(
-          rewriter, loc, op, chunk, *axis, axisGroup, lane, participantCount);
-      Value active =
-          arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
-                                coordinates[*axis], op.getUpper()[*axis]);
-      CooperativeBodyMapping mapping = buildCooperativeBodyMapping(
-          rewriter, loc, op, coordinates, *axis, lane, waveSize);
-      scf::IfOp::create(
-          rewriter, loc, active, [&](OpBuilder &builder, Location bodyLoc) {
-            KeyedContribution contribution =
-                cloneRemainingContributionBody(builder, op, mapping);
-            semantics.atomicAccumulate(builder, bodyLoc, contribution.value,
-                                       op.getOutput(), contribution.key);
-            scf::YieldOp::create(builder, bodyLoc);
+      Value cooperativeCoordinate = buildCooperativeAxisCoordinate(
+          rewriter, loc, op, *axis, axisGroup, lane, participantCount);
+      buildCooperativeLogicalPoint(
+          rewriter, loc, op, chunk, *axis, cooperativeCoordinate, ValueRange{},
+          [&](OpBuilder &builder, Location bodyLoc, ValueRange coordinates) {
+            Value active = arith::CmpIOp::create(
+                builder, bodyLoc, arith::CmpIPredicate::ult, coordinates[*axis],
+                op.getUpper()[*axis]);
+            CooperativeBodyMapping mapping = buildCooperativeBodyMapping(
+                builder, bodyLoc, op, coordinates, *axis, lane, waveSize);
+            scf::IfOp::create(
+                builder, bodyLoc, active,
+                [&](OpBuilder &nestedBuilder, Location nestedLoc) {
+                  KeyedContribution contribution =
+                      cloneRemainingContributionBody(nestedBuilder, op,
+                                                     mapping);
+                  semantics.atomicAccumulate(nestedBuilder, nestedLoc,
+                                             contribution.value, op.getOutput(),
+                                             contribution.key);
+                  scf::YieldOp::create(nestedBuilder, nestedLoc);
+                });
+            return SmallVector<Value>{};
           });
       YieldOp::create(rewriter, loc);
       rewriter.eraseOp(op);
@@ -813,15 +855,22 @@ public:
     Value boundedSize =
         arith::MinUIOp::create(rewriter, loc, remaining, chunkSizeValue);
     Value end = arith::AddIOp::create(rewriter, loc, begin, boundedSize);
-    SmallVector<Value> coordinates = buildCooperativeCoordinates(
-        rewriter, loc, op, begin, *axis, axisGroup, lane, participantCount);
+    Value cooperativeCoordinate = buildCooperativeAxisCoordinate(
+        rewriter, loc, op, *axis, axisGroup, lane, participantCount);
     Value active =
         arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
-                              coordinates[*axis], op.getUpper()[*axis]);
-    CooperativeBodyMapping mapping = buildCooperativeBodyMapping(
-        rewriter, loc, op, coordinates, *axis, lane, waveSize);
-    KeyedContribution first = buildActiveCooperativeContribution(
-        rewriter, loc, op, mapping, active, zeroIndex, zero);
+                              cooperativeCoordinate, op.getUpper()[*axis]);
+    SmallVector<Value> firstResults = buildCooperativeLogicalPoint(
+        rewriter, loc, op, begin, *axis, cooperativeCoordinate,
+        ValueRange{zeroIndex, zero},
+        [&](OpBuilder &builder, Location bodyLoc, ValueRange coordinates) {
+          CooperativeBodyMapping mapping = buildCooperativeBodyMapping(
+              builder, bodyLoc, op, coordinates, *axis, lane, waveSize);
+          KeyedContribution first = buildActiveCooperativeContribution(
+              builder, bodyLoc, op, mapping, active, zeroIndex, zero);
+          return SmallVector<Value>{first.key, first.value};
+        });
+    KeyedContribution first{firstResults[0], firstResults[1]};
 
     Value nextIteration = arith::AddIOp::create(rewriter, loc, begin, oneIndex);
     SmallVector<Type> stateTypes{first.key.getType(), first.value.getType()};
@@ -837,13 +886,17 @@ public:
     rewriter.setInsertionPointToStart(reductionBody);
     Value linearIteration = reductionBody->getArgument(0);
     ValueRange iterArgs = reductionBody->getArguments().drop_front(2);
-    SmallVector<Value> nextCoordinates =
-        buildCooperativeCoordinates(rewriter, loc, op, linearIteration, *axis,
-                                    axisGroup, lane, participantCount);
-    CooperativeBodyMapping nextMapping = buildCooperativeBodyMapping(
-        rewriter, loc, op, nextCoordinates, *axis, lane, waveSize);
-    KeyedContribution next = buildActiveCooperativeContribution(
-        rewriter, loc, op, nextMapping, active, zeroIndex, zero);
+    SmallVector<Value> nextResults = buildCooperativeLogicalPoint(
+        rewriter, loc, op, linearIteration, *axis, cooperativeCoordinate,
+        ValueRange{zeroIndex, zero},
+        [&](OpBuilder &builder, Location bodyLoc, ValueRange coordinates) {
+          CooperativeBodyMapping nextMapping = buildCooperativeBodyMapping(
+              builder, bodyLoc, op, coordinates, *axis, lane, waveSize);
+          KeyedContribution next = buildActiveCooperativeContribution(
+              builder, bodyLoc, op, nextMapping, active, zeroIndex, zero);
+          return SmallVector<Value>{next.key, next.value};
+        });
+    KeyedContribution next{nextResults[0], nextResults[1]};
     Value sameKey = arith::CmpIOp::create(
         rewriter, loc, arith::CmpIPredicate::eq, iterArgs[0], next.key);
     Value keyChanged = arith::XOrIOp::create(
