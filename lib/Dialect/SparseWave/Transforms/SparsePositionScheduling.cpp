@@ -824,42 +824,45 @@ public:
         rewriter, loc, op, mapping, active, zeroIndex, zero);
 
     Value nextIteration = arith::AddIOp::create(rewriter, loc, begin, oneIndex);
-    auto reduction = scf::ForOp::create(
-        rewriter, loc, nextIteration, end, oneIndex,
-        ValueRange{first.key, first.value},
-        [&](OpBuilder &builder, Location bodyLoc, Value linearIteration,
-            ValueRange iterArgs) {
-          SmallVector<Value> nextCoordinates = buildCooperativeCoordinates(
-              builder, bodyLoc, op, linearIteration, *axis, axisGroup, lane,
-              participantCount);
-          CooperativeBodyMapping nextMapping = buildCooperativeBodyMapping(
-              builder, bodyLoc, op, nextCoordinates, *axis, lane, waveSize);
-          KeyedContribution next = buildActiveCooperativeContribution(
-              builder, bodyLoc, op, nextMapping, active, zeroIndex, zero);
-          Value sameKey =
-              arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
-                                    iterArgs[0], next.key);
-          Value keyChanged = arith::XOrIOp::create(
-              builder, bodyLoc, sameKey,
-              arith::ConstantIntOp::create(builder, bodyLoc, 1, 1));
-          Value flush =
-              arith::AndIOp::create(builder, bodyLoc, active, keyChanged);
-          scf::IfOp::create(builder, bodyLoc, flush,
-                            [&](OpBuilder &flushBuilder, Location flushLoc) {
-                              semantics.atomicAccumulate(
-                                  flushBuilder, flushLoc, iterArgs[1],
-                                  op.getOutput(), iterArgs[0]);
-                              scf::YieldOp::create(flushBuilder, flushLoc);
-                            });
-          Value combined =
-              semantics.combine(builder, bodyLoc, iterArgs[1], next.value);
-          Value nextKey = arith::SelectOp::create(builder, bodyLoc, sameKey,
-                                                  iterArgs[0], next.key);
-          Value nextValue = arith::SelectOp::create(builder, bodyLoc, sameKey,
-                                                    combined, next.value);
-          scf::YieldOp::create(builder, bodyLoc,
-                               ValueRange{nextKey, nextValue});
+    SmallVector<Type> stateTypes{first.key.getType(), first.value.getType()};
+    auto reduction =
+        PositionForOp::create(rewriter, loc, stateTypes, nextIteration, end,
+                              zeroIndex, ValueRange{first.key, first.value},
+                              rewriter.getI64IntegerAttr(chunkSize));
+    Block *reductionBody =
+        rewriter.createBlock(&reduction.getBody(), reduction.getBody().end(),
+                             {rewriter.getIndexType(), rewriter.getIndexType(),
+                              stateTypes[0], stateTypes[1]},
+                             {loc, loc, loc, loc});
+    rewriter.setInsertionPointToStart(reductionBody);
+    Value linearIteration = reductionBody->getArgument(0);
+    ValueRange iterArgs = reductionBody->getArguments().drop_front(2);
+    SmallVector<Value> nextCoordinates =
+        buildCooperativeCoordinates(rewriter, loc, op, linearIteration, *axis,
+                                    axisGroup, lane, participantCount);
+    CooperativeBodyMapping nextMapping = buildCooperativeBodyMapping(
+        rewriter, loc, op, nextCoordinates, *axis, lane, waveSize);
+    KeyedContribution next = buildActiveCooperativeContribution(
+        rewriter, loc, op, nextMapping, active, zeroIndex, zero);
+    Value sameKey = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::eq, iterArgs[0], next.key);
+    Value keyChanged = arith::XOrIOp::create(
+        rewriter, loc, sameKey,
+        arith::ConstantIntOp::create(rewriter, loc, 1, 1));
+    Value flush = arith::AndIOp::create(rewriter, loc, active, keyChanged);
+    scf::IfOp::create(
+        rewriter, loc, flush, [&](OpBuilder &builder, Location bodyLoc) {
+          semantics.atomicAccumulate(builder, bodyLoc, iterArgs[1],
+                                     op.getOutput(), iterArgs[0]);
+          scf::YieldOp::create(builder, bodyLoc);
         });
+    Value combined = semantics.combine(rewriter, loc, iterArgs[1], next.value);
+    Value nextKey =
+        arith::SelectOp::create(rewriter, loc, sameKey, iterArgs[0], next.key);
+    Value nextValue =
+        arith::SelectOp::create(rewriter, loc, sameKey, combined, next.value);
+    YieldOp::create(rewriter, loc, ValueRange{nextKey, nextValue});
+    rewriter.setInsertionPointAfter(reduction);
     scf::IfOp::create(
         rewriter, loc, active, [&](OpBuilder &builder, Location bodyLoc) {
           semantics.atomicAccumulate(builder, bodyLoc, reduction.getResult(1),

@@ -34,7 +34,9 @@
 // CHUNK: %[[CHUNKS:.*]] = arith.ceildivui %{{.*}}, %{{.*}} : index
 // CHUNK: %[[WORKERS:.*]] = arith.muli %[[CHUNKS]], %[[GROUPS]] : index
 // CHUNK: sparsewave.position_parallel %[[WORKERS]] mapping = "wave" block_size = 64 {
-// CHUNK: scf.for
+// CHUNK: %{{.*}}:2 = sparsewave.position_for
+// CHUNK-SAME: iter_args(%{{.*}}, %{{.*}} : index, f32)
+// CHUNK-SAME: -> (index, f32)
 // CHUNK: arith.cmpi eq
 // CHUNK: scf.if
 // CHUNK: memref.atomic_rmw addf

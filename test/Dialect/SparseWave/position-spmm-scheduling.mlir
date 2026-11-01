@@ -86,7 +86,9 @@
 // WAVE-COOPERATIVE-CHUNK-LABEL: func.func @spmm(
 // WAVE-COOPERATIVE-CHUNK: arith.ceildivui %{{.*}}, %{{.*}} : index
 // WAVE-COOPERATIVE-CHUNK: sparsewave.position_parallel %{{.*}} mapping = "wave" block_size = 64 {
-// WAVE-COOPERATIVE-CHUNK: scf.for
+// WAVE-COOPERATIVE-CHUNK: %{{.*}}:2 = sparsewave.position_for
+// WAVE-COOPERATIVE-CHUNK-SAME: iter_args(%{{.*}}, %{{.*}} : index, f32)
+// WAVE-COOPERATIVE-CHUNK-SAME: -> (index, f32)
 // WAVE-COOPERATIVE-CHUNK: sparsewave.compressed_segment_at_position
 // WAVE-COOPERATIVE-CHUNK: arith.cmpi eq
 // WAVE-COOPERATIVE-CHUNK: memref.atomic_rmw addf
