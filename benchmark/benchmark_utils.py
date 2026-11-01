@@ -913,10 +913,30 @@ def run_rocsparse_case(
     return timing, runner["preprocess_us"], command
 
 
-def extract_gpu_binary(compiled, output, binary_index=None):
+def extract_gpu_binary(
+    compiled, output, binary_index=None, binary_name=None
+):
     text = compiled.read_text(encoding="utf-8")
     matches = list(re.finditer(r"\bbin\s*=\s*\"", text))
-    if binary_index is None:
+    if binary_index is not None and binary_name is not None:
+        raise ValueError("GPU binary index and name are mutually exclusive")
+    if binary_name is not None:
+        named_matches = []
+        for index, match in enumerate(matches):
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            symbol = re.search(
+                r"\bgpu\.binary\s+@([A-Za-z_][A-Za-z0-9_.$-]*)\b",
+                text[line_start : match.start()],
+            )
+            if symbol is not None and symbol.group(1) == binary_name:
+                named_matches.append(index)
+        if len(named_matches) != 1:
+            raise ValueError(
+                f"expected one GPU binary named '{binary_name}' in "
+                f"{compiled}, found {len(named_matches)}"
+            )
+        binary_index = named_matches[0]
+    elif binary_index is None:
         if len(matches) != 1:
             raise ValueError(
                 f"expected one embedded GPU binary in {compiled}, "
@@ -1047,8 +1067,9 @@ def inspect_gpu_resources(
     expected_wave_size,
     expected_block_size,
     binary_index=None,
+    binary_name=None,
 ):
-    extract_gpu_binary(compiled, hsaco, binary_index)
+    extract_gpu_binary(compiled, hsaco, binary_index, binary_name)
     command = [
         str(args.llvm_readobj),
         "--notes",
@@ -1099,7 +1120,8 @@ def write_results(path, columns, float_fields, results):
                     if result[field] is None
                     else f"{result[field]:.6f}"
                 )
-            formatted["correct"] = str(result["correct"]).lower()
+            if "correct" in formatted:
+                formatted["correct"] = str(result["correct"]).lower()
             writer.writerow(formatted)
 
 
@@ -1181,6 +1203,8 @@ class BenchmarkReport:
 
 REPORT_COLUMNS = {
     "operation": TableColumn("operation", "operation", 9, alignment="<"),
+    "phase": TableColumn("phase", "phase", 8, alignment="<"),
+    "kernel": TableColumn("kernel", "kernel", 27, alignment="<"),
     "implementation": TableColumn(
         "implementation", "implementation", 14, alignment="<"
     ),

@@ -47,6 +47,7 @@ python3 benchmark/run_elementwise_benchmark.py \
   --overlaps=25,50,100 \
   --operations=add,multiply \
   --block-sizes=32,64,128,256 \
+  --report-resources \
   --warmup=20 \
   --iterations=100
 ```

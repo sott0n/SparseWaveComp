@@ -127,9 +127,58 @@ class ElementwiseBenchmarkTest(unittest.TestCase):
             nnz_per_row=[4],
             overlaps=[0],
             operations=["multiply"],
+            report_resources=False,
         )
         with self.assertRaisesRegex(ValueError, "at least one overlapping"):
             BENCHMARK.validate_paths(args)
+
+    def test_resource_rows_preserve_phase_and_kernel(self):
+        args = types.SimpleNamespace(chip="gfx1101", wave_size=32)
+        resources = {
+            kernel: {
+                "vgpr_count": index + 10,
+                "sgpr_count": index + 20,
+                "vgpr_spill_count": 0,
+                "sgpr_spill_count": 0,
+                "lds_bytes": index * 4,
+                "scratch_bytes": 0,
+                "kernel_wave_size": 32,
+                "max_workgroup_size": 64,
+            }
+            for index, (_, kernel) in enumerate(BENCHMARK.RESOURCE_KERNELS)
+        }
+
+        rows = BENCHMARK.resource_rows(
+            args,
+            operation="add",
+            nnz_per_row=4,
+            overlap_percent=50,
+            block_size=64,
+            resources=resources,
+        )
+
+        self.assertEqual(
+            [(row["phase"], row["kernel"]) for row in rows],
+            list(BENCHMARK.RESOURCE_KERNELS),
+        )
+        self.assertEqual(rows[0]["vgpr_count"], 10)
+        self.assertEqual(rows[-1]["max_workgroup_size"], 64)
+
+    def test_gpu_binary_extraction_selects_named_phase(self):
+        compiled = TEMPORARY_ROOT / "phase-binaries.mlir"
+        compiled.write_text(
+            r'''gpu.binary @elementwise_symbolic [#gpu.object<bin = "\7FELF\01">]
+gpu.binary @elementwise_numeric [#gpu.object<bin = "\7FELF\02">]
+''',
+            encoding="utf-8",
+        )
+        hsaco = TEMPORARY_ROOT / "numeric.hsaco"
+
+        BENCHMARK.common.extract_gpu_binary(
+            compiled, hsaco, binary_name="elementwise_numeric"
+        )
+
+        self.assertEqual(hsaco.read_bytes(), b"\x7fELF\x02")
 
 
 if __name__ == "__main__":

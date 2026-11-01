@@ -17,6 +17,11 @@ PHASE_KERNELS = {
     ),
     "numeric": "elementwise_numeric",
 }
+RESOURCE_KERNELS = tuple(
+    (phase, kernel)
+    for phase, kernels in PHASE_KERNELS.items()
+    for kernel in ((kernels,) if isinstance(kernels, str) else kernels)
+)
 RESULT_COLUMNS = (
     "chip",
     "operation",
@@ -63,6 +68,29 @@ REPORT = common.BenchmarkReport(
         "numeric_median_us",
         "numeric_fraction",
     ),
+)
+RESOURCE_COLUMNS = (
+    "chip",
+    "operation",
+    "block_size",
+    "wave_size",
+    "nnz_per_row",
+    "overlap_percent",
+    "phase",
+    "kernel",
+    *common.GPU_RESOURCE_FIELDS,
+)
+RESOURCE_REPORT = common.BenchmarkReport(
+    details=("rows", "columns"),
+    dimensions=(
+        "operation",
+        "nnz_per_row",
+        "overlap_percent",
+        "block_size",
+        "phase",
+        "kernel",
+    ),
+    metrics=common.GPU_RESOURCE_METRICS,
 )
 
 
@@ -192,8 +220,31 @@ def result_row(args, operation, nnz_per_row, overlap_percent, block_size,
     }
 
 
+def resource_rows(
+    args, operation, nnz_per_row, overlap_percent, block_size, resources
+):
+    return [
+        {
+            "chip": args.chip,
+            "operation": operation,
+            "block_size": block_size,
+            "wave_size": args.wave_size,
+            "nnz_per_row": nnz_per_row,
+            "overlap_percent": overlap_percent,
+            "phase": phase,
+            "kernel": kernel,
+            **resources[kernel],
+        }
+        for phase, kernel in RESOURCE_KERNELS
+    ]
+
+
 def validate_paths(args):
-    common.validate_required_paths(args, needs_benchmark_utils=False)
+    common.validate_required_paths(
+        args,
+        needs_benchmark_utils=False,
+        needs_resource_inspector=args.report_resources,
+    )
     common.validate_block_sizes(args, require_wave_multiple=False)
     if args.rocsparse:
         raise ValueError("rocSPARSE elementwise baselines are not implemented")
@@ -239,6 +290,14 @@ def parse_arguments(argv):
         type=parse_operations,
         default=parse_operations("add,multiply"),
     )
+    parser.add_argument(
+        "--report-resources",
+        action="store_true",
+        help=(
+            "Extract per-kernel VGPR, SGPR, spill, LDS, and scratch usage "
+            "from each generated GPU binary."
+        ),
+    )
     common.add_common_arguments(parser, repository)
     args = parser.parse_args(argv)
     common.configure_common_arguments(args)
@@ -252,7 +311,9 @@ def main(argv=None):
     repository = Path(__file__).resolve().parents[1]
     template = repository / "benchmark" / "elementwise.mlir.in"
     results = []
+    resources = []
     commands = []
+    resource_commands = []
     with common.BenchmarkWorkspace(
         args,
         repository,
@@ -314,6 +375,32 @@ def main(argv=None):
                             args.warmup,
                             args.iterations,
                         )
+                        if args.report_resources:
+                            case_resources = {}
+                            for _, kernel in RESOURCE_KERNELS:
+                                kernel_resources, resource_command = (
+                                    common.inspect_gpu_resources(
+                                        args,
+                                        compiled,
+                                        case_directory / f"{kernel}.hsaco",
+                                        kernel,
+                                        args.wave_size,
+                                        block_size,
+                                        binary_name=kernel,
+                                    )
+                                )
+                                case_resources[kernel] = kernel_resources
+                                resource_commands.append(resource_command)
+                            resources.extend(
+                                resource_rows(
+                                    args,
+                                    operation,
+                                    nnz_per_row,
+                                    overlap,
+                                    block_size,
+                                    case_resources,
+                                )
+                            )
                         results.append(
                             result_row(
                                 args,
@@ -333,6 +420,13 @@ def main(argv=None):
             RESULT_FLOAT_FIELDS,
             results,
         )
+        if args.report_resources:
+            common.write_results(
+                workspace.output_directory / "resources.csv",
+                RESOURCE_COLUMNS,
+                (),
+                resources,
+            )
         metadata = common.base_metadata(args, repository, "elementwise")
         metadata.update(
             {
@@ -342,6 +436,8 @@ def main(argv=None):
                 "overlap_percentages": args.overlaps,
                 "operations": args.operations,
                 "commands": commands,
+                "resource_reporting": args.report_resources,
+                "resource_commands": resource_commands,
             }
         )
         common.write_metadata(
@@ -350,6 +446,14 @@ def main(argv=None):
         common.print_benchmark_report(
             args, "SparseWave CSR elementwise benchmark", REPORT, results
         )
+        if args.report_resources:
+            print()
+            common.print_benchmark_report(
+                args,
+                "SparseWave CSR elementwise GPU resources",
+                RESOURCE_REPORT,
+                resources,
+            )
         print(f"\nResults: {workspace.output_directory}")
     return 0
 

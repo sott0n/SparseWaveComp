@@ -97,13 +97,16 @@ python3 benchmark/run_elementwise_benchmark.py \
   --overlaps=25,50,100 \
   --operations=add,multiply \
   --block-sizes=64,128,256 \
+  --report-resources \
   --warmup=10 \
   --iterations=50
 ```
 
 Each phase share is calculated from the sum of measured per-dispatch phase
 durations after warmup. In particular, `prefix share` exposes the total cost of
-constructing compressed output offsets.
+constructing compressed output offsets. With `--report-resources`, the runner
+also writes `resources.csv` and prints VGPR, SGPR, spill, LDS, and scratch usage
+for the symbolic, three prefix-scan, and numeric kernels.
 
 Each recorded result contains its workload definition, measurement method,
 environment, reproduction commands, performance data, and interpretation:
