@@ -21,6 +21,12 @@ TRACE_COLUMNS = {
 CSR_BINARY_MAGIC = b"SWCSR001"
 COO_BINARY_MAGIC = b"SWCOO001"
 BSR_BINARY_MAGIC = b"SWBSR001"
+ROW_DISTRIBUTIONS = ("uniform", "alternating", "skewed")
+ROW_DISTRIBUTION_PERIODS = {
+    "uniform": 1,
+    "alternating": 2,
+    "skewed": 8,
+}
 
 
 def positive_int(value):
@@ -51,6 +57,83 @@ def parse_positive_int_list(value):
             f"duplicate values are not allowed: {values}"
         )
     return values
+
+
+def parse_row_distributions(value):
+    values = [item.strip() for item in value.split(",") if item.strip()]
+    invalid = [item for item in values if item not in ROW_DISTRIBUTIONS]
+    if not values:
+        raise argparse.ArgumentTypeError("expected at least one distribution")
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            f"unknown distributions {invalid}; expected {ROW_DISTRIBUTIONS}"
+        )
+    if len(values) != len(set(values)):
+        raise argparse.ArgumentTypeError(
+            f"duplicate distributions are not allowed: {values}"
+        )
+    return values
+
+
+def synthetic_row_length(nnz_per_row, distribution, row):
+    if distribution == "uniform":
+        return nnz_per_row
+    if distribution == "alternating":
+        return 1 if row % 2 == 0 else 2 * nnz_per_row - 1
+    if distribution == "skewed":
+        return 8 * nnz_per_row - 7 if row % 8 == 7 else 1
+    raise ValueError(f"unknown distribution: {distribution}")
+
+
+def synthetic_workload_shape(rows, nnz_per_row, distribution):
+    lengths = [
+        synthetic_row_length(nnz_per_row, distribution, row)
+        for row in range(rows)
+    ]
+    return {
+        "nnz": sum(lengths),
+        "min_row_nnz": min(lengths),
+        "max_row_nnz": max(lengths),
+        "mean_row_nnz": statistics.mean(lengths),
+    }
+
+
+def synthetic_csr_matrix(rows, columns, nnz_per_row, distribution):
+    shape = synthetic_workload_shape(rows, nnz_per_row, distribution)
+    row_offsets = [0]
+    row_indices = []
+    for row in range(rows):
+        length = synthetic_row_length(nnz_per_row, distribution, row)
+        row_offsets.append(row_offsets[-1] + length)
+        row_indices.extend([row] * length)
+    return {
+        **shape,
+        "rows": rows,
+        "columns": columns,
+        "row_offsets": row_offsets,
+        "row_indices": row_indices,
+        "column_indices": [
+            position % columns for position in range(shape["nnz"])
+        ],
+        "values": [1.0] * shape["nnz"],
+    }
+
+
+def validate_distribution_rows(rows, distributions):
+    invalid = [
+        (distribution, ROW_DISTRIBUTION_PERIODS[distribution])
+        for distribution in distributions
+        if rows % ROW_DISTRIBUTION_PERIODS[distribution] != 0
+    ]
+    if invalid:
+        requirements = ", ".join(
+            f"{distribution}: multiple of {period}"
+            for distribution, period in invalid
+        )
+        raise ValueError(
+            "row count must complete each distribution period to preserve "
+            f"the requested mean NNZ/row ({requirements})"
+        )
 
 
 def read_matrix_market(path):

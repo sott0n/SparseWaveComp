@@ -82,6 +82,32 @@ or the chunk ends. Reorder and collapse are not included in this
 one-dimensional SpMV ablation because they do not change its iteration order
 or shape.
 
+SpMM accepts the same generated row-length distributions. The following sweep
+compares fixed row/output mappings, position split and reorder variants,
+cooperative wave scheduling, and rocSPARSE from one deterministic input set:
+
+```sh
+python3 benchmark/run_spmm_benchmark.py \
+  --rows=65536 \
+  --columns=65536 \
+  --nnz-per-row=4,32,256 \
+  --distributions=uniform,skewed \
+  --formats=csr \
+  --mappings=thread-per-output,wave-per-row-tile,thread-per-position,wave-per-position-tile \
+  --rhs-columns=4,16,64 \
+  --tile-sizes=1,4,8,16 \
+  --position-chunk-sizes=1,4,8 \
+  --position-orders=position-major,rhs-major \
+  --position-reductions=atomic,segmented \
+  --rocsparse
+```
+
+`uniform` gives every row the requested NNZ count. `alternating` and `skewed`
+preserve the same mean while concentrating work into every second or eighth
+row, respectively. The generated CSR data is shared by every SparseWave
+variant and the rocSPARSE baseline. Supplying `--matrix` instead selects the
+existing Matrix Market workflow.
+
 The CSR elementwise runner reports the complete dispatch as three logical
 phases with separate symbolic, prefix, and numeric medians. The prefix phase
 sums its block-local scan, block-total scan, and block-offset addition kernels.

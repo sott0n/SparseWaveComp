@@ -2,7 +2,6 @@
 
 import argparse
 from pathlib import Path
-import statistics
 import subprocess
 import sys
 import time
@@ -21,13 +20,8 @@ FORMAT_MAPPINGS = {
     "csr": MAPPINGS,
     "coo": ("thread-per-nonzero",),
 }
-DISTRIBUTIONS = ("uniform", "alternating", "skewed")
+DISTRIBUTIONS = common.ROW_DISTRIBUTIONS
 POSITION_REDUCTIONS = ("atomic", "segmented")
-DISTRIBUTION_PERIODS = {
-    "uniform": 1,
-    "alternating": 2,
-    "skewed": 8,
-}
 RESULT_COLUMNS = (
     "chip",
     "matrix",
@@ -172,19 +166,7 @@ def sparsewave_kernel_layout(sparse_format, mapping):
 
 
 def parse_distributions(value):
-    values = [item.strip() for item in value.split(",") if item.strip()]
-    invalid = [item for item in values if item not in DISTRIBUTIONS]
-    if not values:
-        raise argparse.ArgumentTypeError("expected at least one distribution")
-    if invalid:
-        raise argparse.ArgumentTypeError(
-            f"unknown distributions {invalid}; expected {DISTRIBUTIONS}"
-        )
-    if len(values) != len(set(values)):
-        raise argparse.ArgumentTypeError(
-            f"duplicate distributions are not allowed: {values}"
-        )
-    return values
+    return common.parse_row_distributions(value)
 
 
 def parse_formats(value):
@@ -223,44 +205,17 @@ def parse_position_reductions(value):
 
 
 def row_length(nnz_per_row, distribution, row):
-    if distribution == "uniform":
-        return nnz_per_row
-    if distribution == "alternating":
-        return 1 if row % 2 == 0 else 2 * nnz_per_row - 1
-    if distribution == "skewed":
-        return 8 * nnz_per_row - 7 if row % 8 == 7 else 1
-    raise ValueError(f"unknown distribution: {distribution}")
+    return common.synthetic_row_length(nnz_per_row, distribution, row)
 
 
 def workload_shape(rows, nnz_per_row, distribution):
-    lengths = [
-        row_length(nnz_per_row, distribution, row) for row in range(rows)
-    ]
-    return {
-        "nnz": sum(lengths),
-        "min_row_nnz": min(lengths),
-        "max_row_nnz": max(lengths),
-        "mean_row_nnz": statistics.mean(lengths),
-    }
+    return common.synthetic_workload_shape(rows, nnz_per_row, distribution)
 
 
 def synthetic_matrix(rows, columns, nnz_per_row, distribution):
-    shape = workload_shape(rows, nnz_per_row, distribution)
-    row_offsets = [0]
-    for row in range(rows):
-        row_offsets.append(
-            row_offsets[-1] + row_length(nnz_per_row, distribution, row)
-        )
-    return {
-        **shape,
-        "rows": rows,
-        "columns": columns,
-        "row_offsets": row_offsets,
-        "column_indices": [
-            position % columns for position in range(shape["nnz"])
-        ],
-        "values": [1.0] * shape["nnz"],
-    }
+    return common.synthetic_csr_matrix(
+        rows, columns, nnz_per_row, distribution
+    )
 
 
 def create_workloads(args):
@@ -293,20 +248,7 @@ def create_workloads(args):
 
 
 def validate_distribution_rows(rows, distributions):
-    invalid = [
-        (distribution, DISTRIBUTION_PERIODS[distribution])
-        for distribution in distributions
-        if rows % DISTRIBUTION_PERIODS[distribution] != 0
-    ]
-    if invalid:
-        requirements = ", ".join(
-            f"{distribution}: multiple of {period}"
-            for distribution, period in invalid
-        )
-        raise ValueError(
-            "row count must complete each distribution period to preserve "
-            f"the requested mean NNZ/row ({requirements})"
-        )
+    common.validate_distribution_rows(rows, distributions)
 
 
 def row_length_mlir(nnz_per_row, distribution):

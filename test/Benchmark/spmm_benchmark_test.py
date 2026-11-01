@@ -152,6 +152,12 @@ class SpMMBenchmarkTest(unittest.TestCase):
         )
         result = BENCHMARK.result_row(
             args,
+            {
+                "matrix": str(self.matrix_path),
+                "distribution": "matrix-market",
+                "nnz_per_row": None,
+                "shape": self.matrix,
+            },
             mapping="thread-per-output",
             block_size=64,
             tile_size=None,
@@ -356,6 +362,10 @@ amdhsa.kernels:
             bsr_block_sizes=[2, 4, 8],
             formats=["csr", "bsr"],
             matrix_data=self.matrix,
+            rows=self.matrix["rows"],
+            columns=self.matrix["columns"],
+            nnz_per_row=[4],
+            distributions=["uniform"],
         )
         BENCHMARK.validate_paths(args)
         args.mappings = [BENCHMARK.COOPERATIVE_POSITION_MAPPING]
@@ -404,6 +414,59 @@ amdhsa.kernels:
             BENCHMARK.parse_position_orders("diagonal")
         with self.assertRaisesRegex(argparse.ArgumentTypeError, "unknown"):
             BENCHMARK.parse_position_reductions("tree")
+
+    def test_generated_workloads_cover_row_distributions(self):
+        args = types.SimpleNamespace(
+            matrix_data=None,
+            rows=16,
+            columns=32,
+            nnz_per_row=[8],
+            distributions=list(BENCHMARK.DISTRIBUTIONS),
+        )
+        workloads = list(BENCHMARK.create_workloads(args))
+        self.assertEqual(
+            [workload["key"] for workload in workloads],
+            ["uniform/nnz-8", "alternating/nnz-8", "skewed/nnz-8"],
+        )
+        for workload in workloads:
+            self.assertEqual(workload["shape"]["nnz"], 128)
+            self.assertEqual(workload["shape"]["mean_row_nnz"], 8)
+        self.assertEqual(workloads[1]["shape"]["max_row_nnz"], 15)
+        self.assertEqual(workloads[2]["shape"]["max_row_nnz"], 57)
+
+    def test_generated_spmm_input_lowers_position_mapping(self):
+        matrix = BENCHMARK.common.synthetic_csr_matrix(
+            rows=8,
+            columns=16,
+            nnz_per_row=4,
+            distribution="skewed",
+        )
+        rendered = BENCHMARK.render_mlir(
+            SCRIPT.parent / "spmm.mlir.in",
+            matrix,
+            rhs_columns=4,
+            dispatches=3,
+        )
+        source = TEMPORARY_ROOT / "generated-position-spmm.mlir"
+        source.write_text(rendered, encoding="utf-8")
+        subprocess.run(
+            [
+                SPARSEWAVE_OPT,
+                str(source),
+                (
+                    "--pass-pipeline=builtin.module("
+                    "decompose-position-spmm,"
+                    "schedule-sparsewave-position{mapping=thread "
+                    "block-size=64 thread-chunk-size=4},"
+                    "convert-sparsewave-to-gpu{"
+                    "spmm-mapping=thread-per-output "
+                    "spmm-block-size=64 position-block-size=64})"
+                ),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
 
 if __name__ == "__main__":
