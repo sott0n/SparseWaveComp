@@ -132,3 +132,6 @@ environment, reproduction commands, performance data, and interpretation:
 - [gfx1101 cooperative position-space SpMM](spmm-cooperative-position-gfx1101.md)
   evaluates wave cooperation across RHS columns, compares it with existing
   mappings and rocSPARSE, and explains its current costs using generated ISA.
+- [gfx1101 CSR elementwise block-size sweep](elementwise-block-size-sweep-gfx1101.md)
+  measures symbolic, prefix-scan, and numeric phase behavior for sparse add
+  and multiply and relates the timing tradeoff to generated GPU resources.
