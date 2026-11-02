@@ -11,6 +11,9 @@
 // RUN:   --pass-pipeline='builtin.module(decompose-position-spmm,reorder-sparsewave-position{order=rhs,position},schedule-sparsewave-position{mapping=thread block-size=128 thread-chunk-size=4 thread-reduction=segmented})' \
 // RUN:   | FileCheck %s --check-prefix=RHS-SEGMENTED
 // RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(decompose-position-spmm,schedule-sparsewave-position{mapping=thread block-size=128 thread-chunk-size=4 thread-reduction=segmented})' \
+// RUN:   | FileCheck %s --check-prefix=POSITION-SEGMENTED
+// RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(decompose-position-spmm,schedule-sparsewave-position{mapping=wave block-size=64 wave-size=32 cooperative-axis=rhs})' \
 // RUN:   | FileCheck %s --check-prefix=WAVE-COOPERATIVE
 // RUN: sparsewave-opt %s \
@@ -54,21 +57,40 @@
 
 // RHS-SEGMENTED-LABEL: func.func @spmm(
 // RHS-SEGMENTED: sparsewave.position_parallel
-// RHS-SEGMENTED: %{{.*}}:2 = sparsewave.position_collapse
+// RHS-SEGMENTED: %{{.*}}:4 = sparsewave.position_collapse
 // RHS-SEGMENTED-SAME: order = [1, 0]
-// RHS-SEGMENTED-SAME: fallback(%{{.*}}, %{{.*}} : index, f32) -> (index, f32)
+// RHS-SEGMENTED-SAME: -> (index, f32, index, index)
+// RHS-SEGMENTED: sparsewave.compressed_segment_at_position
 // RHS-SEGMENTED: sparsewave.position_for
-// RHS-SEGMENTED-SAME: iter_args(%{{.*}}, %{{.*}} : index, f32)
-// RHS-SEGMENTED-SAME: -> (index, f32)
-// RHS-SEGMENTED: %{{.*}}:2 = sparsewave.position_collapse
+// RHS-SEGMENTED-SAME: iter_args(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}} : index, f32, index, index, index)
+// RHS-SEGMENTED-SAME: -> (index, f32, index, index, index)
+// RHS-SEGMENTED: %{{.*}}:5 = sparsewave.position_collapse
 // RHS-SEGMENTED-SAME: order = [1, 0]
-// RHS-SEGMENTED-SAME: fallback(%{{.*}}, %{{.*}} : index, f32) -> (index, f32)
+// RHS-SEGMENTED-SAME: -> (index, f32, index, index, index)
+// RHS-SEGMENTED: arith.cmpi ult
+// RHS-SEGMENTED: scf.if
+// RHS-SEGMENTED: sparsewave.compressed_segment_at_position
+// RHS-SEGMENTED: scf.while
 // RHS-SEGMENTED: arith.cmpi eq
 // RHS-SEGMENTED: arith.addf
 // RHS-SEGMENTED: scf.if
 // RHS-SEGMENTED: memref.atomic_rmw addf
 // RHS-SEGMENTED: memref.atomic_rmw addf
 // RHS-SEGMENTED-NOT: sparsewave.spmm
+
+// POSITION-SEGMENTED-LABEL: func.func @spmm(
+// POSITION-SEGMENTED: %{{.*}}:3 = sparsewave.position_collapse
+// POSITION-SEGMENTED-SAME: order = [0, 1]
+// POSITION-SEGMENTED-SAME: -> (index, f32, index)
+// POSITION-SEGMENTED-COUNT-1: sparsewave.compressed_segment_at_position
+// POSITION-SEGMENTED: %{{.*}}:4 = sparsewave.position_for
+// POSITION-SEGMENTED-SAME: iter_args(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}} : index, f32, index, index)
+// POSITION-SEGMENTED-SAME: -> (index, f32, index, index)
+// POSITION-SEGMENTED: scf.while
+// POSITION-SEGMENTED-NOT: arith.cmpi ult
+// POSITION-SEGMENTED-NOT: sparsewave.compressed_segment_at_position
+// POSITION-SEGMENTED: memref.atomic_rmw addf
+// POSITION-SEGMENTED-NOT: sparsewave.spmm
 
 // WAVE-COOPERATIVE-LABEL: func.func @spmm(
 // WAVE-COOPERATIVE: sparsewave.position_parallel %{{.*}} mapping = "wave" block_size = 64 {

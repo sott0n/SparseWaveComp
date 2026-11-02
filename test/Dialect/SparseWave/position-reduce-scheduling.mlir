@@ -16,6 +16,9 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='mapping=thread block-size=64 thread-chunk-size=4 thread-reduction=segmented' \
 // RUN:   | FileCheck %s --check-prefix=COMPRESSED
+// RUN: sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=thread block-size=64 thread-chunk-size=4 thread-reduction=segmented' \
+// RUN:   | FileCheck %s --check-prefix=COMPRESSED-MULTI
 
 // This keyed reduction deliberately has no CSR or SpMV operations. It verifies
 // that position scheduling depends only on position_reduce semantics.
@@ -96,11 +99,12 @@ func.func @keyed_sum(%values: memref<?xf32>, %output: memref<?xf32>) {
 // COMPRESSED-COUNT-1: %[[FIRST:.*]] = sparsewave.compressed_segment_at_position %[[OFFSETS]]
 // COMPRESSED: %[[BOUNDARY_INDEX:.*]] = arith.addi %[[FIRST]], %{{.*}} : index
 // COMPRESSED: %[[BOUNDARY_RAW:.*]] = memref.load %[[OFFSETS]][%[[BOUNDARY_INDEX]]]
-// COMPRESSED: %{{.*}}:3 = sparsewave.position_for
-// COMPRESSED-SAME: iter_args(%[[FIRST]], %{{.*}}, %{{.*}} : index, f32, index)
-// COMPRESSED-SAME: -> (index, f32, index)
+// COMPRESSED: %{{.*}}:4 = sparsewave.position_for
+// COMPRESSED-SAME: iter_args(%[[FIRST]], %{{.*}}, %[[FIRST]], %{{.*}} : index, f32, index, index)
+// COMPRESSED-SAME: -> (index, f32, index, index)
 // COMPRESSED: scf.while
 // COMPRESSED-NOT: sparsewave.compressed_segment_at_position
+// COMPRESSED: return
 
 func.func @compressed_segment_sum(%offsets: memref<?xi32>,
                                   %values: memref<?xf32>,
@@ -142,6 +146,45 @@ func.func @multi_axis_keyed_sum(%values: memref<?x?xf32>,
   ^bb0(%position: index, %column: index):
     %rowBase = arith.muli %position, %columns : index
     %key = arith.addi %rowBase, %column : index
+    %value = memref.load %values[%position, %column] : memref<?x?xf32>
+    sparsewave.yield %key, %value : index, f32
+  } : memref<?xf32>
+  return
+}
+
+// The recovered segment is independent of the composite output key. Since
+// position is not the outermost axis, the scheduler also detects when it
+// restarts and performs a new segment lookup only at that boundary.
+
+// COMPRESSED-MULTI-LABEL: func.func @compressed_multi_axis_sum(
+// COMPRESSED-MULTI: %{{.*}}:4 = sparsewave.position_collapse
+// COMPRESSED-MULTI-SAME: order = [1, 0]
+// COMPRESSED-MULTI: sparsewave.compressed_segment_at_position
+// COMPRESSED-MULTI: %{{.*}}:5 = sparsewave.position_for
+// COMPRESSED-MULTI-SAME: iter_args(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}} : index, f32, index, index, index)
+// COMPRESSED-MULTI: arith.cmpi ult
+// COMPRESSED-MULTI: scf.if
+// COMPRESSED-MULTI: sparsewave.compressed_segment_at_position
+// COMPRESSED-MULTI: scf.while
+// COMPRESSED-MULTI: arith.muli
+// COMPRESSED-MULTI: arith.addi
+// COMPRESSED-MULTI-NOT: sparsewave.position_reduce
+
+func.func @compressed_multi_axis_sum(%offsets: memref<?xi32>,
+                                     %values: memref<?x?xf32>,
+                                     %output: memref<?xf32>) {
+  %zero = arith.constant 0 : index
+  %positions = memref.dim %values, %zero : memref<?x?xf32>
+  %one = arith.constant 1 : index
+  %columns = memref.dim %values, %one : memref<?x?xf32>
+  sparsewave.position_reduce lower (%zero, %zero)
+      upper (%positions, %columns) axes = ["position", "column"] order = [1, 0]
+      into %output kind = "sum" {
+  ^bb0(%position: index, %column: index):
+    %segment = sparsewave.compressed_segment_at_position %offsets at %position
+        : memref<?xi32>
+    %segmentBase = arith.muli %segment, %columns : index
+    %key = arith.addi %segmentBase, %column : index
     %value = memref.load %values[%position, %column] : memref<?x?xf32>
     sparsewave.yield %key, %value : index, f32
   } : memref<?xf32>

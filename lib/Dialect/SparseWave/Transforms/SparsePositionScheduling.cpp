@@ -30,6 +30,12 @@ struct CompressedSegmentState {
   Value nextBoundary;
 };
 
+struct CompressedSegmentRecovery {
+  CompressedSegmentAtPositionOp operation;
+  unsigned positionAxis;
+  bool mayReset;
+};
+
 /// Materializes the operator semantics independently from the selected
 /// position schedule.
 class PositionReductionSemantics {
@@ -455,17 +461,22 @@ buildActiveCooperativeContribution(OpBuilder &builder, Location loc,
   return {entry.getResult(0), entry.getResult(1)};
 }
 
-std::optional<CompressedSegmentAtPositionOp>
+std::optional<CompressedSegmentRecovery>
 matchCompressedSegmentRecovery(PositionReduceOp reduction) {
   Block &body = reduction.getBody().front();
-  if (body.getNumArguments() != 1)
-    return std::nullopt;
-  auto yield = cast<YieldOp>(body.getTerminator());
   for (Operation &operation : body.without_terminator()) {
     auto recovery = dyn_cast<CompressedSegmentAtPositionOp>(operation);
-    if (recovery && recovery.getPosition() == body.getArgument(0) &&
-        yield.getResults()[0] == recovery.getSegment())
-      return recovery;
+    if (!recovery)
+      continue;
+    auto position = dyn_cast<BlockArgument>(recovery.getPosition());
+    if (!position || position.getOwner() != &body)
+      continue;
+    unsigned positionAxis = position.getArgNumber();
+    // Only the outermost collapsed axis is globally nondecreasing. Other axes
+    // restart whenever a preceding axis advances.
+    bool mayReset =
+        reduction.getOrder().front() != static_cast<int64_t>(positionAxis);
+    return CompressedSegmentRecovery{recovery, positionAxis, mayReset};
   }
   return std::nullopt;
 }
@@ -531,6 +542,33 @@ buildNextCompressedSegmentState(OpBuilder &builder, Location loc, Value offsets,
 
   builder.setInsertionPointAfter(advance);
   return {advance.getResult(0), advance.getResult(1)};
+}
+
+CompressedSegmentState buildReusableCompressedSegmentState(
+    OpBuilder &builder, Location loc, Value offsets, Value segment,
+    Value nextBoundary, Value previousPosition, Value position) {
+  Value resets = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ult,
+                                       position, previousPosition);
+  // Reuse the current segment while the compressed position advances. If a
+  // reordered multidimensional traversal restarts that axis, recover its
+  // segment with a new search before resuming incremental boundary updates.
+  auto state = scf::IfOp::create(
+      builder, loc, TypeRange{builder.getIndexType(), builder.getIndexType()},
+      resets,
+      /*withElseRegion=*/true);
+  builder.setInsertionPointToStart(&state.getThenRegion().front());
+  Value resetSegment = CompressedSegmentAtPositionOp::create(
+      builder, loc, builder.getIndexType(), offsets, position);
+  Value resetBoundary =
+      loadNextCompressedSegmentBoundary(builder, loc, offsets, resetSegment);
+  scf::YieldOp::create(builder, loc, ValueRange{resetSegment, resetBoundary});
+  builder.setInsertionPointToStart(&state.getElseRegion().front());
+  CompressedSegmentState advanced = buildNextCompressedSegmentState(
+      builder, loc, offsets, segment, nextBoundary, position);
+  scf::YieldOp::create(builder, loc,
+                       ValueRange{advanced.segment, advanced.nextBoundary});
+  builder.setInsertionPointAfter(state);
+  return {state.getResult(0), state.getResult(1)};
 }
 
 class ThreadPositionReducePattern : public OpRewritePattern<PositionReduceOp> {
@@ -644,18 +682,30 @@ public:
         arith::MinUIOp::create(rewriter, loc, remaining, chunkSizeValue);
     Value end = arith::AddIOp::create(rewriter, loc, begin, boundedSize);
 
-    std::optional<CompressedSegmentAtPositionOp> segmentRecovery =
+    std::optional<CompressedSegmentRecovery> segmentRecovery =
         matchCompressedSegmentRecovery(op);
+    SmallVector<Value> firstFallbacks{zeroIndex, zero};
+    if (segmentRecovery) {
+      firstFallbacks.push_back(zeroIndex);
+      if (segmentRecovery->mayReset)
+        firstFallbacks.push_back(zeroIndex);
+    }
     SmallVector<Value> firstResults = buildCollapsedLogicalPoint(
-        rewriter, loc, op, begin, ValueRange{zeroIndex, zero},
+        rewriter, loc, op, begin, firstFallbacks,
         [&](OpBuilder &builder, Location bodyLoc, ValueRange coordinates) {
           KeyedContribution first;
           if (segmentRecovery) {
             Value firstSegment = CompressedSegmentAtPositionOp::create(
                 builder, bodyLoc, builder.getIndexType(),
-                segmentRecovery->getOffsets(), coordinates[0]);
+                segmentRecovery->operation.getOffsets(),
+                coordinates[segmentRecovery->positionAxis]);
             first = cloneContributionBodyWithCompressedSegment(
-                builder, op, coordinates, *segmentRecovery, firstSegment);
+                builder, op, coordinates, segmentRecovery->operation,
+                firstSegment);
+            SmallVector<Value> results{first.key, first.value, firstSegment};
+            if (segmentRecovery->mayReset)
+              results.push_back(coordinates[segmentRecovery->positionAxis]);
+            return results;
           } else {
             first = cloneContributionBody(builder, op, coordinates);
           }
@@ -666,9 +716,13 @@ public:
     Value nextPosition = arith::AddIOp::create(rewriter, loc, begin, oneIndex);
     SmallVector<Value> reductionInitializers{first.key, first.value};
     if (segmentRecovery) {
+      Value firstSegment = firstResults[2];
       Value firstBoundary = loadNextCompressedSegmentBoundary(
-          rewriter, loc, segmentRecovery->getOffsets(), first.key);
+          rewriter, loc, segmentRecovery->operation.getOffsets(), firstSegment);
+      reductionInitializers.push_back(firstSegment);
       reductionInitializers.push_back(firstBoundary);
+      if (segmentRecovery->mayReset)
+        reductionInitializers.push_back(firstResults[3]);
     }
     SmallVector<Type> stateTypes;
     llvm::transform(reductionInitializers, std::back_inserter(stateTypes),
@@ -689,23 +743,36 @@ public:
     Value currentKey = iterArgs[0];
     Value currentValue = iterArgs[1];
     SmallVector<Value> fallbacks{zeroIndex, zero};
-    if (segmentRecovery)
+    if (segmentRecovery) {
       fallbacks.push_back(iterArgs[2]);
+      fallbacks.push_back(iterArgs[3]);
+      if (segmentRecovery->mayReset)
+        fallbacks.push_back(iterArgs[4]);
+    }
     SmallVector<Value> contributionResults = buildCollapsedLogicalPoint(
         rewriter, loc, op, linearIteration, fallbacks,
         [&](OpBuilder &builder, Location bodyLoc, ValueRange coordinates) {
           KeyedContribution contribution;
           SmallVector<Value> results;
           if (segmentRecovery) {
-            CompressedSegmentState segmentState =
-                buildNextCompressedSegmentState(
-                    builder, bodyLoc, segmentRecovery->getOffsets(), currentKey,
-                    iterArgs[2], coordinates[0]);
+            Value position = coordinates[segmentRecovery->positionAxis];
+            CompressedSegmentState segmentState;
+            if (segmentRecovery->mayReset) {
+              segmentState = buildReusableCompressedSegmentState(
+                  builder, bodyLoc, segmentRecovery->operation.getOffsets(),
+                  iterArgs[2], iterArgs[3], iterArgs[4], position);
+            } else {
+              segmentState = buildNextCompressedSegmentState(
+                  builder, bodyLoc, segmentRecovery->operation.getOffsets(),
+                  iterArgs[2], iterArgs[3], position);
+            }
             contribution = cloneContributionBodyWithCompressedSegment(
-                builder, op, coordinates, *segmentRecovery,
+                builder, op, coordinates, segmentRecovery->operation,
                 segmentState.segment);
             results = {contribution.key, contribution.value,
-                       segmentState.nextBoundary};
+                       segmentState.segment, segmentState.nextBoundary};
+            if (segmentRecovery->mayReset)
+              results.push_back(position);
           } else {
             contribution = cloneContributionBody(builder, op, coordinates);
             results = {contribution.key, contribution.value};
@@ -731,8 +798,12 @@ public:
     Value nextValue = arith::SelectOp::create(rewriter, loc, sameKey, combined,
                                               contribution.value);
     SmallVector<Value> nextState{contribution.key, nextValue};
-    if (segmentRecovery)
+    if (segmentRecovery) {
       nextState.push_back(contributionResults[2]);
+      nextState.push_back(contributionResults[3]);
+      if (segmentRecovery->mayReset)
+        nextState.push_back(contributionResults[4]);
+    }
     YieldOp::create(rewriter, loc, nextState);
     rewriter.setInsertionPointAfter(reduction);
     semantics.atomicAccumulate(rewriter, loc, reduction.getResult(1),
