@@ -138,6 +138,76 @@ in seven. A position mapping is never the fastest SparseWave choice; even its
 best representative result is 3.05x slower than the corresponding fixed
 mapping, and the gap reaches approximately 83x on long-row workloads.
 
+## Wave-segmented follow-up
+
+The `wave-per-position` follow-up maps consecutive points in the collapsed
+iteration space to adjacent lanes. A wave segmented-prefix reduction combines
+adjacent equal output keys and only the final lane in each segment performs an
+atomic update. This differs from `wave-per-position-tile`, where lanes
+cooperate across RHS columns for one sparse position.
+
+The follow-up used the same generated shapes, block size 256, row tile 8, and
+cooperative chunk 8. It used 10 warmup and 20 measured dispatches per case and
+compared both collapsed-axis orders in the same run as the fixed mappings,
+cooperative mapping, and rocSPARSE. All 162 results passed CPU-reference
+validation. It was measured on 2026-11-02 from a working tree based on
+`a5d57b4e497619c8e4fe705725d5385ab85550cc` and includes the segmented-scan
+correction described below; the remaining environment matches the table
+above.
+
+The table reports `position-major / RHS-major` median time. A value above 1.0
+means that exposing adjacent row segments with RHS-major order is faster.
+
+| Distribution | NNZ/row | RHS 8 | RHS 32 | RHS 128 |
+| --- | ---: | ---: | ---: | ---: |
+| Uniform | 4 | 1.59x | 1.10x | 0.88x |
+| Uniform | 32 | 2.37x | 1.76x | 1.31x |
+| Uniform | 256 | 11.36x | 9.69x | 6.10x |
+| Alternating | 4 | 1.13x | 0.97x | 0.61x |
+| Alternating | 32 | 4.09x | 3.26x | 2.36x |
+| Alternating | 256 | 17.88x | 15.04x | 7.80x |
+| Skewed | 4 | 0.54x | 1.35x | 0.79x |
+| Skewed | 32 | 11.88x | 11.69x | 6.72x |
+| Skewed | 256 | **25.58x** | 16.68x | 5.31x |
+
+RHS-major is faster in 22 of 27 workloads. Its benefit grows with row length
+because more adjacent lanes share one `(row, RHS column)` output key. Five
+short-row cases favor position-major: the available segments are too short to
+repay the reordered dense access pattern.
+
+RHS-major wave segmentation beats the cooperative wave mapping in all nine
+RHS-8 workloads, by 1.24x to 5.87x. Only eight of 32 lanes produce results in
+the cooperative mapping at that width, whereas the segmented mapping uses the
+lanes for sparse positions. At RHS 32 and 128, the cooperative mapping wins
+all 18 workloads because its lanes cover dense columns and share sparse-side
+work.
+
+Neither wave-position order beats the fixed mappings. The best RHS-major case
+is 2.99x slower than the corresponding fixed mapping, and the gap reaches
+approximately 131x. It is also at least 7.69x slower than rocSPARSE. Wave
+segmentation removes many atomics within a wave, but every segment crossing a
+wave boundary still emits a partial atomic update, while the row-owned mapping
+retains the entire accumulation and performs one final store.
+
+| Mapping | Configuration | VGPR | SGPR | Spills | LDS | Scratch |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Wave position | Position-major | 25 | 40 | 0 | 0 | 0 |
+| Wave position | RHS-major | 25 | 40 | 0 | 0 | 0 |
+| Wave position tile | Chunk 8 | 34 | 50 | 0 | 0 | 0 |
+
+The two orders generate the same resource counts, and neither spills or uses
+LDS or scratch. The performance difference therefore comes from iteration
+order and segment length rather than occupancy loss from register allocation.
+
+The first full sweep also exposed a segmented-scan correctness defect. The
+scan compared keys again at every shuffle offset, so a sequence such as
+`A, B, ..., A, B` could combine equal but non-adjacent keys at a larger
+offset. Uniform position-major SpMM consequently multiplied some outputs by
+the row length. The corrected scan propagates segment-start markers with its
+partial sums, preventing any later shuffle from crossing an earlier boundary.
+The original failing uniform workload and representative SpMV wave-position
+workloads pass after this correction.
+
 ## GPU resources
 
 Resource usage is invariant across the generated shapes for a fixed compiled
@@ -157,10 +227,11 @@ the sparse traversal. Split and segmented reduction reduce those costs, but
 they do not recover the row-owned accumulation and single final store used by
 the fixed wave-row mapping.
 
-This result narrows the next research question: position-space load balancing
-for SpMM needs a row-segment or segment-group reduction that keeps output
-ownership long enough to accumulate locally. Applying generic position
-parallelism directly to every sparse product is not competitive on this GPU.
+The wave-segmented follow-up shows that wave-local grouping alone is not
+enough. The next research question is how to preserve a row segment across
+wave boundaries or merge wave partials through a workspace without returning
+to an atomic update for every partial. Applying generic position parallelism
+directly to every sparse product is not competitive on this GPU.
 
 ## Reproduction
 
@@ -205,5 +276,26 @@ python3 benchmark/run_spmm_benchmark.py \
   --position-reductions=segmented \
   --warmup=10 \
   --iterations=50 \
+  --rocsparse
+```
+
+Run the wave-segmented follow-up with:
+
+```sh
+python3 benchmark/run_spmm_benchmark.py \
+  --chip=gfx1101 \
+  --rows=65536 \
+  --columns=65536 \
+  --nnz-per-row=4,32,256 \
+  --distributions=uniform,alternating,skewed \
+  --formats=csr \
+  --mappings=thread-per-output,wave-per-row-tile,wave-per-position,wave-per-position-tile \
+  --rhs-columns=8,32,128 \
+  --block-sizes=256 \
+  --tile-sizes=8 \
+  --position-chunk-sizes=8 \
+  --position-orders=position-major,rhs-major \
+  --warmup=10 \
+  --iterations=20 \
   --rocsparse
 ```

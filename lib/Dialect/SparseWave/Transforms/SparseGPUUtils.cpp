@@ -861,24 +861,53 @@ buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
   Value zeroI32 = arith::ConstantIntOp::create(builder, loc, 0, 32);
   Value trueValue = arith::ConstantIntOp::create(builder, loc, 1, 1);
 
+  auto previousKey = gpu::ShuffleOp::create(builder, loc, key, 1, waveSize,
+                                            gpu::ShuffleMode::UP);
+  auto previousActive = gpu::ShuffleOp::create(builder, loc, activeI32, 1,
+                                               waveSize, gpu::ShuffleMode::UP);
+  Value previousLaneIsActive =
+      arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne,
+                            previousActive.getShuffleResult(), zeroI32);
+  Value continuesPreviousSegment = arith::AndIOp::create(
+      builder, loc, previousKey.getValid(),
+      arith::AndIOp::create(
+          builder, loc, previousLaneIsActive,
+          arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq, key,
+                                previousKey.getShuffleResult())));
+  Value startsSegment = arith::AndIOp::create(
+      builder, loc, active,
+      arith::XOrIOp::create(builder, loc, continuesPreviousSegment, trueValue));
+  Value startsSegmentI32 =
+      arith::ExtUIOp::create(builder, loc, builder.getI32Type(), startsSegment);
+
+  // Carry segment-start markers with the partial sums so equal keys separated
+  // by another segment are never combined at larger shuffle offsets.
   for (int32_t offset = 1; offset < waveSize; offset <<= 1) {
-    auto shuffledKey = gpu::ShuffleOp::create(builder, loc, key, offset,
-                                              waveSize, gpu::ShuffleMode::UP);
     auto shuffledValue = gpu::ShuffleOp::create(builder, loc, value, offset,
                                                 waveSize, gpu::ShuffleMode::UP);
-    Value sameSegment =
-        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq, key,
-                              shuffledKey.getShuffleResult());
-    // Valid source lanes below an active lane are active because the active
-    // lanes form a prefix, so no active-state shuffle is required here.
+    auto shuffledSegmentStart = gpu::ShuffleOp::create(
+        builder, loc, startsSegmentI32, offset, waveSize, gpu::ShuffleMode::UP);
+    Value hasSegmentStart = arith::CmpIOp::create(
+        builder, loc, arith::CmpIPredicate::ne, startsSegmentI32, zeroI32);
     Value shouldCombine = arith::AndIOp::create(
         builder, loc, active,
-        arith::AndIOp::create(builder, loc, shuffledKey.getValid(),
-                              sameSegment));
+        arith::AndIOp::create(
+            builder, loc, shuffledValue.getValid(),
+            arith::XOrIOp::create(builder, loc, hasSegmentStart, trueValue)));
     Value accumulated =
         combine(builder, loc, value, shuffledValue.getShuffleResult());
     value = arith::SelectOp::create(builder, loc, shouldCombine, accumulated,
                                     value);
+
+    Value shuffledHasSegmentStart = arith::AndIOp::create(
+        builder, loc, shuffledSegmentStart.getValid(),
+        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne,
+                              shuffledSegmentStart.getShuffleResult(),
+                              zeroI32));
+    Value propagatedSegmentStart = arith::OrIOp::create(
+        builder, loc, hasSegmentStart, shuffledHasSegmentStart);
+    startsSegmentI32 = arith::ExtUIOp::create(
+        builder, loc, builder.getI32Type(), propagatedSegmentStart);
   }
 
   auto nextKey = gpu::ShuffleOp::create(builder, loc, key, 1, waveSize,
