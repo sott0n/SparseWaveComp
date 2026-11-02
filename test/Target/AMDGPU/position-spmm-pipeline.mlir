@@ -5,13 +5,13 @@
 // RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=64 binary-format=none spmm-mapping=wave-per-position-tile spmm-block-size=64})' \
 // RUN:   | FileCheck %s --check-prefixes=CHECK,WAVE64
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=32 binary-format=none spmm-mapping=wave-per-position-tile spmm-block-size=64 spmm-position-chunk-size=4})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=32 binary-format=none spmm-mapping=wave-per-position-tile spmm-block-size=64 position-cooperative-chunk-size=4})' \
 // RUN:   | FileCheck %s --check-prefixes=CHECK,WAVE32
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=32 binary-format=none spmm-mapping=wave-per-position spmm-position-order=rhs-major spmm-block-size=64})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=32 binary-format=none spmm-mapping=wave-per-position position-order=rhs,position spmm-block-size=64})' \
 // RUN:   | FileCheck %s --check-prefixes=CHECK,WAVE32
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=32 binary-format=none spmm-mapping=wave-per-position spmm-position-order=rhs-major position-wave-reduction=workspace spmm-block-size=64})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=32 binary-format=none spmm-mapping=wave-per-position position-order=rhs,position position-wave-reduction=workspace spmm-block-size=64})' \
 // RUN:   | FileCheck %s --check-prefixes=CHECK,WAVE32
 
 // CHECK-NOT: sparsewave.

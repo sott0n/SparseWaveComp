@@ -685,7 +685,7 @@ def main(argv=None):
                                     )
                                 if chunk_size is not None:
                                     pipeline_options += (
-                                        "spmv-position-chunk-size="
+                                        "position-thread-chunk-size="
                                         f"{chunk_size}",
                                     )
                                 timing, compile_command, profile_command = (

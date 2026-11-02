@@ -21,21 +21,21 @@
 // RUN:     --entry-point-result=void \
 // RUN:   | FileCheck %s
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=thread-per-position spmm-block-size=64 spmm-position-chunk-size=4})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=thread-per-position spmm-block-size=64 position-thread-chunk-size=4})' \
 // RUN:   | mlir-runner \
 // RUN:     --shared-libs=%mlir_rocm_runtime \
 // RUN:     --shared-libs=%mlir_runner_utils \
 // RUN:     --entry-point-result=void \
 // RUN:   | FileCheck %s
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=thread-per-position spmm-block-size=64 spmm-position-chunk-size=4 spmm-position-order=rhs-major position-thread-reduction=atomic})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=thread-per-position spmm-block-size=64 position-thread-chunk-size=4 position-order=rhs,position position-thread-reduction=atomic})' \
 // RUN:   | mlir-runner \
 // RUN:     --shared-libs=%mlir_rocm_runtime \
 // RUN:     --shared-libs=%mlir_runner_utils \
 // RUN:     --entry-point-result=void \
 // RUN:   | FileCheck %s
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=thread-per-position spmm-block-size=64 spmm-position-chunk-size=4 spmm-position-order=rhs-major position-thread-reduction=segmented})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=thread-per-position spmm-block-size=64 position-thread-chunk-size=4 position-order=rhs,position position-thread-reduction=segmented})' \
 // RUN:   | mlir-runner \
 // RUN:     --shared-libs=%mlir_rocm_runtime \
 // RUN:     --shared-libs=%mlir_runner_utils \
@@ -49,21 +49,21 @@
 // RUN:     --entry-point-result=void \
 // RUN:   | FileCheck %s
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=wave-per-position spmm-position-order=rhs-major spmm-block-size=64})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=wave-per-position position-order=rhs,position spmm-block-size=64})' \
 // RUN:   | mlir-runner \
 // RUN:     --shared-libs=%mlir_rocm_runtime \
 // RUN:     --shared-libs=%mlir_runner_utils \
 // RUN:     --entry-point-result=void \
 // RUN:   | FileCheck %s
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=wave-per-position spmm-position-order=rhs-major position-wave-reduction=workspace spmm-block-size=64})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=wave-per-position position-order=rhs,position position-wave-reduction=workspace spmm-block-size=64})' \
 // RUN:   | mlir-runner \
 // RUN:     --shared-libs=%mlir_rocm_runtime \
 // RUN:     --shared-libs=%mlir_runner_utils \
 // RUN:     --entry-point-result=void \
 // RUN:   | FileCheck %s
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=wave-per-position spmm-position-order=position-major spmm-block-size=64})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmm-mapping=wave-per-position position-order=position,rhs spmm-block-size=64})' \
 // RUN:   | mlir-runner \
 // RUN:     --shared-libs=%mlir_rocm_runtime \
 // RUN:     --shared-libs=%mlir_runner_utils \

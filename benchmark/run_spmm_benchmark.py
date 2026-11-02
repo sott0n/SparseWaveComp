@@ -22,6 +22,10 @@ MAPPINGS = (
     COOPERATIVE_POSITION_MAPPING,
 )
 POSITION_ORDERS = ("position-major", "rhs-major")
+POSITION_ORDER_AXES = {
+    "position-major": ("position", "rhs"),
+    "rhs-major": ("rhs", "position"),
+}
 THREAD_POSITION_REDUCTIONS = common.POSITION_THREAD_REDUCTIONS
 WAVE_POSITION_REDUCTIONS = common.POSITION_WAVE_REDUCTIONS
 POSITION_REDUCTIONS = common.POSITION_REDUCTIONS
@@ -379,6 +383,18 @@ def sparsewave_kernel_layout(mapping, position_reduction=None):
     if mapping == COOPERATIVE_POSITION_MAPPING:
         return 2, 1
     return 1, 0
+
+
+def position_chunk_pipeline_option(mapping, chunk_size):
+    if mapping == POSITION_MAPPING:
+        return f"position-thread-chunk-size={chunk_size}"
+    if mapping == COOPERATIVE_POSITION_MAPPING:
+        return f"position-cooperative-chunk-size={chunk_size}"
+    raise ValueError(f"mapping does not use position chunks: {mapping}")
+
+
+def position_order_pipeline_option(order):
+    return "position-order=" + ",".join(POSITION_ORDER_AXES[order])
 
 
 def result_row(
@@ -819,12 +835,14 @@ def main(argv=None):
                         if chunk_size is not None:
                             case_directory /= f"chunk-{chunk_size}"
                             pipeline_options = (
-                                f"spmm-position-chunk-size={chunk_size}",
+                                position_chunk_pipeline_option(
+                                    mapping, chunk_size
+                                ),
                             )
                         if position_order is not None:
                             case_directory /= f"order-{position_order}"
                             pipeline_options += (
-                                f"spmm-position-order={position_order}",
+                                position_order_pipeline_option(position_order),
                             )
                         if position_reduction is not None:
                             case_directory /= (

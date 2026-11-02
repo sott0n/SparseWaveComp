@@ -120,16 +120,27 @@ struct SparseWaveToAMDGPUPipelineOptions
       llvm::cl::desc("Number of GPU threads in each SpMV block."),
       llvm::cl::init(256)};
 
-  PassOptions::Option<int64_t> spmvPositionChunkSize{
-      *this, "spmv-position-chunk-size",
-      llvm::cl::desc(
-          "Number of consecutive SpMV positions processed by each thread."),
-      llvm::cl::init(1)};
-
   PassOptions::Option<int64_t> positionBlockSize{
       *this, "position-block-size",
       llvm::cl::desc("Number of GPU threads in each position-parallel block."),
       llvm::cl::init(256)};
+
+  PassOptions::Option<int64_t> positionThreadChunkSize{
+      *this, "position-thread-chunk-size",
+      llvm::cl::desc(
+          "Number of consecutive positions processed by each thread."),
+      llvm::cl::init(1)};
+
+  PassOptions::Option<int64_t> positionCooperativeChunkSize{
+      *this, "position-cooperative-chunk-size",
+      llvm::cl::desc(
+          "Number of consecutive non-cooperative position points processed "
+          "by each wave."),
+      llvm::cl::init(1)};
+
+  PassOptions::ListOption<std::string> positionOrder{
+      *this, "position-order",
+      llvm::cl::desc("Logical position axes from outermost to innermost.")};
 
   PassOptions::Option<std::string> positionThreadReduction{
       *this, "position-thread-reduction",
@@ -154,18 +165,6 @@ struct SparseWaveToAMDGPUPipelineOptions
       *this, "spmm-tile-size",
       llvm::cl::desc("Number of output columns in each SpMM wave tile."),
       llvm::cl::init(4)};
-
-  PassOptions::Option<int64_t> spmmPositionChunkSize{
-      *this, "spmm-position-chunk-size",
-      llvm::cl::desc(
-          "Number of consecutive SpMM position-space points processed by "
-          "each position worker."),
-      llvm::cl::init(1)};
-
-  PassOptions::Option<std::string> spmmPositionOrder{
-      *this, "spmm-position-order",
-      llvm::cl::desc("Position-space SpMM iteration order."),
-      llvm::cl::init("position-major")};
 
   PassOptions::Option<int64_t> sddmmBlockSize{
       *this, "sddmm-block-size",

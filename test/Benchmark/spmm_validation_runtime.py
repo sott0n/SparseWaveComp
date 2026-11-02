@@ -53,12 +53,16 @@ for sparse_format in ["csr", "bsr"]:
             if reduction is not None
             else ""
         )
+        if mapping == benchmark.COOPERATIVE_POSITION_MAPPING:
+            chunk_option = "position-cooperative-chunk-size"
+        else:
+            chunk_option = "position-thread-chunk-size"
         pipeline = (
             "builtin.module(convert-scf-to-cf,"
             "sparsewave-to-amdgpu-pipeline{"
             f"chip={chip} wavefront-size=32 spmm-block-size=64 "
             f"spmm-mapping={mapping} "
-            f"spmm-position-chunk-size={chunk_size}"
+            f"{chunk_option}={chunk_size}"
             f"{reduction_option}"
             "},reconcile-unrealized-casts)"
         )

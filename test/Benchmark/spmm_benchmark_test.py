@@ -475,6 +475,28 @@ amdhsa.kernels:
         with self.assertRaisesRegex(argparse.ArgumentTypeError, "unknown"):
             BENCHMARK.parse_position_reductions("tree")
 
+    def test_position_options_use_generic_pipeline_controls(self):
+        self.assertEqual(
+            BENCHMARK.position_chunk_pipeline_option(
+                "thread-per-position", 4
+            ),
+            "position-thread-chunk-size=4",
+        )
+        self.assertEqual(
+            BENCHMARK.position_chunk_pipeline_option(
+                "wave-per-position-tile", 8
+            ),
+            "position-cooperative-chunk-size=8",
+        )
+        self.assertEqual(
+            BENCHMARK.position_order_pipeline_option("rhs-major"),
+            "position-order=rhs,position",
+        )
+        with self.assertRaisesRegex(ValueError, "does not use"):
+            BENCHMARK.position_chunk_pipeline_option(
+                "thread-per-output", 4
+            )
+
     def test_generated_workloads_cover_row_distributions(self):
         args = types.SimpleNamespace(
             matrix_data=None,
