@@ -22,11 +22,9 @@ MAPPINGS = (
     COOPERATIVE_POSITION_MAPPING,
 )
 POSITION_ORDERS = ("position-major", "rhs-major")
-THREAD_POSITION_REDUCTIONS = ("atomic", "segmented")
-WAVE_POSITION_REDUCTIONS = ("atomic", "workspace")
-POSITION_REDUCTIONS = tuple(
-    dict.fromkeys(THREAD_POSITION_REDUCTIONS + WAVE_POSITION_REDUCTIONS)
-)
+THREAD_POSITION_REDUCTIONS = common.POSITION_THREAD_REDUCTIONS
+WAVE_POSITION_REDUCTIONS = common.POSITION_WAVE_REDUCTIONS
+POSITION_REDUCTIONS = common.POSITION_REDUCTIONS
 FORMATS = ("csr", "bsr")
 DISTRIBUTIONS = common.ROW_DISTRIBUTIONS
 RESULT_COLUMNS = (
@@ -285,22 +283,7 @@ def parse_position_orders(value):
 
 
 def parse_position_reductions(value):
-    values = [item.strip() for item in value.split(",") if item.strip()]
-    invalid = [item for item in values if item not in POSITION_REDUCTIONS]
-    if not values:
-        raise argparse.ArgumentTypeError(
-            "expected at least one position reduction"
-        )
-    if invalid:
-        raise argparse.ArgumentTypeError(
-            f"unknown position reductions {invalid}; "
-            f"expected {POSITION_REDUCTIONS}"
-        )
-    if len(values) != len(set(values)):
-        raise argparse.ArgumentTypeError(
-            f"duplicate position reductions are not allowed: {values}"
-        )
-    return values
+    return common.parse_position_reductions(value)
 
 
 def parse_distributions(value):
@@ -350,16 +333,17 @@ def benchmark_cases(
                 yield TILED_MAPPING, block_size, tile_size, None, None, None
         if WAVE_POSITION_MAPPING in mappings:
             for order in position_orders:
-                for reduction in position_reductions:
-                    if reduction in WAVE_POSITION_REDUCTIONS:
-                        yield (
-                            WAVE_POSITION_MAPPING,
-                            block_size,
-                            None,
-                            None,
-                            order,
-                            reduction,
-                        )
+                for reduction in common.position_reductions_for_mapping(
+                    WAVE_POSITION_MAPPING, position_reductions
+                ):
+                    yield (
+                        WAVE_POSITION_MAPPING,
+                        block_size,
+                        None,
+                        None,
+                        order,
+                        reduction,
+                    )
         if COOPERATIVE_POSITION_MAPPING in mappings:
             for chunk_size in position_chunk_sizes:
                 yield (
@@ -373,29 +357,26 @@ def benchmark_cases(
         if POSITION_MAPPING in mappings:
             for chunk_size in position_chunk_sizes:
                 for order in position_orders:
-                    for reduction in position_reductions:
-                        if reduction in THREAD_POSITION_REDUCTIONS:
-                            yield (
-                                POSITION_MAPPING,
-                                block_size,
-                                None,
-                                chunk_size,
-                                order,
-                                reduction,
-                            )
+                    for reduction in common.position_reductions_for_mapping(
+                        POSITION_MAPPING, position_reductions
+                    ):
+                        yield (
+                            POSITION_MAPPING,
+                            block_size,
+                            None,
+                            chunk_size,
+                            order,
+                            reduction,
+                        )
 
 
 def sparsewave_kernel_layout(mapping, position_reduction=None):
-    if (
-        mapping == WAVE_POSITION_MAPPING
-        and position_reduction == "workspace"
-    ):
-        return 4, 2
-    if mapping in (
-        POSITION_MAPPING,
-        WAVE_POSITION_MAPPING,
-        COOPERATIVE_POSITION_MAPPING,
-    ):
+    position_layout = common.position_kernel_layout(
+        mapping, position_reduction
+    )
+    if position_layout is not None:
+        return position_layout
+    if mapping == COOPERATIVE_POSITION_MAPPING:
         return 2, 1
     return 1, 0
 
@@ -850,8 +831,9 @@ def main(argv=None):
                                 f"reduction-{position_reduction}"
                             )
                             pipeline_options += (
-                                f"spmm-position-reduction="
-                                f"{position_reduction}",
+                                common.position_reduction_pipeline_option(
+                                    mapping, position_reduction
+                                ),
                             )
                         kernels_per_dispatch, compute_binary_index = (
                             sparsewave_kernel_layout(

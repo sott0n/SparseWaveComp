@@ -252,7 +252,12 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   spmvScheduleOptions.waveSize =
       static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
   spmvScheduleOptions.threadChunkSize = options.spmvPositionChunkSize;
-  spmvScheduleOptions.threadReduction = options.spmvPositionReduction;
+  if (options.spmvMapping == "wave-per-position")
+    spmvScheduleOptions.waveReduction =
+        options.positionWaveReduction.getValue();
+  else
+    spmvScheduleOptions.threadReduction =
+        options.positionThreadReduction.getValue();
   pm.addPass(createScheduleSparseWavePosition(spmvScheduleOptions));
 
   // Decompose SpMM semantics into a canonical keyed reduction. A separate,
@@ -289,10 +294,10 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
       scheduleOptions.threadChunkSize = options.spmmPositionChunkSize;
       if (usesThreadPosition)
         scheduleOptions.threadReduction =
-            options.spmmPositionReduction.getValue();
+            options.positionThreadReduction.getValue();
       else
         scheduleOptions.waveReduction =
-            options.spmmPositionReduction.getValue();
+            options.positionWaveReduction.getValue();
     }
     pm.addPass(createScheduleSparseWavePosition(scheduleOptions));
   }

@@ -21,7 +21,7 @@
 // RUN:     --entry-point-result=void \
 // RUN:   | FileCheck %s
 // RUN: sparsewave-opt %s \
-// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmv-mapping=thread-per-position spmv-position-chunk-size=4 spmv-position-reduction=segmented spmv-block-size=128})' \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmv-mapping=thread-per-position spmv-position-chunk-size=4 position-thread-reduction=segmented spmv-block-size=128})' \
 // RUN:   | mlir-runner \
 // RUN:     --shared-libs=%mlir_rocm_runtime \
 // RUN:     --shared-libs=%mlir_runner_utils \
@@ -29,6 +29,13 @@
 // RUN:   | FileCheck %s
 // RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmv-mapping=wave-per-position spmv-block-size=128})' \
+// RUN:   | mlir-runner \
+// RUN:     --shared-libs=%mlir_rocm_runtime \
+// RUN:     --shared-libs=%mlir_runner_utils \
+// RUN:     --entry-point-result=void \
+// RUN:   | FileCheck %s
+// RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=%amdgpu_chip wavefront-size=32 rocm-path=%rocm_path spmv-mapping=wave-per-position position-wave-reduction=workspace spmv-block-size=128})' \
 // RUN:   | mlir-runner \
 // RUN:     --shared-libs=%mlir_rocm_runtime \
 // RUN:     --shared-libs=%mlir_runner_utils \

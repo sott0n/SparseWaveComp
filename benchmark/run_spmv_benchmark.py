@@ -18,10 +18,10 @@ MAPPINGS = (
 FORMATS = ("csr", "coo")
 FORMAT_MAPPINGS = {
     "csr": MAPPINGS,
-    "coo": ("thread-per-nonzero",),
+    "coo": ("thread-per-position", "wave-per-position"),
 }
 DISTRIBUTIONS = common.ROW_DISTRIBUTIONS
-POSITION_REDUCTIONS = ("atomic", "segmented")
+POSITION_REDUCTIONS = common.POSITION_REDUCTIONS
 RESULT_COLUMNS = (
     "chip",
     "matrix",
@@ -156,12 +156,12 @@ write_coo_binary = common.write_coo_binary
 parse_kernel_trace = common.parse_kernel_trace
 
 
-def sparsewave_kernel_layout(sparse_format, mapping):
-    if sparse_format == "coo" or mapping in (
-        "thread-per-position",
-        "wave-per-position",
-    ):
-        return 2, 1
+def sparsewave_kernel_layout(mapping, position_reduction=None):
+    position_layout = common.position_kernel_layout(
+        mapping, position_reduction
+    )
+    if position_layout is not None:
+        return position_layout
     return 1, 0
 
 
@@ -186,22 +186,7 @@ def parse_formats(value):
 
 
 def parse_position_reductions(value):
-    values = [item.strip() for item in value.split(",") if item.strip()]
-    invalid = [item for item in values if item not in POSITION_REDUCTIONS]
-    if not values:
-        raise argparse.ArgumentTypeError(
-            "expected at least one position reduction"
-        )
-    if invalid:
-        raise argparse.ArgumentTypeError(
-            f"unknown position reductions {invalid}; "
-            f"expected {POSITION_REDUCTIONS}"
-        )
-    if len(values) != len(set(values)):
-        raise argparse.ArgumentTypeError(
-            f"duplicate position reductions are not allowed: {values}"
-        )
-    return values
+    return common.parse_position_reductions(value)
 
 
 def row_length(nnz_per_row, distribution, row):
@@ -575,17 +560,18 @@ def parse_arguments(argv):
         type=parse_positive_int_list,
         default=parse_positive_int_list("1"),
         help=(
-            "Comma-separated TACO-style split factors for the CSR "
+            "Comma-separated TACO-style split factors for the "
             "thread-per-position mapping."
         ),
     )
     parser.add_argument(
         "--position-reductions",
         type=parse_position_reductions,
-        default=parse_position_reductions("atomic"),
+        default=parse_position_reductions("atomic,segmented,workspace"),
         help=(
-            "Comma-separated reduction strategies for each CSR "
-            "thread-per-position chunk: atomic,segmented."
+            "Comma-separated position reduction strategies. "
+            "Thread mapping supports atomic,segmented; wave mapping supports "
+            "atomic,workspace."
         ),
     )
     common.add_common_arguments(parser, repository)
@@ -667,20 +653,17 @@ def main(argv=None):
                     for mapping in FORMAT_MAPPINGS[sparse_format]:
                         chunk_sizes = (
                             args.position_chunk_sizes
-                            if sparse_format == "csr"
-                            and mapping == "thread-per-position"
+                            if mapping == "thread-per-position"
                             else (None,)
                         )
                         for chunk_size in chunk_sizes:
-                            reductions = (
-                                args.position_reductions
-                                if chunk_size is not None
-                                else (None,)
+                            reductions = common.position_reductions_for_mapping(
+                                mapping, args.position_reductions
                             )
                             for position_reduction in reductions:
                                 kernels_per_dispatch, compute_binary_index = (
                                     sparsewave_kernel_layout(
-                                        sparse_format, mapping
+                                        mapping, position_reduction
                                     )
                                 )
                                 case_directory = (
@@ -693,12 +676,17 @@ def main(argv=None):
                                 pipeline_options = ()
                                 if chunk_size is not None:
                                     case_directory /= f"chunk-{chunk_size}"
+                                if position_reduction is not None:
                                     case_directory /= position_reduction
-                                    pipeline_options = (
+                                    pipeline_options += (
+                                        common.position_reduction_pipeline_option(
+                                            mapping, position_reduction
+                                        ),
+                                    )
+                                if chunk_size is not None:
+                                    pipeline_options += (
                                         "spmv-position-chunk-size="
                                         f"{chunk_size}",
-                                        "spmv-position-reduction="
-                                        f"{position_reduction}",
                                     )
                                 timing, compile_command, profile_command = (
                                     common.run_case(
@@ -706,11 +694,7 @@ def main(argv=None):
                                         source_text,
                                         case_directory,
                                         "spmv",
-                                        (
-                                            mapping
-                                            if sparse_format == "csr"
-                                            else "thread-per-row"
-                                        ),
+                                        mapping,
                                         block_size,
                                         sparse_binaries.get(sparse_format),
                                         pipeline_options=pipeline_options,

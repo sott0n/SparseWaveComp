@@ -126,15 +126,20 @@ struct SparseWaveToAMDGPUPipelineOptions
           "Number of consecutive SpMV positions processed by each thread."),
       llvm::cl::init(1)};
 
-  PassOptions::Option<std::string> spmvPositionReduction{
-      *this, "spmv-position-reduction",
-      llvm::cl::desc("Reduction strategy for thread-per-position SpMV chunks."),
-      llvm::cl::init("atomic")};
-
   PassOptions::Option<int64_t> positionBlockSize{
       *this, "position-block-size",
       llvm::cl::desc("Number of GPU threads in each position-parallel block."),
       llvm::cl::init(256)};
+
+  PassOptions::Option<std::string> positionThreadReduction{
+      *this, "position-thread-reduction",
+      llvm::cl::desc("Reduction strategy for thread-mapped position work."),
+      llvm::cl::init("atomic")};
+
+  PassOptions::Option<std::string> positionWaveReduction{
+      *this, "position-wave-reduction",
+      llvm::cl::desc("Reduction strategy for wave-mapped position work."),
+      llvm::cl::init("atomic")};
 
   PassOptions::Option<std::string> spmmMapping{
       *this, "spmm-mapping", llvm::cl::desc("SpMM work mapping strategy."),
@@ -161,11 +166,6 @@ struct SparseWaveToAMDGPUPipelineOptions
       *this, "spmm-position-order",
       llvm::cl::desc("Position-space SpMM iteration order."),
       llvm::cl::init("position-major")};
-
-  PassOptions::Option<std::string> spmmPositionReduction{
-      *this, "spmm-position-reduction",
-      llvm::cl::desc("Reduction strategy for position-space SpMM mappings."),
-      llvm::cl::init("atomic")};
 
   PassOptions::Option<int64_t> sddmmBlockSize{
       *this, "sddmm-block-size",

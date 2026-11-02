@@ -11,9 +11,9 @@ be included as CSR baselines.
 
 | Runner | Format | Format selection and parameters | GPU mappings |
 | --- | --- | --- | --- |
-| SpMV | CSR | `--formats=csr`; `--position-chunk-sizes` selects consecutive positions processed by each `thread-per-position` worker; `--position-reductions=atomic,segmented` compares per-position atomics with chunk-local segmented sums | `thread-per-row`, `thread-per-position`, `wave-per-position`, `wave-per-row`, `block-per-row` |
-| SpMV | COO | `--formats=coo` | `thread-per-nonzero` |
-| SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths; `--position-chunk-sizes` selects consecutive position-space points per thread or cooperative wave; `--position-orders=position-major,rhs-major` reorders the position and RHS-column axes; `--position-reductions=atomic,segmented` selects thread contribution aggregation | `thread-per-output`, `wave-per-row-tile`, `thread-per-position`, `wave-per-position`, `wave-per-position-tile` |
+| SpMV | CSR | `--formats=csr`; `--position-chunk-sizes` selects consecutive positions processed by each `thread-per-position` worker; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-row`, `thread-per-position`, `wave-per-position`, `wave-per-row`, `block-per-row` |
+| SpMV | COO | `--formats=coo`; position options are shared with CSR | `thread-per-position`, `wave-per-position` |
+| SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths; `--position-chunk-sizes` selects consecutive position-space points per thread or cooperative wave; `--position-orders=position-major,rhs-major` reorders the position and RHS-column axes; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-output`, `wave-per-row-tile`, `thread-per-position`, `wave-per-position`, `wave-per-position-tile` |
 | SpMM | BSR | `--formats=bsr`; `--bsr-block-sizes` selects square storage block sizes | `thread-per-output` |
 | Elementwise add/multiply | CSR | `--nnz-per-row` controls both input row lengths; `--overlaps` controls their structural overlap and therefore the assembled output size | `thread-per-row` symbolic and numeric phases with a hierarchical GPU prefix scan |
 
@@ -28,8 +28,8 @@ Matrix Market entries are sorted deterministically without coalescing duplicate
 coordinates. Temporary CSR and COO binaries therefore preserve the same
 mathematical input, including repeated coordinates. `results.csv` records the
 format and its host conversion/serialization time separately from GPU kernel
-time. COO timing includes both the output-initialization and atomic-compute
-kernels by summing their GPU durations for each SpMV dispatch.
+time. Position-space timing sums every GPU stage in a dispatch, including
+output initialization and any workspace stages.
 
 BSR conversion groups entries into row-major dense blocks and coalesces
 duplicate coordinates by addition. Matrix dimensions that are not divisible

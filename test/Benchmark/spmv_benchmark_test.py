@@ -68,22 +68,24 @@ class SpMVBenchmarkTest(unittest.TestCase):
 
     def test_position_mapping_selects_compute_kernel(self):
         self.assertEqual(
-            BENCHMARK.sparsewave_kernel_layout("csr", "thread-per-row"),
+            BENCHMARK.sparsewave_kernel_layout("thread-per-row"),
             (1, 0),
         )
         self.assertEqual(
             BENCHMARK.sparsewave_kernel_layout(
-                "csr", "thread-per-position"
+                "thread-per-position", "atomic"
             ),
             (2, 1),
         )
         self.assertEqual(
-            BENCHMARK.sparsewave_kernel_layout("csr", "wave-per-position"),
-            (2, 1),
+            BENCHMARK.sparsewave_kernel_layout(
+                "wave-per-position", "workspace"
+            ),
+            (4, 2),
         )
         self.assertEqual(
-            BENCHMARK.sparsewave_kernel_layout("coo", "thread-per-nonzero"),
-            (2, 1),
+            BENCHMARK.FORMAT_MAPPINGS["coo"],
+            ("thread-per-position", "wave-per-position"),
         )
 
     def test_rendered_synthetic_coo_input_lowers(self):
@@ -324,8 +326,22 @@ class SpMVBenchmarkTest(unittest.TestCase):
 
     def test_position_reduction_parser(self):
         self.assertEqual(
-            BENCHMARK.parse_position_reductions("atomic,segmented"),
-            ["atomic", "segmented"],
+            BENCHMARK.parse_position_reductions(
+                "atomic,segmented,workspace"
+            ),
+            ["atomic", "segmented", "workspace"],
+        )
+        self.assertEqual(
+            BENCHMARK.common.position_reduction_pipeline_option(
+                "thread-per-position", "segmented"
+            ),
+            "position-thread-reduction=segmented",
+        )
+        self.assertEqual(
+            BENCHMARK.common.position_reduction_pipeline_option(
+                "wave-per-position", "workspace"
+            ),
+            "position-wave-reduction=workspace",
         )
         with self.assertRaisesRegex(
             BENCHMARK.argparse.ArgumentTypeError,

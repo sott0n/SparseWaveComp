@@ -49,7 +49,7 @@ for sparse_format in ["csr", "bsr"]:
             / f"{sparse_format}-{mapping}-{chunk_size}{suffix}.mlir"
         )
         reduction_option = (
-            f" spmm-position-reduction={reduction}"
+            f" position-wave-reduction={reduction}"
             if reduction is not None
             else ""
         )

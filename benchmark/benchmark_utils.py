@@ -27,6 +27,11 @@ ROW_DISTRIBUTION_PERIODS = {
     "alternating": 2,
     "skewed": 8,
 }
+POSITION_THREAD_REDUCTIONS = ("atomic", "segmented")
+POSITION_WAVE_REDUCTIONS = ("atomic", "workspace")
+POSITION_REDUCTIONS = tuple(
+    dict.fromkeys(POSITION_THREAD_REDUCTIONS + POSITION_WAVE_REDUCTIONS)
+)
 
 
 def positive_int(value):
@@ -57,6 +62,55 @@ def parse_positive_int_list(value):
             f"duplicate values are not allowed: {values}"
         )
     return values
+
+
+def parse_position_reductions(value):
+    values = [item.strip() for item in value.split(",") if item.strip()]
+    invalid = [item for item in values if item not in POSITION_REDUCTIONS]
+    if not values:
+        raise argparse.ArgumentTypeError(
+            "expected at least one position reduction"
+        )
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            f"unknown position reductions {invalid}; "
+            f"expected {POSITION_REDUCTIONS}"
+        )
+    if len(values) != len(set(values)):
+        raise argparse.ArgumentTypeError(
+            f"duplicate position reductions are not allowed: {values}"
+        )
+    return values
+
+
+def position_reductions_for_mapping(mapping, reductions):
+    if mapping == "thread-per-position":
+        supported = POSITION_THREAD_REDUCTIONS
+    elif mapping == "wave-per-position":
+        supported = POSITION_WAVE_REDUCTIONS
+    else:
+        return (None,)
+    return tuple(
+        reduction for reduction in reductions if reduction in supported
+    )
+
+
+def position_reduction_pipeline_option(mapping, reduction):
+    if reduction is None:
+        return None
+    if mapping == "thread-per-position":
+        return f"position-thread-reduction={reduction}"
+    if mapping == "wave-per-position":
+        return f"position-wave-reduction={reduction}"
+    raise ValueError(f"mapping does not use a position reduction: {mapping}")
+
+
+def position_kernel_layout(mapping, reduction):
+    if mapping == "wave-per-position" and reduction == "workspace":
+        return 4, 2
+    if mapping in ("thread-per-position", "wave-per-position"):
+        return 2, 1
+    return None
 
 
 def parse_row_distributions(value):
