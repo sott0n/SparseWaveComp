@@ -114,6 +114,8 @@ struct WaveCompressedTileResult {
 struct WaveSegmentedReduction {
   Value inclusiveValue;
   Value segmentEnd;
+  /// One-based segment index in the wave when requested; otherwise null.
+  Value segmentOrdinal;
 };
 
 enum class CompressedCoiterationKind {
@@ -326,11 +328,13 @@ void buildBlockReduction(OpBuilder &builder, Location loc, gpu::LaunchOp launch,
 
 /// Builds an inclusive segmented reduction for a prefix of active wave lanes
 /// with the supplied associative and commutative combiner. Active lanes must
-/// be contiguous and start at lane zero.
+/// be contiguous and start at lane zero. The optional segment ordinal scan is
+/// used when a caller must distinguish wave-boundary segments structurally.
 WaveSegmentedReduction
 buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
                                   Value value, Value active, int64_t waveSize,
-                                  ReductionCombinerBuilder combine);
+                                  ReductionCombinerBuilder combine,
+                                  bool computeSegmentOrdinal = false);
 
 /// Independently reduces multiple values across a wave with an associative and
 /// commutative combiner.

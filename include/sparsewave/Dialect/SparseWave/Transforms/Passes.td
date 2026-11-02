@@ -182,8 +182,11 @@ def ScheduleSparseWavePosition
     contributions locally before atomic accumulation. When a rank-1 domain
     derives its key from a compressed segment, the segmented form carries that
     segment across the chunk. Wave mapping uses balanced collapsed-space
-    partitions and first
-    combines adjacent equal keys with a segmented reduction. When a
+    partitions and first combines adjacent equal keys with a segmented
+    reduction. Its workspace strategy atomically emits segments contained
+    within one wave, defers the first and last segment partials from each wave
+    to a fixed-size workspace, and merges adjacent boundary partials in a
+    second wave stage. When a
     cooperative axis is named, each wave instead owns one group of that axis
     and its lanes select individual axis coordinates. Read-only scalar values
     that do not depend on the cooperative axis are loaded by lane zero and
@@ -202,6 +205,9 @@ def ScheduleSparseWavePosition
     Option<"waveSize", "wave-size", "int64_t",
            /*default=*/"32",
            "Number of target lanes in a scheduled wave">,
+    Option<"waveReduction", "wave-reduction", "std::string",
+           /*default=*/"\"atomic\"",
+           "Wave segment reduction strategy: atomic or workspace">,
     Option<"cooperativeAxis", "cooperative-axis", "std::string",
            /*default=*/"\"\"",
            "Logical axis distributed across cooperating wave lanes">,

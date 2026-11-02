@@ -38,6 +38,12 @@
 // RUN:   --schedule-sparsewave-position='mapping=wave thread-reduction=segmented' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-WAVE-POSITION-REDUCTION
 // RUN: not sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=wave wave-reduction=tree' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-WAVE-REDUCTION
+// RUN: not sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=thread wave-reduction=workspace' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-WORKSPACE-MAPPING
+// RUN: not sparsewave-opt %s \
 // RUN:   --convert-sparsewave-to-gpu='mapping=block-per-row wave-size=64' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-BLOCK-WAVE-SIZE
 // RUN: not sparsewave-opt %s \
@@ -102,6 +108,8 @@
 // INVALID-WAVE-CHUNK-SIZE: thread position chunk size applies only to thread mapping
 // INVALID-THREAD-POSITION-REDUCTION: unsupported thread position reduction 'tree'; expected 'atomic' or 'segmented'
 // INVALID-WAVE-POSITION-REDUCTION: thread position reduction applies only to thread mapping
+// INVALID-WAVE-REDUCTION: unsupported wave position reduction 'tree'; expected 'atomic' or 'workspace'
+// INVALID-WORKSPACE-MAPPING: wave position reduction applies only to non-cooperative wave mapping
 // INVALID-BLOCK-WAVE-SIZE: block-per-row currently requires Wave32, but got wave size 64
 // INVALID-BLOCK-BLOCK-SIZE: block-per-row requires the SpMV block size to be a multiple of 32, but got 48
 // INVALID-SPMM-MAPPING: unsupported SpMM mapping strategy 'unknown';

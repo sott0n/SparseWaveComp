@@ -5,6 +5,9 @@
 // RUN:   --schedule-sparsewave-position='mapping=wave block-size=64 wave-size=32' \
 // RUN:   | FileCheck %s --check-prefix=WAVE
 // RUN: sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=wave block-size=64 wave-size=32 wave-reduction=workspace' \
+// RUN:   | FileCheck %s --check-prefix=WORKSPACE
+// RUN: sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='mapping=thread block-size=64 thread-chunk-size=4 thread-reduction=segmented' \
 // RUN:   | FileCheck %s --check-prefix=SEGMENTED
 // RUN: sparsewave-opt %s \
@@ -39,6 +42,25 @@
 // WAVE: gpu.shuffle up
 // WAVE: arith.addf
 // WAVE: memref.atomic_rmw addf
+
+// WORKSPACE-LABEL: func.func @keyed_sum(
+// WORKSPACE: %[[KEYS:.*]] = memref.alloc(%[[WORKSPACE_SIZE:.*]]) : memref<?xindex>
+// WORKSPACE: %[[VALUES:.*]] = memref.alloc(%[[WORKSPACE_SIZE]]) : memref<?xf32>
+// WORKSPACE: sparsewave.position_parallel %[[WORKSPACE_SIZE]] mapping = "thread" block_size = 64 {
+// WORKSPACE: memref.store {{.*}}, %[[KEYS]]
+// WORKSPACE: memref.store {{.*}}, %[[VALUES]]
+// WORKSPACE: sparsewave.position_parallel {{.*}} mapping = "wave" block_size = 64 {
+// WORKSPACE: gpu.shuffle up
+// WORKSPACE: arith.cmpi eq
+// WORKSPACE: memref.store {{.*}}, %[[KEYS]]
+// WORKSPACE: memref.store {{.*}}, %[[VALUES]]
+// WORKSPACE: memref.atomic_rmw addf
+// WORKSPACE: sparsewave.position_parallel {{.*}} mapping = "wave" block_size = 64 {
+// WORKSPACE: memref.load %[[KEYS]]
+// WORKSPACE: memref.load %[[VALUES]]
+// WORKSPACE: memref.atomic_rmw addf
+// WORKSPACE: memref.dealloc %[[KEYS]]
+// WORKSPACE: memref.dealloc %[[VALUES]]
 
 // SEGMENTED-LABEL: func.func @keyed_sum(
 // SEGMENTED-NOT: sparsewave.position_reduce

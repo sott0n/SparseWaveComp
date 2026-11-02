@@ -855,7 +855,8 @@ void buildBlockReduction(OpBuilder &builder, Location loc, gpu::LaunchOp launch,
 WaveSegmentedReduction
 buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
                                   Value value, Value active, int64_t waveSize,
-                                  ReductionCombinerBuilder combine) {
+                                  ReductionCombinerBuilder combine,
+                                  bool computeSegmentOrdinal) {
   Value activeI32 =
       arith::ExtUIOp::create(builder, loc, builder.getI32Type(), active);
   Value zeroI32 = arith::ConstantIntOp::create(builder, loc, 0, 32);
@@ -879,6 +880,22 @@ buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
       arith::XOrIOp::create(builder, loc, continuesPreviousSegment, trueValue));
   Value startsSegmentI32 =
       arith::ExtUIOp::create(builder, loc, builder.getI32Type(), startsSegment);
+  Value segmentOrdinal;
+  if (computeSegmentOrdinal) {
+    // Count segment starts instead of comparing against the first key. Equal
+    // keys may legally occur in multiple non-adjacent segments.
+    segmentOrdinal = startsSegmentI32;
+    for (int32_t offset = 1; offset < waveSize; offset <<= 1) {
+      auto shuffledOrdinal = gpu::ShuffleOp::create(
+          builder, loc, segmentOrdinal, offset, waveSize, gpu::ShuffleMode::UP);
+      Value accumulated = arith::AddIOp::create(
+          builder, loc, segmentOrdinal, shuffledOrdinal.getShuffleResult());
+      Value shouldAccumulate = arith::AndIOp::create(
+          builder, loc, active, shuffledOrdinal.getValid());
+      segmentOrdinal = arith::SelectOp::create(builder, loc, shouldAccumulate,
+                                               accumulated, segmentOrdinal);
+    }
+  }
 
   // Carry segment-start markers with the partial sums so equal keys separated
   // by another segment are never combined at larger shuffle offsets.
@@ -927,7 +944,7 @@ buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
       arith::XOrIOp::create(builder, loc, nextIsSameSegment, trueValue);
   Value segmentEnd =
       arith::AndIOp::create(builder, loc, active, nextIsDifferent);
-  return {value, segmentEnd};
+  return {value, segmentEnd, segmentOrdinal};
 }
 
 SmallVector<Value> buildWaveReductions(OpBuilder &builder, Location loc,
