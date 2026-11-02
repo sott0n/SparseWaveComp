@@ -26,25 +26,40 @@ for sparse_format in ["csr", "bsr"]:
         source_text = benchmark.render_mlir(
             Path(sys.argv[1]) / "spmm.mlir.in", matrix, 8, 3
         )
-        mappings = [(mapping, 1) for mapping in benchmark.MAPPINGS]
-        mappings.append((benchmark.COOPERATIVE_POSITION_MAPPING, 4))
+        mappings = [(mapping, 1, None) for mapping in benchmark.MAPPINGS]
+        mappings.append(
+            (benchmark.WAVE_POSITION_MAPPING, 1, "workspace")
+        )
+        mappings.append(
+            (benchmark.COOPERATIVE_POSITION_MAPPING, 4, None)
+        )
     else:
         bsr = benchmark.common.convert_to_bsr(matrix, 2)
         benchmark.common.write_bsr_binary(binary, bsr)
         source_text = benchmark.render_bsr_mlir(
             Path(sys.argv[1]) / "bsr_spmm.mlir.in", bsr, 8, 3
         )
-        mappings = [(benchmark.BASELINE_MAPPING, 1)]
+        mappings = [(benchmark.BASELINE_MAPPING, 1, None)]
     source = root / f"{sparse_format}.mlir"
     source.write_text(source_text)
-    for mapping, chunk_size in mappings:
-        compiled = root / f"{sparse_format}-{mapping}-{chunk_size}.mlir"
+    for mapping, chunk_size, reduction in mappings:
+        suffix = f"-{reduction}" if reduction is not None else ""
+        compiled = (
+            root
+            / f"{sparse_format}-{mapping}-{chunk_size}{suffix}.mlir"
+        )
+        reduction_option = (
+            f" spmm-position-reduction={reduction}"
+            if reduction is not None
+            else ""
+        )
         pipeline = (
             "builtin.module(convert-scf-to-cf,"
             "sparsewave-to-amdgpu-pipeline{"
             f"chip={chip} wavefront-size=32 spmm-block-size=64 "
             f"spmm-mapping={mapping} "
             f"spmm-position-chunk-size={chunk_size}"
+            f"{reduction_option}"
             "},reconcile-unrealized-casts)"
         )
         subprocess.run(
@@ -66,5 +81,6 @@ for sparse_format in ["csr", "bsr"]:
             check=True,
         )
         assert result.stdout.strip().endswith("[0]"), (
-            sparse_format, mapping, chunk_size, result.stdout, result.stderr
+            sparse_format, mapping, chunk_size, reduction,
+            result.stdout, result.stderr
         )

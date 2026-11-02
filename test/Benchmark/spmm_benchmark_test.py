@@ -245,7 +245,7 @@ amdhsa.kernels:
                 [4],
                 [4],
                 ["position-major", "rhs-major"],
-                ["atomic", "segmented"],
+                list(BENCHMARK.POSITION_REDUCTIONS),
                 list(BENCHMARK.MAPPINGS),
             )
         )
@@ -260,7 +260,15 @@ amdhsa.kernels:
                     None,
                     None,
                     "position-major",
+                    "atomic",
+                ),
+                (
+                    "wave-per-position",
+                    64,
                     None,
+                    None,
+                    "position-major",
+                    "workspace",
                 ),
                 (
                     "wave-per-position",
@@ -268,7 +276,15 @@ amdhsa.kernels:
                     None,
                     None,
                     "rhs-major",
+                    "atomic",
+                ),
+                (
+                    "wave-per-position",
+                    64,
                     None,
+                    None,
+                    "rhs-major",
+                    "workspace",
                 ),
                 (
                     "wave-per-position-tile",
@@ -321,6 +337,12 @@ amdhsa.kernels:
         self.assertEqual(
             BENCHMARK.sparsewave_kernel_layout("wave-per-position"),
             (2, 1),
+        )
+        self.assertEqual(
+            BENCHMARK.sparsewave_kernel_layout(
+                "wave-per-position", "workspace"
+            ),
+            (4, 2),
         )
         self.assertEqual(
             BENCHMARK.sparsewave_kernel_layout("wave-per-position-tile"),
@@ -404,6 +426,18 @@ amdhsa.kernels:
         args.tile_sizes = [33]
         BENCHMARK.validate_paths(args)
 
+        args.formats = ["csr"]
+        args.wave_size = 32
+        args.tile_sizes = [4]
+        args.mappings = [BENCHMARK.POSITION_MAPPING]
+        args.position_reductions = ["workspace"]
+        with self.assertRaisesRegex(ValueError, "atomic or segmented"):
+            BENCHMARK.validate_paths(args)
+        args.mappings = [BENCHMARK.WAVE_POSITION_MAPPING]
+        args.position_reductions = ["segmented"]
+        with self.assertRaisesRegex(ValueError, "atomic or workspace"):
+            BENCHMARK.validate_paths(args)
+
     def test_format_options_are_validated(self):
         self.assertEqual(BENCHMARK.parse_formats("csr,bsr"), ["csr", "bsr"])
         with self.assertRaisesRegex(argparse.ArgumentTypeError, "unknown"):
@@ -431,8 +465,10 @@ amdhsa.kernels:
             ["position-major", "rhs-major"],
         )
         self.assertEqual(
-            BENCHMARK.parse_position_reductions("atomic,segmented"),
-            ["atomic", "segmented"],
+            BENCHMARK.parse_position_reductions(
+                "atomic,segmented,workspace"
+            ),
+            ["atomic", "segmented", "workspace"],
         )
         with self.assertRaisesRegex(argparse.ArgumentTypeError, "unknown"):
             BENCHMARK.parse_position_orders("diagonal")

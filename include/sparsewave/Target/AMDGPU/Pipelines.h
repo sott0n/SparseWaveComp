@@ -164,7 +164,7 @@ struct SparseWaveToAMDGPUPipelineOptions
 
   PassOptions::Option<std::string> spmmPositionReduction{
       *this, "spmm-position-reduction",
-      llvm::cl::desc("Reduction strategy for thread-per-position SpMM chunks."),
+      llvm::cl::desc("Reduction strategy for position-space SpMM mappings."),
       llvm::cl::init("atomic")};
 
   PassOptions::Option<int64_t> sddmmBlockSize{

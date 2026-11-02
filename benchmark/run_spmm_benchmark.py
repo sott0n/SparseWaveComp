@@ -22,7 +22,11 @@ MAPPINGS = (
     COOPERATIVE_POSITION_MAPPING,
 )
 POSITION_ORDERS = ("position-major", "rhs-major")
-POSITION_REDUCTIONS = ("atomic", "segmented")
+THREAD_POSITION_REDUCTIONS = ("atomic", "segmented")
+WAVE_POSITION_REDUCTIONS = ("atomic", "workspace")
+POSITION_REDUCTIONS = tuple(
+    dict.fromkeys(THREAD_POSITION_REDUCTIONS + WAVE_POSITION_REDUCTIONS)
+)
 FORMATS = ("csr", "bsr")
 DISTRIBUTIONS = common.ROW_DISTRIBUTIONS
 RESULT_COLUMNS = (
@@ -346,14 +350,16 @@ def benchmark_cases(
                 yield TILED_MAPPING, block_size, tile_size, None, None, None
         if WAVE_POSITION_MAPPING in mappings:
             for order in position_orders:
-                yield (
-                    WAVE_POSITION_MAPPING,
-                    block_size,
-                    None,
-                    None,
-                    order,
-                    None,
-                )
+                for reduction in position_reductions:
+                    if reduction in WAVE_POSITION_REDUCTIONS:
+                        yield (
+                            WAVE_POSITION_MAPPING,
+                            block_size,
+                            None,
+                            None,
+                            order,
+                            reduction,
+                        )
         if COOPERATIVE_POSITION_MAPPING in mappings:
             for chunk_size in position_chunk_sizes:
                 yield (
@@ -368,17 +374,23 @@ def benchmark_cases(
             for chunk_size in position_chunk_sizes:
                 for order in position_orders:
                     for reduction in position_reductions:
-                        yield (
-                            POSITION_MAPPING,
-                            block_size,
-                            None,
-                            chunk_size,
-                            order,
-                            reduction,
-                        )
+                        if reduction in THREAD_POSITION_REDUCTIONS:
+                            yield (
+                                POSITION_MAPPING,
+                                block_size,
+                                None,
+                                chunk_size,
+                                order,
+                                reduction,
+                            )
 
 
-def sparsewave_kernel_layout(mapping):
+def sparsewave_kernel_layout(mapping, position_reduction=None):
+    if (
+        mapping == WAVE_POSITION_MAPPING
+        and position_reduction == "workspace"
+    ):
+        return 4, 2
     if mapping in (
         POSITION_MAPPING,
         WAVE_POSITION_MAPPING,
@@ -583,6 +595,22 @@ def validate_paths(args):
         tile_size > 32 for tile_size in args.tile_sizes
     ):
         raise ValueError("tile sizes must not exceed 32")
+    if POSITION_MAPPING in args.mappings and not any(
+        reduction in THREAD_POSITION_REDUCTIONS
+        for reduction in args.position_reductions
+    ):
+        raise ValueError(
+            "thread-per-position requires an atomic or segmented position "
+            "reduction"
+        )
+    if WAVE_POSITION_MAPPING in args.mappings and not any(
+        reduction in WAVE_POSITION_REDUCTIONS
+        for reduction in args.position_reductions
+    ):
+        raise ValueError(
+            "wave-per-position requires an atomic or workspace position "
+            "reduction"
+        )
     if args.matrix_data is None:
         common.validate_distribution_rows(args.rows, args.distributions)
     maximum_i32 = (1 << 31) - 1
@@ -711,10 +739,11 @@ def parse_arguments(argv):
     parser.add_argument(
         "--position-reductions",
         type=parse_position_reductions,
-        default=parse_position_reductions("atomic,segmented"),
+        default=parse_position_reductions("atomic,segmented,workspace"),
         help=(
-            "Comma-separated reduction strategies for "
-            "thread-per-position: atomic,segmented."
+            "Comma-separated position reduction strategies. "
+            "Thread mapping supports atomic,segmented; wave mapping supports "
+            "atomic,workspace."
         ),
     )
     common.add_common_arguments(parser, repository)
@@ -812,23 +841,22 @@ def main(argv=None):
                                 f"spmm-position-chunk-size={chunk_size}",
                             )
                         if position_order is not None:
-                            if chunk_size is not None:
-                                case_directory = case_directory.with_name(
-                                    f"{case_directory.name}-{position_order}"
-                                    f"-{position_reduction}"
-                                )
-                            else:
-                                case_directory /= f"order-{position_order}"
+                            case_directory /= f"order-{position_order}"
                             pipeline_options += (
                                 f"spmm-position-order={position_order}",
                             )
                         if position_reduction is not None:
+                            case_directory /= (
+                                f"reduction-{position_reduction}"
+                            )
                             pipeline_options += (
                                 f"spmm-position-reduction="
                                 f"{position_reduction}",
                             )
                         kernels_per_dispatch, compute_binary_index = (
-                            sparsewave_kernel_layout(mapping)
+                            sparsewave_kernel_layout(
+                                mapping, position_reduction
+                            )
                         )
                         timing, compile_command, profile_command = (
                             common.run_case(

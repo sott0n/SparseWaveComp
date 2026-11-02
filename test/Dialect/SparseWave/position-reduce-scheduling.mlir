@@ -44,8 +44,8 @@
 // WAVE: memref.atomic_rmw addf
 
 // WORKSPACE-LABEL: func.func @keyed_sum(
-// WORKSPACE: %[[KEYS:.*]] = memref.alloc(%[[WORKSPACE_SIZE:.*]]) : memref<?xindex>
-// WORKSPACE: %[[VALUES:.*]] = memref.alloc(%[[WORKSPACE_SIZE]]) : memref<?xf32>
+// WORKSPACE: %[[KEYS:.*]] = gpu.alloc (%[[WORKSPACE_SIZE:.*]]) : memref<?xindex>
+// WORKSPACE: %[[VALUES:.*]] = gpu.alloc (%[[WORKSPACE_SIZE]]) : memref<?xf32>
 // WORKSPACE: sparsewave.position_parallel %[[WORKSPACE_SIZE]] mapping = "thread" block_size = 64 {
 // WORKSPACE: memref.store {{.*}}, %[[KEYS]]
 // WORKSPACE: memref.store {{.*}}, %[[VALUES]]
@@ -59,8 +59,8 @@
 // WORKSPACE: memref.load %[[KEYS]]
 // WORKSPACE: memref.load %[[VALUES]]
 // WORKSPACE: memref.atomic_rmw addf
-// WORKSPACE: memref.dealloc %[[KEYS]]
-// WORKSPACE: memref.dealloc %[[VALUES]]
+// WORKSPACE: gpu.dealloc %[[KEYS]]
+// WORKSPACE: gpu.dealloc %[[VALUES]]
 
 // SEGMENTED-LABEL: func.func @keyed_sum(
 // SEGMENTED-NOT: sparsewave.position_reduce

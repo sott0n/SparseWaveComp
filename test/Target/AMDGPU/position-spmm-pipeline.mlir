@@ -10,6 +10,9 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=32 binary-format=none spmm-mapping=wave-per-position spmm-position-order=rhs-major spmm-block-size=64})' \
 // RUN:   | FileCheck %s --check-prefixes=CHECK,WAVE32
+// RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=32 binary-format=none spmm-mapping=wave-per-position spmm-position-order=rhs-major spmm-position-reduction=workspace spmm-block-size=64})' \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,WAVE32
 
 // CHECK-NOT: sparsewave.
 // CHECK-LABEL: gpu.module @spmm_kernel

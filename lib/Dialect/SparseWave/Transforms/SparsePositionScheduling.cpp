@@ -247,10 +247,11 @@ Value buildLaneZeroBroadcast(OpBuilder &builder, Location loc, Value value,
 
 struct WavePositionSegment {
   Value wave;
+  Value lane;
   Value key;
   Value value;
   Value segmentOrdinal;
-  Value segmentCount;
+  Value lastActiveLane;
 };
 
 template <typename ContributionBuilder, typename SegmentBuilder>
@@ -258,7 +259,7 @@ PositionParallelOp buildWavePositionReductionStage(
     PatternRewriter &rewriter, Location loc, Value iterationCount,
     Value waveCount, Value zeroIndex, Value zero,
     PositionReductionSemantics semantics, int64_t blockSize, int64_t waveSize,
-    bool recoverSegmentCount, ContributionBuilder buildContribution,
+    bool recoverBoundaryMetadata, ContributionBuilder buildContribution,
     SegmentBuilder buildSegment) {
   auto parallel = PositionParallelOp::create(
       rewriter, loc, waveCount, "wave", rewriter.getI64IntegerAttr(blockSize));
@@ -296,27 +297,25 @@ PositionParallelOp buildWavePositionReductionStage(
       [&](OpBuilder &builder, Location bodyLoc, Value lhs, Value rhs) {
         return semantics.combine(builder, bodyLoc, lhs, rhs);
       },
-      recoverSegmentCount);
+      recoverBoundaryMetadata);
 
-  Value segmentCount = reduction.segmentOrdinal;
-  if (recoverSegmentCount) {
+  Value lastActiveLane = lane;
+  if (recoverBoundaryMetadata) {
     Value activeLaneCount = arith::SubIOp::create(
         rewriter, loc, partition.getEnd(), partition.getBegin());
     Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
     Value safeLaneCount =
         arith::MaxUIOp::create(rewriter, loc, activeLaneCount, one);
-    Value lastActiveLane =
-        arith::SubIOp::create(rewriter, loc, safeLaneCount, one);
-    segmentCount = buildWaveLaneBroadcast(
-        rewriter, loc, reduction.segmentOrdinal, lastActiveLane, waveSize);
+    lastActiveLane = arith::SubIOp::create(rewriter, loc, safeLaneCount, one);
   }
 
   scf::IfOp::create(rewriter, loc, reduction.segmentEnd,
                     [&](OpBuilder &builder, Location bodyLoc) {
                       buildSegment(builder, bodyLoc,
-                                   WavePositionSegment{
-                                       wave, key, reduction.inclusiveValue,
-                                       reduction.segmentOrdinal, segmentCount});
+                                   WavePositionSegment{wave, lane, key,
+                                                       reduction.inclusiveValue,
+                                                       reduction.segmentOrdinal,
+                                                       lastActiveLane});
                       scf::YieldOp::create(builder, bodyLoc);
                     });
   YieldOp::create(rewriter, loc);
@@ -799,7 +798,8 @@ public:
     if (!useWorkspace) {
       buildWavePositionReductionStage(
           rewriter, loc, iterationCount, waveCount, zeroIndex, zero, semantics,
-          blockSize, waveSize, /*recoverSegmentCount=*/false, buildContribution,
+          blockSize, waveSize, /*recoverBoundaryMetadata=*/false,
+          buildContribution,
           [&](OpBuilder &builder, Location bodyLoc,
               WavePositionSegment segment) {
             semantics.atomicAccumulate(builder, bodyLoc, segment.value,
@@ -819,10 +819,16 @@ public:
         MemRefType::get({ShapedType::kDynamic}, rewriter.getIndexType());
     auto valueWorkspaceType =
         MemRefType::get({ShapedType::kDynamic}, valueType);
-    Value keyWorkspace = memref::AllocOp::create(
-        rewriter, loc, keyWorkspaceType, ValueRange{workspaceSize});
-    Value valueWorkspace = memref::AllocOp::create(
-        rewriter, loc, valueWorkspaceType, ValueRange{workspaceSize});
+    Value keyWorkspace =
+        gpu::AllocOp::create(rewriter, loc, keyWorkspaceType, Type(),
+                             ValueRange(), ValueRange{workspaceSize},
+                             ValueRange())
+            .getMemref();
+    Value valueWorkspace =
+        gpu::AllocOp::create(rewriter, loc, valueWorkspaceType, Type(),
+                             ValueRange(), ValueRange{workspaceSize},
+                             ValueRange())
+            .getMemref();
 
     auto workspaceInitialization =
         PositionParallelOp::create(rewriter, loc, workspaceSize, "thread",
@@ -844,15 +850,18 @@ public:
 
     buildWavePositionReductionStage(
         rewriter, loc, iterationCount, waveCount, zeroIndex, zero, semantics,
-        blockSize, waveSize, /*recoverSegmentCount=*/true, buildContribution,
+        blockSize, waveSize, /*recoverBoundaryMetadata=*/true,
+        buildContribution,
         [&](OpBuilder &builder, Location bodyLoc, WavePositionSegment segment) {
           Value oneI32 = arith::ConstantIntOp::create(builder, bodyLoc, 1, 32);
           Value isFirst =
               arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
                                     segment.segmentOrdinal, oneI32);
-          Value isLast = arith::CmpIOp::create(
-              builder, bodyLoc, arith::CmpIPredicate::eq,
-              segment.segmentOrdinal, segment.segmentCount);
+          // The last active lane always terminates the wave's final segment,
+          // so no cross-lane segment-count broadcast is needed here.
+          Value isLast =
+              arith::CmpIOp::create(builder, bodyLoc, arith::CmpIPredicate::eq,
+                                    segment.lane, segment.lastActiveLane);
           Value isBoundary =
               arith::OrIOp::create(builder, bodyLoc, isFirst, isLast);
           scf::IfOp::create(
@@ -893,7 +902,7 @@ public:
     Value workspaceWaveCount = buildWaveCount(workspaceSize);
     PositionParallelOp merge = buildWavePositionReductionStage(
         rewriter, loc, workspaceSize, workspaceWaveCount, zeroIndex, zero,
-        semantics, blockSize, waveSize, /*recoverSegmentCount=*/false,
+        semantics, blockSize, waveSize, /*recoverBoundaryMetadata=*/false,
         [&](OpBuilder &builder, Location bodyLoc, Value linearIteration) {
           Value key = memref::LoadOp::create(builder, bodyLoc, keyWorkspace,
                                              linearIteration);
@@ -906,8 +915,8 @@ public:
                                      op.getOutput(), segment.key);
         });
     rewriter.setInsertionPointAfter(merge);
-    memref::DeallocOp::create(rewriter, loc, keyWorkspace);
-    memref::DeallocOp::create(rewriter, loc, valueWorkspace);
+    gpu::DeallocOp::create(rewriter, loc, Type(), ValueRange(), keyWorkspace);
+    gpu::DeallocOp::create(rewriter, loc, Type(), ValueRange(), valueWorkspace);
     rewriter.eraseOp(op);
     return success();
   }

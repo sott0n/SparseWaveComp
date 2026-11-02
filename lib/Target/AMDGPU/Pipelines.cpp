@@ -287,7 +287,12 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
       scheduleOptions.cooperativeChunkSize = options.spmmPositionChunkSize;
     } else {
       scheduleOptions.threadChunkSize = options.spmmPositionChunkSize;
-      scheduleOptions.threadReduction = options.spmmPositionReduction;
+      if (usesThreadPosition)
+        scheduleOptions.threadReduction =
+            options.spmmPositionReduction.getValue();
+      else
+        scheduleOptions.waveReduction =
+            options.spmmPositionReduction.getValue();
     }
     pm.addPass(createScheduleSparseWavePosition(scheduleOptions));
   }
