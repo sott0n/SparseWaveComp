@@ -16,6 +16,9 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=32 binary-format=none spmm-mapping=wave-per-position position-order=position,rhs position-wave-chunk-size=4 position-wave-reduction=workspace spmm-block-size=64})' \
 // RUN:   | FileCheck %s --check-prefixes=CHECK,WAVE32
+// RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=32 binary-format=none spmm-mapping=block-per-position spmm-block-size=64})' \
+// RUN:   | FileCheck %s --check-prefix=BLOCK
 
 // CHECK-NOT: sparsewave.
 // CHECK-LABEL: gpu.module @spmm_kernel
@@ -27,6 +30,14 @@
 // CHECK: rocdl.ds_bpermute
 // CHECK: llvm.atomicrmw fadd
 // CHECK-NOT: scf.
+
+// BLOCK-NOT: sparsewave.
+// BLOCK-LABEL: gpu.module @spmm_kernel
+// BLOCK-SAME: [#rocdl.target<chip = "gfx942"
+// BLOCK: llvm.func @spmm_kernel(
+// BLOCK-SAME: rocdl.kernel
+// BLOCK: llvm.atomicrmw fadd
+// BLOCK-NOT: scf.
 
 func.func @spmm(
     %rowOffsets: memref<?xi32>,

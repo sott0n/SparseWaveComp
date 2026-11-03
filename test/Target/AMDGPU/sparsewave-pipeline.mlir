@@ -13,6 +13,9 @@
 // RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=32 binary-format=none spmv-mapping=wave-per-position spmv-block-size=128})' \
 // RUN:   | FileCheck %s --check-prefix=SEGMENT
+// RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(sparsewave-to-amdgpu-pipeline{chip=gfx942 wavefront-size=32 binary-format=none spmv-mapping=block-per-position spmv-block-size=128})' \
+// RUN:   | FileCheck %s --check-prefix=GROUP
 
 // CHECK-NOT: sparsewave.spmv
 // CHECK-LABEL: func.func @spmv(
@@ -43,6 +46,12 @@
 // BLOCK: llvm.func @spmv_kernel(
 // BLOCK-SAME: rocdl.kernel
 // BLOCK: rocdl.ds_bpermute
+// GROUP-NOT: sparsewave.
+// GROUP-LABEL: gpu.module @spmv_kernel
+// GROUP: llvm.func @spmv_kernel(
+// GROUP-SAME: rocdl.kernel
+// GROUP: llvm.atomicrmw fadd
+// GROUP-NOT: scf.
 // BLOCK: rocdl.s.barrier
 // BLOCK-NOT: scf.
 // POSITION-NOT: sparsewave.

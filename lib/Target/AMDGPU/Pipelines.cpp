@@ -27,7 +27,20 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 
+#include <optional>
+
 namespace {
+
+std::optional<llvm::StringRef>
+getPositionScheduleMapping(llvm::StringRef mapping) {
+  if (mapping == "thread-per-position")
+    return "thread";
+  if (mapping == "wave-per-position")
+    return "wave";
+  if (mapping == "block-per-position")
+    return "block";
+  return std::nullopt;
+}
 
 struct ValidateAMDTargetPass
     : public mlir::PassWrapper<ValidateAMDTargetPass,
@@ -240,14 +253,14 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   // Decompose bridge operations selected for position traversal into generic
   // keyed reductions, then apply the common position schedule. Operations
   // using direct mappings remain for the GPU conversion pass.
-  bool usesPositionSpMV = options.spmvMapping == "thread-per-position" ||
-                          options.spmvMapping == "wave-per-position";
+  std::optional<llvm::StringRef> spmvPositionMapping =
+      getPositionScheduleMapping(options.spmvMapping);
+  bool usesPositionSpMV = spmvPositionMapping.has_value();
   DecomposePositionSpMVOptions decompositionOptions;
   decompositionOptions.preserveDirectMapping = !usesPositionSpMV;
   pm.addPass(createDecomposePositionSpMV(decompositionOptions));
   ScheduleSparseWavePositionOptions spmvScheduleOptions;
-  spmvScheduleOptions.mapping =
-      options.spmvMapping == "wave-per-position" ? "wave" : "thread";
+  spmvScheduleOptions.mapping = spmvPositionMapping.value_or("thread");
   spmvScheduleOptions.blockSize = options.spmvBlockSize;
   spmvScheduleOptions.waveSize =
       static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
@@ -255,7 +268,7 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
     spmvScheduleOptions.waveChunkSize = options.positionWaveChunkSize;
     spmvScheduleOptions.waveReduction =
         options.positionWaveReduction.getValue();
-  } else {
+  } else if (options.spmvMapping == "thread-per-position") {
     spmvScheduleOptions.threadChunkSize = options.positionThreadChunkSize;
     spmvScheduleOptions.threadReduction =
         options.positionThreadReduction.getValue();
@@ -270,9 +283,11 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   // Wave-per-position-tile instead assigns the RHS axis to cooperating lanes
   // so that CSR information shared by those columns is loaded once and
   // broadcast.
-  bool usesPositionSpMM = options.spmmMapping == "thread-per-position" ||
-                          options.spmmMapping == "wave-per-position" ||
-                          options.spmmMapping == "wave-per-position-tile";
+  std::optional<llvm::StringRef> spmmPositionMapping =
+      getPositionScheduleMapping(options.spmmMapping);
+  if (options.spmmMapping == "wave-per-position-tile")
+    spmmPositionMapping = "wave";
+  bool usesPositionSpMM = spmmPositionMapping.has_value();
   if (usesPositionSpMM) {
     pm.addPass(createDecomposePositionSpMM());
     if (!options.positionOrder.empty()) {
@@ -282,8 +297,9 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
       pm.addPass(createReorderSparseWavePosition(reorderOptions));
     }
     ScheduleSparseWavePositionOptions scheduleOptions;
-    bool usesThreadPosition = options.spmmMapping == "thread-per-position";
-    scheduleOptions.mapping = usesThreadPosition ? "thread" : "wave";
+    bool usesThreadPosition = *spmmPositionMapping == "thread";
+    bool usesBlockPosition = *spmmPositionMapping == "block";
+    scheduleOptions.mapping = *spmmPositionMapping;
     scheduleOptions.blockSize = options.spmmBlockSize;
     scheduleOptions.waveSize =
         static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
@@ -291,7 +307,7 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
       scheduleOptions.cooperativeAxis = "rhs";
       scheduleOptions.cooperativeChunkSize =
           options.positionCooperativeChunkSize;
-    } else {
+    } else if (!usesBlockPosition) {
       if (usesThreadPosition) {
         scheduleOptions.threadChunkSize = options.positionThreadChunkSize;
         scheduleOptions.threadReduction =

@@ -5,6 +5,12 @@
 // RUN:   --schedule-sparsewave-position='mapping=wave block-size=64 wave-size=32' \
 // RUN:   | FileCheck %s --check-prefix=WAVE
 // RUN: sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=block block-size=64' \
+// RUN:   | FileCheck %s --check-prefix=BLOCK
+// RUN: sparsewave-opt %s \
+// RUN:   --pass-pipeline='builtin.module(schedule-sparsewave-position{mapping=block block-size=64},convert-sparsewave-to-gpu{position-block-size=64},lower-sparsewave-position-space)' \
+// RUN:   | FileCheck %s --check-prefix=BLOCK-GPU
+// RUN: sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='mapping=wave block-size=64 wave-size=32' \
 // RUN:   | FileCheck %s --check-prefixes=WAVE-COMPRESSED,WAVE-RESET
 // RUN: sparsewave-opt %s \
@@ -54,6 +60,31 @@
 // WAVE: gpu.shuffle up
 // WAVE: arith.addf
 // WAVE: memref.atomic_rmw addf
+
+// BLOCK-LABEL: func.func @keyed_sum(
+// BLOCK-NOT: sparsewave.position_reduce
+// BLOCK-DAG: %[[COUNT:.*]] = memref.dim
+// BLOCK-DAG: %[[BLOCK_SIZE:.*]] = arith.constant 64 : index
+// BLOCK: sparsewave.position_parallel %{{.*}} mapping = "thread" block_size = 64 {
+// BLOCK: memref.store
+// BLOCK: %[[BLOCK_COUNT:.*]] = arith.ceildivui %[[COUNT]], %[[BLOCK_SIZE]]
+// BLOCK: sparsewave.position_parallel %[[BLOCK_COUNT]] mapping = "block" block_size = 64 {
+// BLOCK: ^bb0(%[[BLOCK:.*]]: index, %[[PARTICIPANT:.*]]: index, %[[PARTICIPANT_COUNT:.*]]: index):
+// BLOCK: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space {{.*}} to %[[COUNT]] partition %[[BLOCK]] of %[[BLOCK_COUNT]]
+// BLOCK: %[[FIRST:.*]] = arith.addi %[[BEGIN]], %[[PARTICIPANT]]
+// BLOCK: scf.for %[[POSITION:.*]] = %[[FIRST]] to %[[END]] step %[[PARTICIPANT_COUNT]]
+// BLOCK: arith.remui %[[POSITION]]
+// BLOCK: memref.load
+// BLOCK: memref.atomic_rmw addf
+
+// BLOCK-GPU-LABEL: func.func @keyed_sum(
+// BLOCK-GPU-NOT: sparsewave.position_
+// BLOCK-GPU: gpu.launch
+// BLOCK-GPU: memref.store
+// BLOCK-GPU: gpu.launch
+// BLOCK-GPU: scf.for
+// BLOCK-GPU: memref.atomic_rmw addf
+// BLOCK-GPU-NOT: sparsewave.position_
 
 // WORKSPACE-LABEL: func.func @keyed_sum(
 // WORKSPACE: %[[KEYS:.*]] = gpu.alloc (%[[WORKSPACE_SIZE:.*]]) : memref<?xindex>

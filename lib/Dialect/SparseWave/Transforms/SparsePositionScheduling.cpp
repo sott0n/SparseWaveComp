@@ -909,6 +909,69 @@ private:
   int64_t chunkSize;
 };
 
+class BlockPositionReducePattern : public OpRewritePattern<PositionReduceOp> {
+public:
+  BlockPositionReducePattern(MLIRContext *context, int64_t blockSize)
+      : OpRewritePattern<PositionReduceOp>(context), blockSize(blockSize) {}
+
+  LogicalResult matchAndRewrite(PositionReduceOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    PositionReductionSemantics semantics = PositionReductionSemantics::get(op);
+    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value blockSizeValue =
+        arith::ConstantIndexOp::create(rewriter, loc, blockSize);
+    Value outputSize =
+        memref::DimOp::create(rewriter, loc, op.getOutput(), zeroIndex);
+    Type valueType =
+        cast<MemRefType>(op.getOutput().getType()).getElementType();
+    Value zero = semantics.buildIdentity(rewriter, loc, valueType);
+    PositionParallelOp initialization = buildOutputInitialization(
+        rewriter, loc, op.getOutput(), outputSize, zero, blockSize);
+
+    rewriter.setInsertionPointAfter(initialization);
+    Value iterationCount = buildCollapsedIterationCount(rewriter, loc, op);
+    Value blockCount = arith::CeilDivUIOp::create(rewriter, loc, iterationCount,
+                                                  blockSizeValue);
+    auto parallel =
+        PositionParallelOp::create(rewriter, loc, blockCount, "block",
+                                   rewriter.getI64IntegerAttr(blockSize));
+    Block *body =
+        rewriter.createBlock(&parallel.getBody(), parallel.getBody().end(),
+                             {rewriter.getIndexType(), rewriter.getIndexType(),
+                              rewriter.getIndexType()},
+                             {loc, loc, loc});
+    rewriter.setInsertionPointToStart(body);
+    Value block = body->getArgument(0);
+    Value participant = body->getArgument(1);
+    Value participantCount = body->getArgument(2);
+    auto partition = PositionSpaceOp::create(
+        rewriter, loc, rewriter.getIndexType(), rewriter.getIndexType(),
+        zeroIndex, iterationCount, block, blockCount);
+    Value first =
+        arith::AddIOp::create(rewriter, loc, partition.getBegin(), participant);
+    auto loop = scf::ForOp::create(rewriter, loc, first, partition.getEnd(),
+                                   participantCount);
+    rewriter.setInsertionPointToStart(loop.getBody());
+    buildCollapsedLogicalPoint(
+        rewriter, loc, op, loop.getInductionVar(), ValueRange{},
+        [&](OpBuilder &builder, Location bodyLoc, ValueRange coordinates) {
+          KeyedContribution contribution =
+              cloneContributionBody(builder, op, coordinates);
+          semantics.atomicAccumulate(builder, bodyLoc, contribution.value,
+                                     op.getOutput(), contribution.key);
+          return SmallVector<Value>{};
+        });
+    rewriter.setInsertionPointAfter(loop);
+    YieldOp::create(rewriter, loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  int64_t blockSize;
+};
+
 class ThreadSegmentedPositionReducePattern
     : public OpRewritePattern<PositionReduceOp> {
 public:
@@ -1545,9 +1608,9 @@ public:
       ScheduleSparseWavePosition>::ScheduleSparseWavePositionBase;
 
   void runOnOperation() override {
-    if (mapping != "thread" && mapping != "wave") {
+    if (mapping != "thread" && mapping != "wave" && mapping != "block") {
       getOperation().emitError() << "unsupported position mapping '" << mapping
-                                 << "'; expected 'thread' or 'wave'";
+                                 << "'; expected 'thread', 'wave', or 'block'";
       signalPassFailure();
       return;
     }
@@ -1558,7 +1621,7 @@ public:
       signalPassFailure();
       return;
     }
-    if (mapping == "thread" && !cooperativeAxis.empty()) {
+    if (mapping != "wave" && !cooperativeAxis.empty()) {
       getOperation().emitError()
           << "cooperative position axis applies only to wave mapping";
       signalPassFailure();
@@ -1616,7 +1679,7 @@ public:
       signalPassFailure();
       return;
     }
-    if (mapping == "wave" && threadChunkSize != 1) {
+    if (mapping != "thread" && threadChunkSize != 1) {
       getOperation().emitError()
           << "thread position chunk size applies only to thread mapping";
       signalPassFailure();
@@ -1637,7 +1700,7 @@ public:
       signalPassFailure();
       return;
     }
-    if (mapping == "wave" && threadReduction != "atomic") {
+    if (mapping != "thread" && threadReduction != "atomic") {
       getOperation().emitError()
           << "thread position reduction applies only to thread mapping";
       signalPassFailure();
@@ -1680,6 +1743,8 @@ public:
       else
         patterns.add<ThreadPositionReducePattern>(&getContext(), blockSize,
                                                   threadChunkSize);
+    } else if (mapping == "block") {
+      patterns.add<BlockPositionReducePattern>(&getContext(), blockSize);
     } else if (cooperativeAxis.empty()) {
       patterns.add<WavePositionReducePattern>(&getContext(), blockSize,
                                               waveSize, waveChunkSize,

@@ -14,7 +14,7 @@
 // RUN:   --convert-sparsewave-to-gpu='mapping=wave-per-row block-size=48' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-WAVE-BLOCK-SIZE
 // RUN: not sparsewave-opt %s \
-// RUN:   --schedule-sparsewave-position='mapping=block' \
+// RUN:   --schedule-sparsewave-position='mapping=grid' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-POSITION-MAPPING
 // RUN: not sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='block-size=0' \
@@ -32,11 +32,17 @@
 // RUN:   --schedule-sparsewave-position='mapping=wave thread-chunk-size=2' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-WAVE-CHUNK-SIZE
 // RUN: not sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=block thread-chunk-size=2' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-BLOCK-CHUNK-SIZE
+// RUN: not sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='thread-reduction=tree' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-THREAD-POSITION-REDUCTION
 // RUN: not sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='mapping=wave thread-reduction=segmented' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-WAVE-POSITION-REDUCTION
+// RUN: not sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=block thread-reduction=segmented' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-BLOCK-POSITION-REDUCTION
 // RUN: not sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='mapping=wave wave-reduction=tree' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-WAVE-REDUCTION
@@ -100,14 +106,16 @@
 // INVALID-BLOCK-SIZE: SpMV block size must be between 1 and 1024
 // INVALID-WAVE-SIZE: wave-per-row currently requires Wave32, but got wave size 64
 // INVALID-WAVE-BLOCK-SIZE: wave-per-row requires the SpMV block size to be a multiple of 32, but got 48
-// INVALID-POSITION-MAPPING: unsupported position mapping 'block'; expected 'thread' or 'wave'
+// INVALID-POSITION-MAPPING: unsupported position mapping 'grid'; expected 'thread', 'wave', or 'block'
 // INVALID-POSITION-SCHEDULE-BLOCK-SIZE: position block size must be between 1 and 1024
 // INVALID-POSITION-WAVE-SIZE: wave position mapping currently requires Wave32, but got 64
 // INVALID-POSITION-BLOCK-SIZE: wave position mapping requires the block size to be a multiple of 32, but got 48
 // INVALID-POSITION-CHUNK-SIZE: thread position chunk size must be positive, but got 0
 // INVALID-WAVE-CHUNK-SIZE: thread position chunk size applies only to thread mapping
+// INVALID-BLOCK-CHUNK-SIZE: thread position chunk size applies only to thread mapping
 // INVALID-THREAD-POSITION-REDUCTION: unsupported thread position reduction 'tree'; expected 'atomic' or 'segmented'
 // INVALID-WAVE-POSITION-REDUCTION: thread position reduction applies only to thread mapping
+// INVALID-BLOCK-POSITION-REDUCTION: thread position reduction applies only to thread mapping
 // INVALID-WAVE-REDUCTION: unsupported wave position reduction 'tree'; expected 'atomic' or 'workspace'
 // INVALID-WORKSPACE-MAPPING: wave position reduction applies only to non-cooperative wave mapping
 // INVALID-BLOCK-WAVE-SIZE: block-per-row currently requires Wave32, but got wave size 64

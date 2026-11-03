@@ -210,12 +210,15 @@ def ScheduleSparseWavePosition
     broadcast across the wave. A cooperative wave can traverse a configurable
     chunk of the remaining position domain. Each lane combines adjacent
     contributions with equal output keys locally and performs atomic updates
-    only at key boundaries and the end of the chunk.
+    only at key boundaries and the end of the chunk. Block mapping assigns a
+    contiguous collapsed-space partition to each block. Threads traverse that
+    partition with block-size stride and atomically accumulate their keyed
+    contributions.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",
            /*default=*/"\"thread\"",
-           "Position worker mapping strategy">,
+           "Position worker mapping strategy: thread, wave, or block">,
     Option<"blockSize", "block-size", "int64_t",
            /*default=*/"256",
            "Number of target threads in each scheduled block">,
