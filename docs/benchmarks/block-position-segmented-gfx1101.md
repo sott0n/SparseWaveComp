@@ -1,14 +1,14 @@
-# Block-local segmented position reduction on gfx1101
+# Hierarchical block-local segmented position reduction on gfx1101
 
-This report evaluates SparseWave's block-local segmented reduction for the
-generic position scheduler. A block owns one contiguous partition of the
-collapsed position domain. The atomic baseline updates the output once per
-position; the segmented strategy stages one keyed contribution per thread in
-LDS, scans adjacent equal keys, and lets only each local segment end perform an
-atomic update.
+This report evaluates SparseWave's hierarchical block-local segmented
+reduction for the generic position scheduler. A block owns one contiguous
+partition of the collapsed position domain. The atomic baseline updates the
+output once per position. The segmented strategy scans adjacent equal keys
+with wave shuffles, emits wave-interior segments directly, and stages only the
+first and last partial segments of each wave in LDS for block-level merging.
 
-The experiment asks when the reduction in dynamic atomics repays the LDS scan
-and synchronization cost. It covers both SpMV and SpMM because the scheduler
+The experiment asks when the reduction in dynamic atomics repays the wave scan
+and boundary-merge cost. It covers both SpMV and SpMM because the scheduler
 operates on generic keyed contributions rather than named operators.
 
 ## Environment
@@ -19,19 +19,23 @@ operates on generic keyed contributions rather than named operators.
 | GPU | AMD Radeon RX 7800 XT |
 | Target chip | gfx1101 |
 | Wavefront size | 32 |
-| SparseWave commit | `88b2716814a621c805f4570f2caa2925f7cb4ae1` |
+| SparseWave base commit | `55cc13558a3a929356ad391f5e9a975575bb61a3` |
 | LLVM commit | `64b593c2371b7f7225b0ec190a37cd8b672e4c5d` |
 | ROCm version | 6.4.4-129 |
 | rocSPARSE version | 300400, Git revision `8fbfc797` |
 | GPU performance level | Automatic |
 | Block size | 128 |
 
-SparseWave times are the sum of GPU kernel timestamps reported by
-`rocprofv3`; initialization is included for position mappings. rocSPARSE uses
-HIP events around the complete compute call. GPU clocks were not locked, so
+The measurements include the lane-boundary correction documented below and
+committed with this report. SparseWave times are the sum of GPU kernel
+timestamps reported by `rocprofv3`; initialization is included for position
+mappings. rocSPARSE uses HIP events around the complete compute call. GPU
+clocks were not locked, so
 the results support comparisons within these runs rather than cross-run
-absolute-latency claims. All 106 recorded configurations passed CPU-reference
-validation.
+absolute-latency claims. All 90 recorded configurations passed CPU-reference
+validation. The combined rocprof/rocSPARSE sweep stalled after the SparseWave
+cases, so the six rocSPARSE cases were invoked directly; their reported values
+still use the same runner's HIP-event timing path.
 
 ## SpMV
 
@@ -45,60 +49,64 @@ the block atomic median divided by the block segmented median.
 
 | Distribution | Mean NNZ/row | Block atomic | Block segmented | Speedup | Best fixed | rocSPARSE |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Uniform | 4 | 11.02 us | 10.68 us | 1.03x | 4.56 us | 12.80 us |
-| Uniform | 32 | 295.60 us | 29.96 us | 9.87x | 7.84 us | 16.08 us |
-| Uniform | 128 | 3,809.37 us | 92.86 us | 41.02x | 14.60 us | 24.52 us |
-| Skewed | 4 | 31.40 us | 11.04 us | 2.84x | 5.64 us | 13.44 us |
-| Skewed | 32 | 1,349.85 us | 131.96 us | 10.23x | 13.80 us | 93.44 us |
-| Skewed | 128 | 66,565.47 us | 258.60 us | **257.41x** | 121.98 us | 50.08 us |
+| Uniform | 4 | 11.36 us | 14.96 us | 0.76x | 4.40 us | 12.22 us |
+| Uniform | 32 | 308.65 us | 50.02 us | 6.17x | 10.96 us | 35.80 us |
+| Uniform | 128 | 4,074.46 us | 124.18 us | 32.81x | 14.92 us | 25.34 us |
+| Skewed | 4 | 33.10 us | 14.80 us | 2.24x | 5.96 us | 13.88 us |
+| Skewed | 32 | 1,455.43 us | 40.72 us | 35.74x | 14.64 us | 27.80 us |
+| Skewed | 128 | 20,522.01 us | 126.94 us | **161.67x** | 29.60 us | 33.66 us |
 
 The benefit grows with contiguous same-row runs. In SpMV the output key is the
-row, and CSR positions for one row are adjacent. A 128-thread block therefore
-turns up to 128 competing row updates into one local segment update. The
-skewed long-row input makes the atomic baseline especially costly because many
-blocks concurrently update the same long row.
+row, and CSR positions for one row are adjacent. Wave-local scanning therefore
+turns up to 32 competing updates into one partial. Equal boundary partials are
+then merged across the four waves in a 128-thread block. The skewed long-row
+input makes the atomic baseline especially costly because many blocks
+concurrently update the same long row.
 
 The segmented schedule is nevertheless slower than a row-owned mapping in all
 six workloads. It must recover row keys from positions, synchronize the block,
 and atomically flush segments split at block boundaries. Row ownership avoids
-all three costs. It also remains slower than rocSPARSE for medium and long
-rows, so this result validates a reusable position-space primitive rather than
+all three costs. It also remains slower than rocSPARSE in all six workloads,
+so this result validates a reusable position-space primitive rather than
 replacing the existing SpMV mapping policy.
+
+Compared with the earlier full-block LDS scan, the hierarchical implementation
+is 3.24x faster on skewed 32-NNZ rows and 2.04x faster on skewed 128-NNZ rows.
+It is 1.34x to 1.67x slower on the other four workloads. These are separate
+runs with unlocked clocks, so they are directional rather than a controlled
+kernel A/B. The result nevertheless shows the tradeoff: removing block-wide
+barriers helps irregular long segments, while the extra wave and boundary
+bookkeeping is not repaid by short or uniform segments.
 
 ## SpMM axis order
 
 The SpMM block-only sweep used 4,096-by-4,096 generated matrices, 5 warmup
 dispatches, and 20 measured dispatches. Each table entry is
 `atomic / segmented (speedup)`. Uniform inputs cover mean row lengths 4, 32,
-and 128. The skewed sweep was limited to 4 and 32 entries per row after long
-sequential profiler sweeps caused repeated GPU hangs; no incomplete result is
-used below.
+and 128. This rerun focuses on uniform inputs because the earlier skewed result
+already established the key-locality effect and long sequential profiler
+sweeps are not stable on this machine.
 
 | Distribution | NNZ/row | RHS | Position-major | RHS-major |
 | --- | ---: | ---: | ---: | ---: |
-| Uniform | 4 | 4 | 44.22 / 72.68 us (0.61x) | 65.92 / 59.92 us (1.10x) |
-| Uniform | 4 | 16 | 155.92 / 163.40 us (0.95x) | 180.70 / 118.14 us (1.53x) |
-| Uniform | 32 | 4 | 617.76 / 747.80 us (0.83x) | 1,598.63 / 142.38 us (11.23x) |
-| Uniform | 32 | 16 | 1,124.72 / 1,187.78 us (0.95x) | 4,648.76 / 392.42 us (11.85x) |
-| Uniform | 128 | 4 | 4,119.84 / 4,221.12 us (0.98x) | 10,778.43 / 334.38 us (32.23x) |
-| Uniform | 128 | 16 | 9,817.70 / 9,067.48 us (1.08x) | 32,092.46 / 1,003.67 us (31.98x) |
-| Skewed | 4 | 4 | 130.67 / 158.59 us (0.82x) | 175.23 / 41.66 us (4.21x) |
-| Skewed | 4 | 16 | 243.42 / 276.86 us (0.88x) | 1,204.36 / 145.47 us (8.28x) |
-| Skewed | 32 | 4 | 4,844.79 / 4,776.32 us (1.01x) | 12,085.69 / 169.37 us (71.36x) |
-| Skewed | 32 | 16 | 11,964.72 / 10,494.83 us (1.14x) | 41,690.96 / 567.74 us (73.43x) |
+| Uniform | 4 | 4 | 16.32 / 24.08 us (0.68x) | 16.00 / 21.20 us (0.75x) |
+| Uniform | 4 | 16 | 33.68 / 51.48 us (0.65x) | 44.14 / 46.54 us (0.95x) |
+| Uniform | 32 | 4 | 166.46 / 240.49 us (0.69x) | 574.63 / 71.34 us (8.05x) |
+| Uniform | 32 | 16 | 438.65 / 647.10 us (0.68x) | 2,328.58 / 265.49 us (8.77x) |
+| Uniform | 128 | 4 | 2,225.75 / 2,693.84 us (0.83x) | 6,561.85 / 240.25 us (27.31x) |
+| Uniform | 128 | 16 | 6,406.70 / 7,497.66 us (0.85x) | 24,598.33 / 934.42 us (26.32x) |
 
 The output key for SpMM is `(row, RHS column)`. Position-major order changes
 the RHS column at adjacent collapsed iterations, so equal keys rarely form a
-useful segment. Segmentation is then between 18% faster and 39% slower: the
-LDS scan and barriers remain while few atomics disappear.
+useful segment. Segmentation is then 15% to 35% slower: wave and boundary
+bookkeeping remains while few atomics disappear.
 
 RHS-major order fixes one RHS column while adjacent iterations traverse sparse
 positions. Positions from the same row now share an output key, exposing the
-same contiguous segments as SpMV. This makes segmented reduction 11.23x to
-32.23x faster on uniform medium and long rows, and up to 73.43x faster on the
-measured skewed inputs. The result demonstrates that iteration order and
-reduction strategy must be selected together; segmentation alone is not a
-generally beneficial mapping.
+same contiguous segments as SpMV. This makes segmented reduction 8.05x to
+27.31x faster on uniform medium and long rows. The result demonstrates that
+iteration order and reduction strategy must be selected together;
+segmentation alone is not a generally beneficial mapping.
 
 ## Comparison with fixed SpMM mappings
 
@@ -110,15 +118,18 @@ schedule is slower.
 
 | NNZ/row | RHS | Best block segmented | Best fixed | rocSPARSE | vs rocSPARSE |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 4 | 4 | 59.92 us | 14.22 us | 28.42 us | 0.47x |
-| 4 | 16 | 118.14 us | 14.42 us | 26.40 us | 0.22x |
-| 32 | 4 | 142.38 us | 16.48 us | 26.42 us | 0.19x |
-| 32 | 16 | 392.42 us | 30.70 us | 25.58 us | 0.07x |
-| 128 | 4 | 334.38 us | 11.12 us | 39.86 us | 0.12x |
-| 128 | 16 | 1,003.67 us | 28.32 us | 41.60 us | 0.04x |
+| 4 | 4 | 21.20 us | 10.48 us | 22.82 us | 1.08x |
+| 4 | 16 | 46.54 us | 19.84 us | 21.12 us | 0.45x |
+| 32 | 4 | 71.34 us | 21.24 us | 23.04 us | 0.32x |
+| 32 | 16 | 265.49 us | 46.88 us | 19.82 us | 0.07x |
+| 128 | 4 | 240.25 us | 30.38 us | 40.68 us | 0.17x |
+| 128 | 16 | 934.42 us | 112.48 us | 40.18 us | 0.04x |
 
 Block segmentation removes the dominant contention inside the position
 schedule but does not make it competitive with output- or row-owned SpMM.
+The 4-NNZ, RHS-4 case is 1.08x faster than rocSPARSE in this run, but the
+thread-per-output mapping is another 2.02x faster, so it does not justify
+selecting block position scheduling for that workload.
 Every block still reconstructs logical coordinates and may emit another
 partial atomic for the same output. The scan also executes for all blocks even
 when a simpler ownership mapping can retain the complete sum in registers.
@@ -131,32 +142,44 @@ the kernels spill registers or use scratch memory.
 | Operation and order | Reduction | VGPR | SGPR | LDS | Scratch | Spills |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | SpMV | Atomic | 20 | 33 | 0 B | 0 B | 0 |
-| SpMV | Segmented | 22 | 27 | 2,048 B | 0 B | 0 |
+| SpMV | Segmented | 23 | 40 | 112 B | 0 B | 0 |
 | SpMM position-major | Atomic | 29 | 46 | 0 B | 0 B | 0 |
-| SpMM position-major | Segmented | 26 | 34 | 2,048 B | 0 B | 0 |
+| SpMM position-major | Segmented | 26 | 40 | 112 B | 0 B | 0 |
 | SpMM RHS-major | Atomic | 31 | 46 | 0 B | 0 B | 0 |
-| SpMM RHS-major | Segmented | 28 | 34 | 2,048 B | 0 B | 0 |
+| SpMM RHS-major | Segmented | 28 | 40 | 112 B | 0 B | 0 |
 
-For 128 threads, the segmented kernel allocates an i64 key, f32 value, and
-i32 segment flag per participant: `128 * (8 + 4 + 4) = 2,048` bytes of LDS.
-It performs a seven-step inclusive segmented scan at offsets 1 through 64.
-The initial staging and flag construction add two barriers, and each scan step
-adds a read/write barrier pair, producing 16 static barriers.
+For 128 threads in Wave32 mode, the segmented kernel allocates two boundary
+slots per wave plus one segment count per wave. Four waves therefore require
+`8 * (8-byte key + 4-byte value) + 4 * 4-byte count = 112` bytes of LDS. The
+five prefix steps at offsets 1 through 16 use wave shuffles. Only one barrier
+is needed before thread zero merges the staged wave boundaries. This replaces
+the earlier 2,048-byte full-block staging and 16 static barriers.
 
 Static disassembly of representative uniform, 128-NNZ/row kernels gives:
 
 | Kernel | Reduction | Instructions | Atomic sites | Barriers | LDS load/store sites |
 | --- | --- | ---: | ---: | ---: | ---: |
-| SpMV | Atomic | 477 | 1 | 0 | 0 |
-| SpMV | Segmented | 752 | 1 | 16 | 29 |
-| SpMM RHS-major, RHS 16 | Atomic | 873 | 1 | 0 | 0 |
-| SpMM RHS-major, RHS 16 | Segmented | 1,149 | 1 | 16 | 29 |
+| SpMV | Atomic | 541 | 2 | 0 | 0 |
+| SpMV | Segmented | 1,105 | 3 | 1 | 8 |
+| SpMM RHS-major, RHS 16 | Atomic | 920 | 2 | 0 | 0 |
+| SpMM RHS-major, RHS 16 | Segmented | 1,478 | 3 | 1 | 8 |
 
-The single static atomic site in both variants has different dynamic behavior.
-The atomic baseline reaches it once per contribution. The segmented kernel
-reaches it only at the end of an adjacent equal-key segment. Its static kernel
-is larger because it adds LDS traffic and synchronization; performance
-improves only when enough contributions collapse into each dynamic atomic.
+The atomic baseline reaches its update path once per contribution. The three
+segmented sites separately handle wave-interior segments, completed boundary
+segments, and the final boundary accumulator. Each is reached only for the
+corresponding adjacent equal-key segment. The hierarchical kernel has fewer
+LDS operations and barriers but more static instructions for wave scans and
+boundary classification; performance improves only when enough contributions
+collapse into each dynamic atomic.
+
+During measurement, inputs with many short segments exposed a correctness
+issue in the shared wave-prefix helper: the scan relied on the `valid` result
+of `gpu.shuffle` as its sole lane-boundary predicate. That assumption was not
+sufficient on the tested AMD path, allowing out-of-range shuffle values into
+the segment ordinal and partial sum. The implementation no longer depends on
+that target behavior: it derives predecessor availability explicitly from
+`lane >= offset` at every scan step. A full-block runtime regression with 32
+four-entry rows covers all shuffle offsets.
 
 ## Conclusions
 

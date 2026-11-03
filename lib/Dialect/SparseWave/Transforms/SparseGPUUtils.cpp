@@ -889,12 +889,15 @@ WaveSegmentedReduction buildWavePrefixSegmentedReduction(
     // keys may legally occur in multiple non-adjacent segments.
     segmentOrdinal = startsSegmentI32;
     for (int32_t offset = 1; offset < waveSize; offset <<= 1) {
+      Value offsetIndex = arith::ConstantIndexOp::create(builder, loc, offset);
       auto shuffledOrdinal = gpu::ShuffleOp::create(
           builder, loc, segmentOrdinal, offset, waveSize, gpu::ShuffleMode::UP);
       Value accumulated = arith::AddIOp::create(
           builder, loc, segmentOrdinal, shuffledOrdinal.getShuffleResult());
-      Value shouldAccumulate = arith::AndIOp::create(
-          builder, loc, active, shuffledOrdinal.getValid());
+      Value hasPredecessor = arith::CmpIOp::create(
+          builder, loc, arith::CmpIPredicate::uge, lane, offsetIndex);
+      Value shouldAccumulate =
+          arith::AndIOp::create(builder, loc, active, hasPredecessor);
       segmentOrdinal = arith::SelectOp::create(builder, loc, shouldAccumulate,
                                                accumulated, segmentOrdinal);
     }
@@ -903,16 +906,19 @@ WaveSegmentedReduction buildWavePrefixSegmentedReduction(
   // Carry segment-start markers with the partial sums so equal keys separated
   // by another segment are never combined at larger shuffle offsets.
   for (int32_t offset = 1; offset < waveSize; offset <<= 1) {
+    Value offsetIndex = arith::ConstantIndexOp::create(builder, loc, offset);
     auto shuffledValue = gpu::ShuffleOp::create(builder, loc, value, offset,
                                                 waveSize, gpu::ShuffleMode::UP);
     auto shuffledSegmentStart = gpu::ShuffleOp::create(
         builder, loc, startsSegmentI32, offset, waveSize, gpu::ShuffleMode::UP);
     Value hasSegmentStart = arith::CmpIOp::create(
         builder, loc, arith::CmpIPredicate::ne, startsSegmentI32, zeroI32);
+    Value hasPredecessor = arith::CmpIOp::create(
+        builder, loc, arith::CmpIPredicate::uge, lane, offsetIndex);
     Value shouldCombine = arith::AndIOp::create(
         builder, loc, active,
         arith::AndIOp::create(
-            builder, loc, shuffledValue.getValid(),
+            builder, loc, hasPredecessor,
             arith::XOrIOp::create(builder, loc, hasSegmentStart, trueValue)));
     Value accumulated =
         combine(builder, loc, value, shuffledValue.getShuffleResult());
@@ -920,7 +926,7 @@ WaveSegmentedReduction buildWavePrefixSegmentedReduction(
                                     value);
 
     Value shuffledHasSegmentStart = arith::AndIOp::create(
-        builder, loc, shuffledSegmentStart.getValid(),
+        builder, loc, hasPredecessor,
         arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne,
                               shuffledSegmentStart.getShuffleResult(),
                               zeroI32));
