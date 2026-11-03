@@ -1,4 +1,5 @@
 #include "sparsewave/Dialect/SparseWave/Transforms/Passes.h"
+#include "sparsewave/Dialect/SparseWave/Transforms/PositionTraversalAnalysis.h"
 
 #include "sparsewave/Dialect/SparseWave/IR/SparseWaveOps.h"
 
@@ -459,20 +460,19 @@ buildActiveCooperativeContribution(OpBuilder &builder, Location loc,
 
 std::optional<CompressedSegmentRecovery>
 matchCompressedSegmentRecovery(PositionReduceOp reduction) {
+  PositionTraversalAnalysis traversal(reduction);
   Block &body = reduction.getBody().front();
   for (Operation &operation : body.without_terminator()) {
     auto recovery = dyn_cast<CompressedSegmentAtPositionOp>(operation);
     if (!recovery)
       continue;
-    auto position = dyn_cast<BlockArgument>(recovery.getPosition());
-    if (!position || position.getOwner() != &body)
+    std::optional<unsigned> positionAxis =
+        traversal.getAxisForValue(recovery.getPosition());
+    if (!positionAxis)
       continue;
-    unsigned positionAxis = position.getArgNumber();
-    // Only the outermost collapsed axis is globally nondecreasing. Other axes
-    // restart whenever a preceding axis advances.
-    bool mayReset =
-        reduction.getOrder().front() != static_cast<int64_t>(positionAxis);
-    return CompressedSegmentRecovery{recovery, positionAxis, mayReset};
+    bool mayReset = traversal.getValueTraversal(recovery.getPosition()) ==
+                    PositionTraversalKind::MayReset;
+    return CompressedSegmentRecovery{recovery, *positionAxis, mayReset};
   }
   return std::nullopt;
 }

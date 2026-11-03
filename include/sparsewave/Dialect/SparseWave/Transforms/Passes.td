@@ -152,6 +152,19 @@ def DecomposePositionSpMM
   ];
 }
 
+def ReportSparseWavePositionTraversal
+    : Pass<"report-sparsewave-position-traversal", "::mlir::ModuleOp"> {
+  let summary = "Report traversal properties of position-reduction axes";
+  let description = [{
+    Classifies each logical axis of sparsewave.position_reduce from its
+    collapse order. The outermost axis is globally nondecreasing; inner axes
+    may reset when a preceding axis advances. The analysis is independent of
+    the operator and storage format that produced the reduction. This pass
+    emits the result as remarks without modifying the IR so scheduling and
+    strategy-selection behavior can be inspected independently.
+  }];
+}
+
 def ReorderSparseWavePosition
     : Pass<"reorder-sparsewave-position", "::mlir::ModuleOp"> {
   let summary = "Reorder logical axes of keyed position reductions";
