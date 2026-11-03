@@ -167,8 +167,13 @@
 // SEGMENT: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space %[[ZERO]] to %[[NNZ]] partition %[[POSITION_WORKER]] of %[[WAVE_COUNT]]
 // SEGMENT: %[[POSITION:.*]] = arith.addi %[[BEGIN]], %[[LANE]]
 // SEGMENT: %[[ACTIVE:.*]] = arith.cmpi ult, %[[POSITION]], %[[END]]
+// SEGMENT: scf.if
+// SEGMENT: arith.select %[[ACTIVE]], %[[POSITION]], %[[BEGIN]]
+// SEGMENT: gpu.shuffle idx
+// SEGMENT: scf.while
+// SEGMENT: gpu.shuffle xor
+// SEGMENT-NOT: sparsewave.compressed_segment_at_position
 // SEGMENT: scf.if %[[ACTIVE]] -> (index, f32)
-// SEGMENT: sparsewave.compressed_segment_at_position
 // SEGMENT-COUNT-10: gpu.shuffle up
 // SEGMENT-COUNT-2: gpu.shuffle down
 // SEGMENT: memref.atomic_rmw addf

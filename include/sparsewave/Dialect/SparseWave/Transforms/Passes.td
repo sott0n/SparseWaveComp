@@ -179,14 +179,16 @@ def ScheduleSparseWavePosition
     logical coordinates inside each worker. Thread mapping splits the
     collapsed range into configurable sequential chunks. It can either
     atomically accumulate every iteration or combine adjacent equal-key
-    contributions locally before atomic accumulation. When a rank-1 domain
-    derives its key from a compressed segment, the segmented form carries that
-    segment across the chunk. Wave mapping uses balanced collapsed-space
-    partitions and first combines adjacent equal keys with a segmented
-    reduction. Its workspace strategy atomically emits segments contained
-    within one wave, defers the first and last segment partials from each wave
-    to a fixed-size workspace, and merges adjacent boundary partials in a
-    second wave stage. When a
+    contributions locally before atomic accumulation. When a contribution
+    recovers a compressed segment from a position, the segmented form carries
+    that segment across the chunk and searches again only if a reordered axis
+    restarts. Wave mapping uses balanced collapsed-space partitions and first
+    combines adjacent equal keys with a segmented reduction. For a
+    non-restarting compressed position axis, wave lanes cooperatively recover
+    the first segment and advance through subsequent boundaries. Its workspace
+    strategy atomically emits segments contained within one wave, defers the
+    first and last segment partials from each wave to a fixed-size workspace,
+    and merges adjacent boundary partials in a second wave stage. When a
     cooperative axis is named, each wave instead owns one group of that axis
     and its lanes select individual axis coordinates. Read-only scalar values
     that do not depend on the cooperative axis are loaded by lane zero and

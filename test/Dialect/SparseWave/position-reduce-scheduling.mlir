@@ -5,6 +5,9 @@
 // RUN:   --schedule-sparsewave-position='mapping=wave block-size=64 wave-size=32' \
 // RUN:   | FileCheck %s --check-prefix=WAVE
 // RUN: sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=wave block-size=64 wave-size=32' \
+// RUN:   | FileCheck %s --check-prefixes=WAVE-COMPRESSED,WAVE-RESET
+// RUN: sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='mapping=wave block-size=64 wave-size=32 wave-reduction=workspace' \
 // RUN:   | FileCheck %s --check-prefix=WORKSPACE
 // RUN: sparsewave-opt %s \
@@ -94,6 +97,14 @@ func.func @keyed_sum(%values: memref<?xf32>, %output: memref<?xf32>) {
 // matrix format or named sparse operator. The segmented schedule performs one
 // initial lookup and then advances the segment at offset boundaries.
 
+// WAVE-COMPRESSED-LABEL: func.func @compressed_segment_sum(
+// WAVE-COMPRESSED-NOT: sparsewave.compressed_segment_at_position
+// WAVE-COMPRESSED: gpu.shuffle idx
+// WAVE-COMPRESSED: scf.while
+// WAVE-COMPRESSED: gpu.shuffle xor
+// WAVE-COMPRESSED: memref.load %{{.*}}[%{{.*}}] : memref<?xf32>
+// WAVE-COMPRESSED: return
+
 // COMPRESSED-LABEL: func.func @compressed_segment_sum(
 // COMPRESSED-SAME: %[[OFFSETS:[^ :,]+]]: memref<?xi32>
 // COMPRESSED-COUNT-1: %[[FIRST:.*]] = sparsewave.compressed_segment_at_position %[[OFFSETS]]
@@ -155,6 +166,12 @@ func.func @multi_axis_keyed_sum(%values: memref<?x?xf32>,
 // The recovered segment is independent of the composite output key. Since
 // position is not the outermost axis, the scheduler also detects when it
 // restarts and performs a new segment lookup only at that boundary.
+
+// WAVE-RESET-LABEL: func.func @compressed_multi_axis_sum(
+// WAVE-RESET: sparsewave.compressed_segment_at_position
+// WAVE-RESET-NOT: gpu.shuffle idx
+// WAVE-RESET: gpu.shuffle up
+// WAVE-RESET: return
 
 // COMPRESSED-MULTI-LABEL: func.func @compressed_multi_axis_sum(
 // COMPRESSED-MULTI: %{{.*}}:4 = sparsewave.position_collapse

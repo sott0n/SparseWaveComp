@@ -284,22 +284,17 @@ PositionParallelOp buildWavePositionReductionStage(
       arith::AddIOp::create(rewriter, loc, partition.getBegin(), lane);
   Value active = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
                                        linearIteration, partition.getEnd());
-  auto entry = scf::IfOp::create(
-      rewriter, loc, active,
-      [&](OpBuilder &builder, Location bodyLoc) {
-        KeyedContribution contribution =
-            buildContribution(builder, bodyLoc, linearIteration);
-        scf::YieldOp::create(builder, bodyLoc,
-                             ValueRange{contribution.key, contribution.value});
-      },
-      [&](OpBuilder &builder, Location bodyLoc) {
-        scf::YieldOp::create(builder, bodyLoc, ValueRange{zeroIndex, zero});
-      });
-  Value key = entry.getResult(0);
+  Value waveActive =
+      arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
+                            partition.getBegin(), partition.getEnd());
+  KeyedContribution contribution =
+      buildContribution(rewriter, loc, linearIteration, active, waveActive,
+                        partition.getBegin(), lane);
+  Value key = contribution.key;
   Value keyI64 =
       arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), key);
   WaveSegmentedReduction reduction = buildWavePrefixSegmentedReduction(
-      rewriter, loc, keyI64, entry.getResult(1), active, waveSize,
+      rewriter, loc, keyI64, contribution.value, active, waveSize,
       [&](OpBuilder &builder, Location bodyLoc, Value lhs, Value rhs) {
         return semantics.combine(builder, bodyLoc, lhs, rhs);
       },
@@ -569,6 +564,106 @@ CompressedSegmentState buildReusableCompressedSegmentState(
                        ValueRange{advanced.segment, advanced.nextBoundary});
   builder.setInsertionPointAfter(state);
   return {state.getResult(0), state.getResult(1)};
+}
+
+Value buildWaveIndexMax(OpBuilder &builder, Location loc, Value value,
+                        int64_t waveSize) {
+  Value waveSizeI32 = arith::ConstantIntOp::create(builder, loc, waveSize, 32);
+  Value maximum =
+      arith::IndexCastOp::create(builder, loc, builder.getI64Type(), value);
+  for (int64_t offset = 1; offset < waveSize; offset *= 2) {
+    Value offsetI32 = arith::ConstantIntOp::create(builder, loc, offset, 32);
+    Value shuffled = gpu::ShuffleOp::create(builder, loc, maximum, offsetI32,
+                                            waveSizeI32, gpu::ShuffleMode::XOR)
+                         .getShuffleResult();
+    maximum = arith::MaxUIOp::create(builder, loc, maximum, shuffled);
+  }
+  return arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
+                                    maximum);
+}
+
+Value buildWaveCompressedSegmentSearch(OpBuilder &builder, Location loc,
+                                       Value offsets, Value position,
+                                       Value lane, int64_t waveSize) {
+  Type indexType = builder.getIndexType();
+  Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+  Value one = arith::ConstantIndexOp::create(builder, loc, 1);
+  Value waveWidth = arith::ConstantIndexOp::create(builder, loc, waveSize);
+  Value boundaryCount = memref::DimOp::create(builder, loc, offsets, zero);
+
+  // Each round samples one boundary per lane and retains the interval after
+  // the last sample at or before the target position. The interval shrinks by
+  // up to the wave width rather than by two as in a scalar binary search.
+  auto search =
+      scf::WhileOp::create(builder, loc, TypeRange{indexType, indexType},
+                           ValueRange{zero, boundaryCount});
+  SmallVector<Location> argumentLocations(2, loc);
+  Block *before = builder.createBlock(
+      &search.getBefore(), {}, search.getResultTypes(), argumentLocations);
+  builder.setInsertionPointToStart(before);
+  Value lower = before->getArgument(0);
+  Value upper = before->getArgument(1);
+  Value distance = arith::SubIOp::create(builder, loc, upper, lower);
+  Value needsAnotherRound = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::ugt, distance, waveWidth);
+  scf::ConditionOp::create(builder, loc, needsAnotherRound,
+                           ValueRange{lower, upper});
+
+  Block *after = builder.createBlock(
+      &search.getAfter(), {}, search.getResultTypes(), argumentLocations);
+  builder.setInsertionPointToStart(after);
+  lower = after->getArgument(0);
+  upper = after->getArgument(1);
+  distance = arith::SubIOp::create(builder, loc, upper, lower);
+  Value stride = arith::CeilDivUIOp::create(builder, loc, distance, waveWidth);
+  Value laneOffset = arith::MulIOp::create(builder, loc, lane, stride);
+  Value candidate = arith::AddIOp::create(builder, loc, lower, laneOffset);
+  Value lastBoundary = arith::SubIOp::create(builder, loc, upper, one);
+  candidate = arith::MinUIOp::create(builder, loc, candidate, lastBoundary);
+  Value boundaryValue =
+      memref::LoadOp::create(builder, loc, offsets, candidate);
+  Value boundary = castToIndex(builder, loc, boundaryValue);
+  Value qualifies = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::ule, boundary, position);
+  Value localLower =
+      arith::SelectOp::create(builder, loc, qualifies, candidate, lower);
+  Value nextLower = buildWaveIndexMax(builder, loc, localLower, waveSize);
+  Value nextCandidate = arith::AddIOp::create(builder, loc, nextLower, stride);
+  Value nextUpper = arith::MinUIOp::create(builder, loc, nextCandidate, upper);
+  scf::YieldOp::create(builder, loc, ValueRange{nextLower, nextUpper});
+
+  builder.setInsertionPointAfter(search);
+  lower = search.getResult(0);
+  upper = search.getResult(1);
+  Value finalCandidate = arith::AddIOp::create(builder, loc, lower, lane);
+  Value candidateIsValid = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::ult, finalCandidate, upper);
+  Value finalBoundary = arith::SubIOp::create(builder, loc, upper, one);
+  Value safeCandidate =
+      arith::MinUIOp::create(builder, loc, finalCandidate, finalBoundary);
+  Value finalBoundaryValue =
+      memref::LoadOp::create(builder, loc, offsets, safeCandidate);
+  Value finalBoundaryPosition = castToIndex(builder, loc, finalBoundaryValue);
+  Value boundaryQualifies = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::ule, finalBoundaryPosition, position);
+  Value finalQualifies =
+      arith::AndIOp::create(builder, loc, candidateIsValid, boundaryQualifies);
+  Value localSegment = arith::SelectOp::create(builder, loc, finalQualifies,
+                                               finalCandidate, lower);
+  return buildWaveIndexMax(builder, loc, localSegment, waveSize);
+}
+
+CompressedSegmentState
+buildWaveCompressedSegmentState(OpBuilder &builder, Location loc, Value offsets,
+                                Value position, Value lane, int64_t waveSize) {
+  Value firstPosition =
+      buildLaneZeroBroadcast(builder, loc, position, waveSize);
+  Value segment = buildWaveCompressedSegmentSearch(
+      builder, loc, offsets, firstPosition, lane, waveSize);
+  Value nextBoundary =
+      loadNextCompressedSegmentBoundary(builder, loc, offsets, segment);
+  return buildNextCompressedSegmentState(builder, loc, offsets, segment,
+                                         nextBoundary, position);
 }
 
 class ThreadPositionReducePattern : public OpRewritePattern<PositionReduceOp> {
@@ -853,17 +948,67 @@ public:
       return arith::MulIOp::create(rewriter, loc, gridSize, wavesPerBlockValue);
     };
     Value waveCount = buildWaveCount(iterationCount);
+    std::optional<CompressedSegmentRecovery> segmentRecovery =
+        matchCompressedSegmentRecovery(op);
+    bool canReuseSegmentAcrossWave =
+        segmentRecovery && !segmentRecovery->mayReset;
     auto buildContribution = [&](OpBuilder &builder, Location bodyLoc,
-                                 Value linearIteration) {
+                                 Value linearIteration, Value active,
+                                 Value waveActive, Value waveBegin,
+                                 Value lane) {
+      auto waveEntry = scf::IfOp::create(
+          builder, bodyLoc, TypeRange{builder.getIndexType(), zero.getType()},
+          waveActive,
+          /*withElseRegion=*/true);
+      builder.setInsertionPointToStart(&waveEntry.getThenRegion().front());
+      // Inactive lanes still participate in wave shuffles. Give them the
+      // first valid logical point so coordinate recovery remains in range.
+      Value safeIteration = arith::SelectOp::create(builder, bodyLoc, active,
+                                                    linearIteration, waveBegin);
       SmallVector<Value> results = buildCollapsedLogicalPoint(
-          builder, bodyLoc, op, linearIteration, ValueRange{zeroIndex, zero},
+          builder, bodyLoc, op, safeIteration, ValueRange{zeroIndex, zero},
           [&](OpBuilder &nestedBuilder, Location nestedLoc,
               ValueRange coordinates) {
-            KeyedContribution contribution =
-                cloneContributionBody(nestedBuilder, op, coordinates);
-            return SmallVector<Value>{contribution.key, contribution.value};
+            Value recoveredSegment;
+            if (canReuseSegmentAcrossWave) {
+              Value position = coordinates[segmentRecovery->positionAxis];
+              recoveredSegment = buildWaveCompressedSegmentState(
+                                     nestedBuilder, nestedLoc,
+                                     segmentRecovery->operation.getOffsets(),
+                                     position, lane, waveSize)
+                                     .segment;
+            }
+            auto activeEntry = scf::IfOp::create(
+                nestedBuilder, nestedLoc,
+                TypeRange{nestedBuilder.getIndexType(), zero.getType()}, active,
+                /*withElseRegion=*/true);
+            nestedBuilder.setInsertionPointToStart(
+                &activeEntry.getThenRegion().front());
+            KeyedContribution contribution;
+            if (canReuseSegmentAcrossWave) {
+              contribution = cloneContributionBodyWithCompressedSegment(
+                  nestedBuilder, op, coordinates, segmentRecovery->operation,
+                  recoveredSegment);
+            } else {
+              contribution =
+                  cloneContributionBody(nestedBuilder, op, coordinates);
+            }
+            scf::YieldOp::create(
+                nestedBuilder, nestedLoc,
+                ValueRange{contribution.key, contribution.value});
+            nestedBuilder.setInsertionPointToStart(
+                &activeEntry.getElseRegion().front());
+            scf::YieldOp::create(nestedBuilder, nestedLoc,
+                                 ValueRange{zeroIndex, zero});
+            nestedBuilder.setInsertionPointAfter(activeEntry);
+            return SmallVector<Value>{activeEntry.getResult(0),
+                                      activeEntry.getResult(1)};
           });
-      return KeyedContribution{results[0], results[1]};
+      scf::YieldOp::create(builder, bodyLoc, results);
+      builder.setInsertionPointToStart(&waveEntry.getElseRegion().front());
+      scf::YieldOp::create(builder, bodyLoc, ValueRange{zeroIndex, zero});
+      builder.setInsertionPointAfter(waveEntry);
+      return KeyedContribution{waveEntry.getResult(0), waveEntry.getResult(1)};
     };
 
     if (!useWorkspace) {
@@ -974,12 +1119,22 @@ public:
     PositionParallelOp merge = buildWavePositionReductionStage(
         rewriter, loc, workspaceSize, workspaceWaveCount, zeroIndex, zero,
         semantics, blockSize, waveSize, /*recoverBoundaryMetadata=*/false,
-        [&](OpBuilder &builder, Location bodyLoc, Value linearIteration) {
+        [&](OpBuilder &builder, Location bodyLoc, Value linearIteration,
+            Value active, Value, Value, Value) {
+          auto entry = scf::IfOp::create(
+              builder, bodyLoc,
+              TypeRange{builder.getIndexType(), zero.getType()}, active,
+              /*withElseRegion=*/true);
+          builder.setInsertionPointToStart(&entry.getThenRegion().front());
           Value key = memref::LoadOp::create(builder, bodyLoc, keyWorkspace,
                                              linearIteration);
           Value value = memref::LoadOp::create(builder, bodyLoc, valueWorkspace,
                                                linearIteration);
-          return KeyedContribution{key, value};
+          scf::YieldOp::create(builder, bodyLoc, ValueRange{key, value});
+          builder.setInsertionPointToStart(&entry.getElseRegion().front());
+          scf::YieldOp::create(builder, bodyLoc, ValueRange{zeroIndex, zero});
+          builder.setInsertionPointAfter(entry);
+          return KeyedContribution{entry.getResult(0), entry.getResult(1)};
         },
         [&](OpBuilder &builder, Location bodyLoc, WavePositionSegment segment) {
           semantics.atomicAccumulate(builder, bodyLoc, segment.value,

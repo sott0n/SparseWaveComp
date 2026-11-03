@@ -81,7 +81,11 @@
 // WAVE: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space
 // WAVE-SAME: partition %[[WAVE]] of %[[WAVES]]
 // WAVE: %[[POSITION:.*]] = arith.addi %[[BEGIN]], %[[LANE]]
-// WAVE: sparsewave.compressed_segment_at_position %{{.*}} at %[[POSITION]]
+// WAVE: %[[SAFE_POSITION:.*]] = arith.select %{{.*}}, %[[POSITION]], %[[BEGIN]]
+// WAVE: gpu.shuffle idx
+// WAVE: scf.while
+// WAVE: gpu.shuffle xor
+// WAVE-NOT: sparsewave.compressed_segment_at_position
 // WAVE: gpu.shuffle up
 // WAVE: memref.atomic_rmw addf
 // WAVE-NOT: sparsewave.spmv
