@@ -13,12 +13,14 @@ BASELINE_MAPPING = "thread-per-output"
 TILED_MAPPING = "wave-per-row-tile"
 POSITION_MAPPING = "thread-per-position"
 WAVE_POSITION_MAPPING = "wave-per-position"
+BLOCK_POSITION_MAPPING = "block-per-position"
 COOPERATIVE_POSITION_MAPPING = "wave-per-position-tile"
 MAPPINGS = (
     BASELINE_MAPPING,
     TILED_MAPPING,
     POSITION_MAPPING,
     WAVE_POSITION_MAPPING,
+    BLOCK_POSITION_MAPPING,
     COOPERATIVE_POSITION_MAPPING,
 )
 POSITION_ORDERS = ("position-major", "rhs-major")
@@ -350,6 +352,16 @@ def benchmark_cases(
                             order,
                             reduction,
                         )
+        if BLOCK_POSITION_MAPPING in mappings:
+            for order in position_orders:
+                yield (
+                    BLOCK_POSITION_MAPPING,
+                    block_size,
+                    None,
+                    None,
+                    order,
+                    None,
+                )
         if COOPERATIVE_POSITION_MAPPING in mappings:
             for chunk_size in position_chunk_sizes:
                 yield (
@@ -695,7 +707,7 @@ def parse_arguments(argv):
         help=(
             "Comma-separated CSR mappings: thread-per-output,"
             "wave-per-row-tile,thread-per-position,wave-per-position,"
-            "wave-per-position-tile."
+            "block-per-position,wave-per-position-tile."
         ),
     )
     parser.add_argument(

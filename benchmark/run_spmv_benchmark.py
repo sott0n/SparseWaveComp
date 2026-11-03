@@ -12,13 +12,23 @@ MAPPINGS = (
     "thread-per-row",
     "thread-per-position",
     "wave-per-position",
+    "block-per-position",
+    "wave-per-row",
+    "block-per-row",
+)
+WAVE32_MAPPINGS = (
+    "wave-per-position",
     "wave-per-row",
     "block-per-row",
 )
 FORMATS = ("csr", "coo")
 FORMAT_MAPPINGS = {
     "csr": MAPPINGS,
-    "coo": ("thread-per-position", "wave-per-position"),
+    "coo": (
+        "thread-per-position",
+        "wave-per-position",
+        "block-per-position",
+    ),
 }
 DISTRIBUTIONS = common.ROW_DISTRIBUTIONS
 POSITION_REDUCTIONS = common.POSITION_REDUCTIONS
@@ -181,6 +191,22 @@ def parse_formats(value):
     if len(values) != len(set(values)):
         raise argparse.ArgumentTypeError(
             f"duplicate sparse formats are not allowed: {values}"
+        )
+    return values
+
+
+def parse_mappings(value):
+    values = [item.strip() for item in value.split(",") if item.strip()]
+    invalid = [item for item in values if item not in MAPPINGS]
+    if not values:
+        raise argparse.ArgumentTypeError("expected at least one GPU mapping")
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            f"unknown GPU mappings {invalid}; expected {MAPPINGS}"
+        )
+    if len(values) != len(set(values)):
+        raise argparse.ArgumentTypeError(
+            f"duplicate GPU mappings are not allowed: {values}"
         )
     return values
 
@@ -463,6 +489,7 @@ def build_metadata(args, repository, commands):
                 else None
             ),
             "formats": args.formats,
+            "mappings": args.mappings,
             "position_chunk_sizes": args.position_chunk_sizes,
             "position_wave_chunk_sizes": args.position_wave_chunk_sizes,
             "position_reductions": args.position_reductions,
@@ -508,12 +535,25 @@ def validate_paths(args):
     )
     if args.matrix_data is None:
         validate_distribution_rows(args.rows, args.distributions)
-    if args.wave_size != 32:
+    active_mappings = {
+        mapping
+        for sparse_format in args.formats
+        for mapping in args.mappings
+        if mapping in FORMAT_MAPPINGS[sparse_format]
+    }
+    if not active_mappings:
+        raise ValueError(
+            "none of the selected mappings support the selected formats"
+        )
+    uses_wave32_mapping = bool(active_mappings.intersection(WAVE32_MAPPINGS))
+    if uses_wave32_mapping and args.wave_size != 32:
         raise ValueError(
             "wave-per-position, wave-per-row, and block-per-row benchmarking "
             "currently require Wave32"
         )
-    common.validate_block_sizes(args, require_wave_multiple=True)
+    common.validate_block_sizes(
+        args, require_wave_multiple=uses_wave32_mapping
+    )
     maximum_i32 = (1 << 31) - 1
     columns = (
         args.matrix_data["columns"]
@@ -551,6 +591,15 @@ def parse_arguments(argv):
         type=parse_formats,
         default=parse_formats("csr"),
         help="Comma-separated SparseWave storage formats: csr,coo.",
+    )
+    parser.add_argument(
+        "--mappings",
+        type=parse_mappings,
+        default=parse_mappings(",".join(MAPPINGS)),
+        help=(
+            "Comma-separated GPU mappings. Unsupported format/mapping "
+            "combinations are skipped."
+        ),
     )
     parser.add_argument("--rows", type=positive_int, default=65536)
     parser.add_argument("--columns", type=positive_int, default=65536)
@@ -668,7 +717,9 @@ def main(argv=None):
                     sparse_format,
                 )
                 for block_size in args.block_sizes:
-                    for mapping in FORMAT_MAPPINGS[sparse_format]:
+                    for mapping in args.mappings:
+                        if mapping not in FORMAT_MAPPINGS[sparse_format]:
+                            continue
                         if mapping == "thread-per-position":
                             chunk_sizes = args.position_chunk_sizes
                         elif mapping == "wave-per-position":

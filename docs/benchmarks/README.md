@@ -11,9 +11,9 @@ be included as CSR baselines.
 
 | Runner | Format | Format selection and parameters | GPU mappings |
 | --- | --- | --- | --- |
-| SpMV | CSR | `--formats=csr`; `--position-chunk-sizes` selects consecutive positions per thread; `--position-wave-chunk-sizes` selects consecutive lane-width tiles per wave; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-row`, `thread-per-position`, `wave-per-position`, `wave-per-row`, `block-per-row` |
-| SpMV | COO | `--formats=coo`; position options are shared with CSR | `thread-per-position`, `wave-per-position` |
-| SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths; `--position-chunk-sizes` selects consecutive points per thread or cooperative wave; `--position-wave-chunk-sizes` selects consecutive lane-width tiles per non-cooperative wave; `--position-orders=position-major,rhs-major` reorders the position and RHS-column axes; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-output`, `wave-per-row-tile`, `thread-per-position`, `wave-per-position`, `wave-per-position-tile` |
+| SpMV | CSR | `--formats=csr`; `--mappings` selects the mappings to measure; `--position-chunk-sizes` selects consecutive positions per thread; `--position-wave-chunk-sizes` selects consecutive lane-width tiles per wave; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-row`, `thread-per-position`, `wave-per-position`, `block-per-position`, `wave-per-row`, `block-per-row` |
+| SpMV | COO | `--formats=coo`; position options are shared with CSR | `thread-per-position`, `wave-per-position`, `block-per-position` |
+| SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths; `--position-chunk-sizes` selects consecutive points per thread or cooperative wave; `--position-wave-chunk-sizes` selects consecutive lane-width tiles per non-cooperative wave; `--position-orders=position-major,rhs-major` reorders the position and RHS-column axes; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-output`, `wave-per-row-tile`, `thread-per-position`, `wave-per-position`, `block-per-position`, `wave-per-position-tile` |
 | SpMM | BSR | `--formats=bsr`; `--bsr-block-sizes` selects square storage block sizes | `thread-per-output` |
 | Elementwise add/multiply | CSR | `--nnz-per-row` controls both input row lengths; `--overlaps` controls their structural overlap and therefore the assembled output size | `thread-per-row` symbolic and numeric phases with a hierarchical GPU prefix scan |
 
@@ -95,7 +95,7 @@ python3 benchmark/run_spmm_benchmark.py \
   --nnz-per-row=4,32,256 \
   --distributions=uniform,skewed \
   --formats=csr \
-  --mappings=thread-per-output,wave-per-row-tile,thread-per-position,wave-per-position,wave-per-position-tile \
+  --mappings=thread-per-output,wave-per-row-tile,thread-per-position,wave-per-position,block-per-position,wave-per-position-tile \
   --rhs-columns=4,16,64 \
   --tile-sizes=1,4,8,16 \
   --position-chunk-sizes=1,4,8 \

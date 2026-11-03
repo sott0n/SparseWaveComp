@@ -288,6 +288,22 @@ amdhsa.kernels:
                     "workspace",
                 ),
                 (
+                    "block-per-position",
+                    64,
+                    None,
+                    None,
+                    "position-major",
+                    None,
+                ),
+                (
+                    "block-per-position",
+                    64,
+                    None,
+                    None,
+                    "rhs-major",
+                    None,
+                ),
+                (
                     "wave-per-position-tile",
                     64,
                     None,
@@ -337,6 +353,10 @@ amdhsa.kernels:
         )
         self.assertEqual(
             BENCHMARK.sparsewave_kernel_layout("wave-per-position"),
+            (2, 1),
+        )
+        self.assertEqual(
+            BENCHMARK.sparsewave_kernel_layout("block-per-position"),
             (2, 1),
         )
 
@@ -464,6 +484,10 @@ amdhsa.kernels:
         self.assertEqual(
             BENCHMARK.parse_mappings("wave-per-position-tile"),
             ["wave-per-position-tile"],
+        )
+        self.assertEqual(
+            BENCHMARK.parse_mappings("block-per-position"),
+            ["block-per-position"],
         )
         with self.assertRaisesRegex(argparse.ArgumentTypeError, "unknown"):
             BENCHMARK.parse_mappings("block-per-row")

@@ -108,7 +108,11 @@ def position_reduction_pipeline_option(mapping, reduction):
 def position_kernel_layout(mapping, reduction):
     if mapping == "wave-per-position" and reduction == "workspace":
         return 4, 2
-    if mapping in ("thread-per-position", "wave-per-position"):
+    if mapping in (
+        "thread-per-position",
+        "wave-per-position",
+        "block-per-position",
+    ):
         return 2, 1
     return None
 
@@ -1474,6 +1478,13 @@ def add_speedups(report, rows):
     return reported_rows
 
 
+def has_report_baseline(report, rows):
+    if report.baseline is None:
+        return False
+    baseline_key, baseline_value = report.baseline
+    return any(row[baseline_key] == baseline_value for row in rows)
+
+
 def print_table(columns, rows):
     print("  ".join(column.format_header() for column in columns))
     for row in rows:
@@ -1491,7 +1502,8 @@ def print_benchmark_report(args, title, report, rows):
     print(f"  {'iterations:':15s}{args.iterations}")
     print()
     column_keys = report.dimensions + report.metrics
-    if report.baseline is not None:
+    include_speedup = has_report_baseline(report, rows)
+    if include_speedup:
         column_keys += ("speedup",)
     unknown_columns = [
         key for key in column_keys if key not in REPORT_COLUMNS
@@ -1499,7 +1511,8 @@ def print_benchmark_report(args, title, report, rows):
     if unknown_columns:
         raise ValueError(f"unknown benchmark report columns: {unknown_columns}")
     columns = tuple(REPORT_COLUMNS[key] for key in column_keys)
-    rows = add_speedups(report, rows)
+    if include_speedup:
+        rows = add_speedups(report, rows)
     print_table(columns, rows)
 
 

@@ -1,6 +1,7 @@
 # RUN: %python %s %S/../../benchmark/run_spmv_benchmark.py %t sparsewave-opt
 
 import csv
+import argparse
 import importlib.util
 from pathlib import Path
 import struct
@@ -23,7 +24,11 @@ SPEC.loader.exec_module(BENCHMARK)
 
 def lowering_argument(mapping):
     options = f"mapping={mapping} block-size=128 wave-size=32"
-    if mapping in {"thread-per-position", "wave-per-position"}:
+    if mapping in {
+        "thread-per-position",
+        "wave-per-position",
+        "block-per-position",
+    }:
         position_mapping = mapping.removesuffix("-per-position")
         return (
             "--pass-pipeline=builtin.module("
@@ -84,9 +89,27 @@ class SpMVBenchmarkTest(unittest.TestCase):
             (4, 2),
         )
         self.assertEqual(
-            BENCHMARK.FORMAT_MAPPINGS["coo"],
-            ("thread-per-position", "wave-per-position"),
+            BENCHMARK.sparsewave_kernel_layout("block-per-position"),
+            (2, 1),
         )
+        self.assertEqual(
+            BENCHMARK.FORMAT_MAPPINGS["coo"],
+            (
+                "thread-per-position",
+                "wave-per-position",
+                "block-per-position",
+            ),
+        )
+
+    def test_parse_mappings(self):
+        self.assertEqual(
+            BENCHMARK.parse_mappings("thread-per-position,block-per-position"),
+            ["thread-per-position", "block-per-position"],
+        )
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "unknown"):
+            BENCHMARK.parse_mappings("unknown")
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "duplicate"):
+            BENCHMARK.parse_mappings("block-per-position,block-per-position")
 
     def test_rendered_synthetic_coo_input_lowers(self):
         template = SCRIPT.parent / "spmv.mlir.in"
@@ -566,6 +589,21 @@ timings_us=100.0,4.0,2.0,3.0
         )
         self.assertEqual(reported[0]["speedup"], 1.0)
         self.assertEqual(reported[1]["speedup"], 2.0)
+
+    def test_report_can_omit_an_unselected_baseline(self):
+        rows = [
+            {
+                "format": "coo",
+                "block_size": 128,
+                "mapping": "block-per-position",
+                "median_us": 2.0,
+            }
+        ]
+        self.assertFalse(
+            BENCHMARK.common.has_report_baseline(
+                BENCHMARK.MATRIX_REPORT, rows
+            )
+        )
 
 
 if __name__ == "__main__":
