@@ -185,9 +185,11 @@ def ScheduleSparseWavePosition
     restarts. Wave mapping uses balanced collapsed-space partitions and first
     combines adjacent equal keys with a segmented reduction. For a
     non-restarting compressed position axis, wave lanes cooperatively recover
-    the first segment and advance through subsequent boundaries. Its workspace
-    strategy atomically emits segments contained within one wave, defers the
-    first and last segment partials from each wave to a fixed-size workspace,
+    the first segment and advance through subsequent boundaries. A wave can
+    traverse a configurable chunk of consecutive lane-width tiles while
+    carrying that compressed segment state between tiles. Its workspace
+    strategy atomically emits segments contained within one tile, defers the
+    first and last segment partials from each tile to a fixed-size workspace,
     and merges adjacent boundary partials in a second wave stage. When a
     cooperative axis is named, each wave instead owns one group of that axis
     and its lanes select individual axis coordinates. Read-only scalar values
@@ -210,6 +212,10 @@ def ScheduleSparseWavePosition
     Option<"waveReduction", "wave-reduction", "std::string",
            /*default=*/"\"atomic\"",
            "Wave segment reduction strategy: atomic or workspace">,
+    Option<"waveChunkSize", "wave-chunk-size", "int64_t",
+           /*default=*/"1",
+           "Number of consecutive lane-width position tiles processed by "
+           "each non-cooperative wave">,
     Option<"cooperativeAxis", "cooperative-axis", "std::string",
            /*default=*/"\"\"",
            "Logical axis distributed across cooperating wave lanes">,

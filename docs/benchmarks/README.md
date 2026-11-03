@@ -11,9 +11,9 @@ be included as CSR baselines.
 
 | Runner | Format | Format selection and parameters | GPU mappings |
 | --- | --- | --- | --- |
-| SpMV | CSR | `--formats=csr`; `--position-chunk-sizes` selects consecutive positions processed by each `thread-per-position` worker; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-row`, `thread-per-position`, `wave-per-position`, `wave-per-row`, `block-per-row` |
+| SpMV | CSR | `--formats=csr`; `--position-chunk-sizes` selects consecutive positions per thread; `--position-wave-chunk-sizes` selects consecutive lane-width tiles per wave; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-row`, `thread-per-position`, `wave-per-position`, `wave-per-row`, `block-per-row` |
 | SpMV | COO | `--formats=coo`; position options are shared with CSR | `thread-per-position`, `wave-per-position` |
-| SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths; `--position-chunk-sizes` selects consecutive position-space points per thread or cooperative wave; `--position-orders=position-major,rhs-major` reorders the position and RHS-column axes; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-output`, `wave-per-row-tile`, `thread-per-position`, `wave-per-position`, `wave-per-position-tile` |
+| SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths; `--position-chunk-sizes` selects consecutive points per thread or cooperative wave; `--position-wave-chunk-sizes` selects consecutive lane-width tiles per non-cooperative wave; `--position-orders=position-major,rhs-major` reorders the position and RHS-column axes; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-output`, `wave-per-row-tile`, `thread-per-position`, `wave-per-position`, `wave-per-position-tile` |
 | SpMM | BSR | `--formats=bsr`; `--bsr-block-sizes` selects square storage block sizes | `thread-per-output` |
 | Elementwise add/multiply | CSR | `--nnz-per-row` controls both input row lengths; `--overlaps` controls their structural overlap and therefore the assembled output size | `thread-per-row` symbolic and numeric phases with a hierarchical GPU prefix scan |
 
@@ -69,18 +69,20 @@ python3 benchmark/run_spmv_benchmark.py \
   --nnz-per-row=4,32,256 \
   --distributions=uniform,skewed \
   --position-chunk-sizes=1,2,4,8 \
-  --position-reductions=atomic,segmented \
+  --position-wave-chunk-sizes=1,2,4,8 \
+  --position-reductions=atomic,segmented,workspace \
   --rocsparse
 ```
 
-The `chunk` result column is the split factor. A value of one is the original
-one-position-per-thread schedule; larger values trade parallel worker count for
-sequential reuse within each thread. `atomic` independently recovers and
-updates every position. `segmented` recovers the first CSR row once, carries
-the row across the chunk, and emits an atomic update only when the row changes
-or the chunk ends. Reorder and collapse are not included in this
-one-dimensional SpMV ablation because they do not change its iteration order
-or shape.
+The `chunk` result column is the mapping-specific split factor. For thread
+mapping it is the number of consecutive positions per worker. For wave mapping
+it is the number of consecutive lane-width position tiles per wave. A chunked
+wave recovers the first compressed segment cooperatively, then carries segment
+and boundary state across later tiles. `atomic` independently updates each
+completed segment; `segmented` combines equal keys inside a thread chunk; and
+`workspace` merges wave-boundary partials in a second stage. Reorder and
+collapse are not included in this one-dimensional SpMV ablation because they
+do not change its iteration order or shape.
 
 SpMM accepts the same generated row-length distributions. The following sweep
 compares fixed row/output mappings, position split and reorder variants,
@@ -97,6 +99,7 @@ python3 benchmark/run_spmm_benchmark.py \
   --rhs-columns=4,16,64 \
   --tile-sizes=1,4,8,16 \
   --position-chunk-sizes=1,4,8 \
+  --position-wave-chunk-sizes=1,2,4,8 \
   --position-orders=position-major,rhs-major \
   --position-reductions=atomic,segmented \
   --rocsparse

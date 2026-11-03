@@ -324,6 +324,20 @@ class SpMVBenchmarkTest(unittest.TestCase):
         ):
             BENCHMARK.parse_positive_int_list("1,0,4")
 
+    def test_position_chunk_pipeline_options(self):
+        self.assertEqual(
+            BENCHMARK.position_chunk_pipeline_option(
+                "thread-per-position", 4
+            ),
+            "position-thread-chunk-size=4",
+        )
+        self.assertEqual(
+            BENCHMARK.position_chunk_pipeline_option(
+                "wave-per-position", 4
+            ),
+            "position-wave-chunk-size=4",
+        )
+
     def test_position_reduction_parser(self):
         self.assertEqual(
             BENCHMARK.parse_position_reductions(

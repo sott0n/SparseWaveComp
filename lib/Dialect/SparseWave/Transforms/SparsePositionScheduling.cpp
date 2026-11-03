@@ -679,6 +679,172 @@ buildWaveCompressedSegmentState(OpBuilder &builder, Location loc, Value offsets,
                                          nextBoundary, position);
 }
 
+template <typename SegmentBuilder>
+PositionParallelOp buildChunkedWavePositionReductionStage(
+    PatternRewriter &rewriter, Location loc, PositionReduceOp reduction,
+    std::optional<CompressedSegmentRecovery> segmentRecovery,
+    Value iterationCount, Value waveCount, Value zeroIndex, Value zero,
+    PositionReductionSemantics semantics, int64_t blockSize, int64_t waveSize,
+    int64_t chunkSize, bool recoverBoundaryMetadata,
+    SegmentBuilder buildSegment) {
+  // Assign each physical wave a balanced contiguous partition containing at
+  // most `chunkSize` lane-width tiles. The sequential tile loop carries one
+  // compressed segment state per lane, so only the first tile performs the
+  // cooperative search. Each tile remains an independent reduction partition
+  // to preserve the ordering expected by the boundary workspace.
+  bool canReuseSegment = segmentRecovery && !segmentRecovery->mayReset;
+  auto parallel = PositionParallelOp::create(
+      rewriter, loc, waveCount, "wave", rewriter.getI64IntegerAttr(blockSize));
+  Block *body =
+      rewriter.createBlock(&parallel.getBody(), parallel.getBody().end(),
+                           {rewriter.getIndexType(), rewriter.getIndexType(),
+                            rewriter.getIndexType()},
+                           {loc, loc, loc});
+  rewriter.setInsertionPointToStart(body);
+  Value wave = body->getArgument(0);
+  Value lane = body->getArgument(1);
+  auto partition = PositionSpaceOp::create(
+      rewriter, loc, rewriter.getIndexType(), rewriter.getIndexType(),
+      zeroIndex, iterationCount, wave, waveCount);
+  Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  Value waveWidth = arith::ConstantIndexOp::create(rewriter, loc, waveSize);
+  Value chunkSizeValue =
+      arith::ConstantIndexOp::create(rewriter, loc, chunkSize);
+  Value tileCapacity =
+      arith::MulIOp::create(rewriter, loc, waveCount, chunkSizeValue);
+  auto tiles = PositionForOp::create(
+      rewriter, loc,
+      TypeRange{rewriter.getIndexType(), rewriter.getIndexType()}, zeroIndex,
+      tileCapacity, wave, ValueRange{zeroIndex, zeroIndex},
+      rewriter.getI64IntegerAttr(chunkSize));
+  Block *tileBody =
+      rewriter.createBlock(&tiles.getBody(), tiles.getBody().end(),
+                           {rewriter.getIndexType(), rewriter.getIndexType(),
+                            rewriter.getIndexType(), rewriter.getIndexType()},
+                           {loc, loc, loc, loc});
+  rewriter.setInsertionPointToStart(tileBody);
+  Value logicalTile = tileBody->getArgument(0);
+  Value tile = tileBody->getArgument(1);
+  Value currentSegment = tileBody->getArgument(2);
+  Value currentBoundary = tileBody->getArgument(3);
+  Value tileOffset = arith::MulIOp::create(rewriter, loc, tile, waveWidth);
+  Value tileBegin =
+      arith::AddIOp::create(rewriter, loc, partition.getBegin(), tileOffset);
+  Value unboundedTileEnd =
+      arith::AddIOp::create(rewriter, loc, tileBegin, waveWidth);
+  Value tileEnd = arith::MinUIOp::create(rewriter, loc, unboundedTileEnd,
+                                         partition.getEnd());
+  Value waveActive = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::ult, tileBegin, tileEnd);
+  Value linearIteration = arith::AddIOp::create(rewriter, loc, tileBegin, lane);
+  Value active = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
+                                       linearIteration, tileEnd);
+  auto waveEntry = scf::IfOp::create(
+      rewriter, loc,
+      TypeRange{rewriter.getIndexType(), zero.getType(),
+                rewriter.getIndexType(), rewriter.getIndexType()},
+      waveActive,
+      /*withElseRegion=*/true);
+  rewriter.setInsertionPointToStart(&waveEntry.getThenRegion().front());
+  Value safeIteration = arith::SelectOp::create(rewriter, loc, active,
+                                                linearIteration, tileBegin);
+  SmallVector<Value> results = buildCollapsedLogicalPoint(
+      rewriter, loc, reduction, safeIteration,
+      ValueRange{zeroIndex, zero, currentSegment, currentBoundary},
+      [&](OpBuilder &builder, Location bodyLoc, ValueRange coordinates) {
+        Value nextSegment = currentSegment;
+        Value nextBoundary = currentBoundary;
+        if (canReuseSegment) {
+          Value firstTile = arith::CmpIOp::create(
+              builder, bodyLoc, arith::CmpIPredicate::eq, tile, zeroIndex);
+          auto state = scf::IfOp::create(
+              builder, bodyLoc,
+              TypeRange{builder.getIndexType(), builder.getIndexType()},
+              firstTile,
+              /*withElseRegion=*/true);
+          builder.setInsertionPointToStart(&state.getThenRegion().front());
+          CompressedSegmentState first = buildWaveCompressedSegmentState(
+              builder, bodyLoc, segmentRecovery->operation.getOffsets(),
+              coordinates[segmentRecovery->positionAxis], lane, waveSize);
+          scf::YieldOp::create(builder, bodyLoc,
+                               ValueRange{first.segment, first.nextBoundary});
+          builder.setInsertionPointToStart(&state.getElseRegion().front());
+          CompressedSegmentState advanced = buildNextCompressedSegmentState(
+              builder, bodyLoc, segmentRecovery->operation.getOffsets(),
+              currentSegment, currentBoundary,
+              coordinates[segmentRecovery->positionAxis]);
+          scf::YieldOp::create(
+              builder, bodyLoc,
+              ValueRange{advanced.segment, advanced.nextBoundary});
+          builder.setInsertionPointAfter(state);
+          nextSegment = state.getResult(0);
+          nextBoundary = state.getResult(1);
+        }
+
+        auto activeEntry = scf::IfOp::create(
+            builder, bodyLoc, TypeRange{builder.getIndexType(), zero.getType()},
+            active,
+            /*withElseRegion=*/true);
+        builder.setInsertionPointToStart(&activeEntry.getThenRegion().front());
+        KeyedContribution contribution;
+        if (canReuseSegment) {
+          contribution = cloneContributionBodyWithCompressedSegment(
+              builder, reduction, coordinates, segmentRecovery->operation,
+              nextSegment);
+        } else {
+          contribution = cloneContributionBody(builder, reduction, coordinates);
+        }
+        scf::YieldOp::create(builder, bodyLoc,
+                             ValueRange{contribution.key, contribution.value});
+        builder.setInsertionPointToStart(&activeEntry.getElseRegion().front());
+        scf::YieldOp::create(builder, bodyLoc, ValueRange{zeroIndex, zero});
+        builder.setInsertionPointAfter(activeEntry);
+        return SmallVector<Value>{activeEntry.getResult(0),
+                                  activeEntry.getResult(1), nextSegment,
+                                  nextBoundary};
+      });
+  scf::YieldOp::create(rewriter, loc, results);
+  rewriter.setInsertionPointToStart(&waveEntry.getElseRegion().front());
+  scf::YieldOp::create(
+      rewriter, loc,
+      ValueRange{zeroIndex, zero, currentSegment, currentBoundary});
+  rewriter.setInsertionPointAfter(waveEntry);
+
+  Value key = waveEntry.getResult(0);
+  Value keyI64 =
+      arith::IndexCastOp::create(rewriter, loc, rewriter.getI64Type(), key);
+  WaveSegmentedReduction waveReduction = buildWavePrefixSegmentedReduction(
+      rewriter, loc, keyI64, waveEntry.getResult(1), active, waveSize,
+      [&](OpBuilder &builder, Location bodyLoc, Value lhs, Value rhs) {
+        return semantics.combine(builder, bodyLoc, lhs, rhs);
+      },
+      recoverBoundaryMetadata);
+
+  Value lastActiveLane = lane;
+  if (recoverBoundaryMetadata) {
+    Value activeLaneCount =
+        arith::SubIOp::create(rewriter, loc, tileEnd, tileBegin);
+    Value safeLaneCount =
+        arith::MaxUIOp::create(rewriter, loc, activeLaneCount, one);
+    lastActiveLane = arith::SubIOp::create(rewriter, loc, safeLaneCount, one);
+  }
+  scf::IfOp::create(
+      rewriter, loc, waveReduction.segmentEnd,
+      [&](OpBuilder &builder, Location bodyLoc) {
+        buildSegment(builder, bodyLoc,
+                     WavePositionSegment{
+                         logicalTile, lane, key, waveReduction.inclusiveValue,
+                         waveReduction.segmentOrdinal, lastActiveLane});
+        scf::YieldOp::create(builder, bodyLoc);
+      });
+  YieldOp::create(rewriter, loc,
+                  ValueRange{waveEntry.getResult(2), waveEntry.getResult(3)});
+  rewriter.setInsertionPointAfter(tiles);
+  YieldOp::create(rewriter, loc);
+  rewriter.setInsertionPointAfter(parallel);
+  return parallel;
+}
+
 class ThreadPositionReducePattern : public OpRewritePattern<PositionReduceOp> {
 public:
   ThreadPositionReducePattern(MLIRContext *context, int64_t blockSize,
@@ -929,9 +1095,10 @@ private:
 class WavePositionReducePattern : public OpRewritePattern<PositionReduceOp> {
 public:
   WavePositionReducePattern(MLIRContext *context, int64_t blockSize,
-                            int64_t waveSize, bool useWorkspace)
+                            int64_t waveSize, int64_t chunkSize,
+                            bool useWorkspace)
       : OpRewritePattern<PositionReduceOp>(context), blockSize(blockSize),
-        waveSize(waveSize), useWorkspace(useWorkspace) {}
+        waveSize(waveSize), chunkSize(chunkSize), useWorkspace(useWorkspace) {}
 
   LogicalResult matchAndRewrite(PositionReduceOp op,
                                 PatternRewriter &rewriter) const override {
@@ -960,7 +1127,14 @@ public:
           arith::MaxUIOp::create(rewriter, loc, requiredBlocks, oneIndex);
       return arith::MulIOp::create(rewriter, loc, gridSize, wavesPerBlockValue);
     };
-    Value waveCount = buildWaveCount(iterationCount);
+    Value scheduledCount = iterationCount;
+    if (chunkSize > 1) {
+      Value chunkSizeValue =
+          arith::ConstantIndexOp::create(rewriter, loc, chunkSize);
+      scheduledCount = arith::CeilDivUIOp::create(rewriter, loc, iterationCount,
+                                                  chunkSizeValue);
+    }
+    Value waveCount = buildWaveCount(scheduledCount);
     std::optional<CompressedSegmentRecovery> segmentRecovery =
         matchCompressedSegmentRecovery(op);
     bool canReuseSegmentAcrossWave =
@@ -1023,12 +1197,23 @@ public:
       builder.setInsertionPointAfter(waveEntry);
       return KeyedContribution{waveEntry.getResult(0), waveEntry.getResult(1)};
     };
+    auto buildPrimaryStage = [&](bool recoverBoundaryMetadata,
+                                 auto buildSegment) {
+      if (chunkSize == 1) {
+        return buildWavePositionReductionStage(
+            rewriter, loc, iterationCount, waveCount, zeroIndex, zero,
+            semantics, blockSize, waveSize, recoverBoundaryMetadata,
+            buildContribution, buildSegment);
+      }
+      return buildChunkedWavePositionReductionStage(
+          rewriter, loc, op, segmentRecovery, iterationCount, waveCount,
+          zeroIndex, zero, semantics, blockSize, waveSize, chunkSize,
+          recoverBoundaryMetadata, buildSegment);
+    };
 
     if (!useWorkspace) {
-      buildWavePositionReductionStage(
-          rewriter, loc, iterationCount, waveCount, zeroIndex, zero, semantics,
-          blockSize, waveSize, /*recoverBoundaryMetadata=*/false,
-          buildContribution,
+      buildPrimaryStage(
+          /*recoverBoundaryMetadata=*/false,
           [&](OpBuilder &builder, Location bodyLoc,
               WavePositionSegment segment) {
             semantics.atomicAccumulate(builder, bodyLoc, segment.value,
@@ -1043,7 +1228,15 @@ public:
     // immediately. A second wave stage merges the boundary partials that may
     // continue across neighboring wave partitions.
     Value two = arith::ConstantIndexOp::create(rewriter, loc, 2);
-    Value workspaceSize = arith::MulIOp::create(rewriter, loc, waveCount, two);
+    Value workspacePartitionCount = waveCount;
+    if (chunkSize > 1) {
+      Value chunkSizeValue =
+          arith::ConstantIndexOp::create(rewriter, loc, chunkSize);
+      workspacePartitionCount =
+          arith::MulIOp::create(rewriter, loc, waveCount, chunkSizeValue);
+    }
+    Value workspaceSize =
+        arith::MulIOp::create(rewriter, loc, workspacePartitionCount, two);
     auto keyWorkspaceType =
         MemRefType::get({ShapedType::kDynamic}, rewriter.getIndexType());
     auto valueWorkspaceType =
@@ -1077,10 +1270,8 @@ public:
     YieldOp::create(rewriter, loc);
     rewriter.setInsertionPointAfter(workspaceInitialization);
 
-    buildWavePositionReductionStage(
-        rewriter, loc, iterationCount, waveCount, zeroIndex, zero, semantics,
-        blockSize, waveSize, /*recoverBoundaryMetadata=*/true,
-        buildContribution,
+    buildPrimaryStage(
+        /*recoverBoundaryMetadata=*/true,
         [&](OpBuilder &builder, Location bodyLoc, WavePositionSegment segment) {
           Value oneI32 = arith::ConstantIntOp::create(builder, bodyLoc, 1, 32);
           Value isFirst =
@@ -1163,6 +1354,7 @@ public:
 private:
   int64_t blockSize;
   int64_t waveSize;
+  int64_t chunkSize;
   bool useWorkspace;
 };
 
@@ -1403,6 +1595,13 @@ public:
       signalPassFailure();
       return;
     }
+    if (waveChunkSize < 1) {
+      getOperation().emitError()
+          << "wave position chunk size must be positive, but got "
+          << waveChunkSize.getValue();
+      signalPassFailure();
+      return;
+    }
     if (cooperativeChunkSize < 1) {
       getOperation().emitError()
           << "cooperative position chunk size must be positive, but got "
@@ -1420,6 +1619,13 @@ public:
     if (mapping == "wave" && threadChunkSize != 1) {
       getOperation().emitError()
           << "thread position chunk size applies only to thread mapping";
+      signalPassFailure();
+      return;
+    }
+    if ((mapping != "wave" || !cooperativeAxis.empty()) && waveChunkSize != 1) {
+      getOperation().emitError()
+          << "wave position chunk size applies only to non-cooperative wave "
+             "mapping";
       signalPassFailure();
       return;
     }
@@ -1475,8 +1681,9 @@ public:
         patterns.add<ThreadPositionReducePattern>(&getContext(), blockSize,
                                                   threadChunkSize);
     } else if (cooperativeAxis.empty()) {
-      patterns.add<WavePositionReducePattern>(
-          &getContext(), blockSize, waveSize, waveReduction == "workspace");
+      patterns.add<WavePositionReducePattern>(&getContext(), blockSize,
+                                              waveSize, waveChunkSize,
+                                              waveReduction == "workspace");
     } else {
       patterns.add<CooperativeWavePositionReducePattern>(
           &getContext(), blockSize, waveSize, cooperativeAxis,

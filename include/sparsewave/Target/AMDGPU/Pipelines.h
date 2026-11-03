@@ -131,6 +131,13 @@ struct SparseWaveToAMDGPUPipelineOptions
           "Number of consecutive positions processed by each thread."),
       llvm::cl::init(1)};
 
+  PassOptions::Option<int64_t> positionWaveChunkSize{
+      *this, "position-wave-chunk-size",
+      llvm::cl::desc(
+          "Number of consecutive lane-width position tiles processed by "
+          "each wave."),
+      llvm::cl::init(1)};
+
   PassOptions::Option<int64_t> positionCooperativeChunkSize{
       *this, "position-cooperative-chunk-size",
       llvm::cl::desc(

@@ -244,6 +244,7 @@ amdhsa.kernels:
                 [64],
                 [4],
                 [4],
+                [2],
                 ["position-major", "rhs-major"],
                 list(BENCHMARK.POSITION_REDUCTIONS),
                 list(BENCHMARK.MAPPINGS),
@@ -258,7 +259,7 @@ amdhsa.kernels:
                     "wave-per-position",
                     64,
                     None,
-                    None,
+                    2,
                     "position-major",
                     "atomic",
                 ),
@@ -266,7 +267,7 @@ amdhsa.kernels:
                     "wave-per-position",
                     64,
                     None,
-                    None,
+                    2,
                     "position-major",
                     "workspace",
                 ),
@@ -274,7 +275,7 @@ amdhsa.kernels:
                     "wave-per-position",
                     64,
                     None,
-                    None,
+                    2,
                     "rhs-major",
                     "atomic",
                 ),
@@ -282,7 +283,7 @@ amdhsa.kernels:
                     "wave-per-position",
                     64,
                     None,
-                    None,
+                    2,
                     "rhs-major",
                     "workspace",
                 ),
@@ -337,6 +338,14 @@ amdhsa.kernels:
         self.assertEqual(
             BENCHMARK.sparsewave_kernel_layout("wave-per-position"),
             (2, 1),
+        )
+
+    def test_wave_position_chunk_pipeline_option(self):
+        self.assertEqual(
+            BENCHMARK.position_chunk_pipeline_option(
+                "wave-per-position", 4
+            ),
+            "position-wave-chunk-size=4",
         )
         self.assertEqual(
             BENCHMARK.sparsewave_kernel_layout(

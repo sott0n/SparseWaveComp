@@ -11,6 +11,12 @@
 // RUN:   --schedule-sparsewave-position='mapping=wave block-size=64 wave-size=32 wave-reduction=workspace' \
 // RUN:   | FileCheck %s --check-prefix=WORKSPACE
 // RUN: sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=wave block-size=64 wave-size=32 wave-chunk-size=4 wave-reduction=workspace' \
+// RUN:   | FileCheck %s --check-prefix=WAVE-CHUNK
+// RUN: sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=wave block-size=64 wave-size=32 wave-chunk-size=4' \
+// RUN:   | FileCheck %s --check-prefix=WAVE-CHUNK-ATOMIC
+// RUN: sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='mapping=thread block-size=64 thread-chunk-size=4 thread-reduction=segmented' \
 // RUN:   | FileCheck %s --check-prefix=SEGMENTED
 // RUN: sparsewave-opt %s \
@@ -105,6 +111,34 @@ func.func @keyed_sum(%values: memref<?xf32>, %output: memref<?xf32>) {
 // WAVE-COMPRESSED: gpu.shuffle xor
 // WAVE-COMPRESSED: memref.load %{{.*}}[%{{.*}}] : memref<?xf32>
 // WAVE-COMPRESSED: return
+
+// WAVE-CHUNK-LABEL: func.func @compressed_segment_sum(
+// WAVE-CHUNK: sparsewave.position_parallel %{{.*}} mapping = "wave" block_size = 64 {
+// WAVE-CHUNK: %{{.*}}:2 = sparsewave.position_for
+// WAVE-CHUNK-SAME: by 4
+// WAVE-CHUNK-SAME: iter_args(%{{.*}}, %{{.*}} : index, index)
+// WAVE-CHUNK: scf.if %{{.*}} -> (index, index) {
+// WAVE-CHUNK-COUNT-1: gpu.shuffle idx
+// WAVE-CHUNK: } else {
+// WAVE-CHUNK: scf.while
+// WAVE-CHUNK: sparsewave.yield %{{.*}}, %{{.*}} : index, index
+// WAVE-CHUNK-NOT: sparsewave.compressed_segment_at_position
+// WAVE-CHUNK: return
+
+// WAVE-CHUNK-LABEL: func.func @compressed_multi_axis_sum(
+// WAVE-CHUNK: sparsewave.position_for
+// WAVE-CHUNK-SAME: by 4
+// WAVE-CHUNK: sparsewave.compressed_segment_at_position
+// WAVE-CHUNK-NOT: gpu.shuffle idx
+// WAVE-CHUNK: return
+
+// WAVE-CHUNK-ATOMIC-LABEL: func.func @compressed_segment_sum(
+// WAVE-CHUNK-ATOMIC-NOT: gpu.alloc
+// WAVE-CHUNK-ATOMIC: sparsewave.position_for
+// WAVE-CHUNK-ATOMIC-SAME: by 4
+// WAVE-CHUNK-ATOMIC: memref.atomic_rmw addf
+// WAVE-CHUNK-ATOMIC-NOT: gpu.alloc
+// WAVE-CHUNK-ATOMIC: return
 
 // COMPRESSED-LABEL: func.func @compressed_segment_sum(
 // COMPRESSED-SAME: %[[OFFSETS:[^ :,]+]]: memref<?xi32>

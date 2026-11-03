@@ -189,6 +189,14 @@ def parse_position_reductions(value):
     return common.parse_position_reductions(value)
 
 
+def position_chunk_pipeline_option(mapping, chunk_size):
+    if mapping == "thread-per-position":
+        return f"position-thread-chunk-size={chunk_size}"
+    if mapping == "wave-per-position":
+        return f"position-wave-chunk-size={chunk_size}"
+    raise ValueError(f"mapping does not use position chunks: {mapping}")
+
+
 def row_length(nnz_per_row, distribution, row):
     return common.synthetic_row_length(nnz_per_row, distribution, row)
 
@@ -456,6 +464,7 @@ def build_metadata(args, repository, commands):
             ),
             "formats": args.formats,
             "position_chunk_sizes": args.position_chunk_sizes,
+            "position_wave_chunk_sizes": args.position_wave_chunk_sizes,
             "position_reductions": args.position_reductions,
             "commands": commands,
         }
@@ -565,6 +574,15 @@ def parse_arguments(argv):
         ),
     )
     parser.add_argument(
+        "--position-wave-chunk-sizes",
+        type=parse_positive_int_list,
+        default=parse_positive_int_list("1"),
+        help=(
+            "Comma-separated counts of consecutive lane-width position "
+            "tiles processed by each wave-per-position worker."
+        ),
+    )
+    parser.add_argument(
         "--position-reductions",
         type=parse_position_reductions,
         default=parse_position_reductions("atomic,segmented,workspace"),
@@ -651,11 +669,12 @@ def main(argv=None):
                 )
                 for block_size in args.block_sizes:
                     for mapping in FORMAT_MAPPINGS[sparse_format]:
-                        chunk_sizes = (
-                            args.position_chunk_sizes
-                            if mapping == "thread-per-position"
-                            else (None,)
-                        )
+                        if mapping == "thread-per-position":
+                            chunk_sizes = args.position_chunk_sizes
+                        elif mapping == "wave-per-position":
+                            chunk_sizes = args.position_wave_chunk_sizes
+                        else:
+                            chunk_sizes = (None,)
                         for chunk_size in chunk_sizes:
                             reductions = common.position_reductions_for_mapping(
                                 mapping, args.position_reductions
@@ -685,8 +704,9 @@ def main(argv=None):
                                     )
                                 if chunk_size is not None:
                                     pipeline_options += (
-                                        "position-thread-chunk-size="
-                                        f"{chunk_size}",
+                                        position_chunk_pipeline_option(
+                                            mapping, chunk_size
+                                        ),
                                     )
                                 timing, compile_command, profile_command = (
                                     common.run_case(

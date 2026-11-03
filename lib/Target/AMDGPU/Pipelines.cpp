@@ -251,10 +251,11 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   spmvScheduleOptions.blockSize = options.spmvBlockSize;
   spmvScheduleOptions.waveSize =
       static_cast<int64_t>(static_cast<WavefrontSize>(options.wavefrontSize));
-  if (options.spmvMapping == "wave-per-position")
+  if (options.spmvMapping == "wave-per-position") {
+    spmvScheduleOptions.waveChunkSize = options.positionWaveChunkSize;
     spmvScheduleOptions.waveReduction =
         options.positionWaveReduction.getValue();
-  else {
+  } else {
     spmvScheduleOptions.threadChunkSize = options.positionThreadChunkSize;
     spmvScheduleOptions.threadReduction =
         options.positionThreadReduction.getValue();
@@ -296,6 +297,7 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
         scheduleOptions.threadReduction =
             options.positionThreadReduction.getValue();
       } else {
+        scheduleOptions.waveChunkSize = options.positionWaveChunkSize;
         scheduleOptions.waveReduction =
             options.positionWaveReduction.getValue();
       }

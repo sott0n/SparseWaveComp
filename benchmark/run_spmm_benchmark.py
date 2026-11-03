@@ -325,6 +325,7 @@ def benchmark_cases(
     block_sizes,
     tile_sizes,
     position_chunk_sizes,
+    position_wave_chunk_sizes,
     position_orders,
     position_reductions,
     mappings,
@@ -336,18 +337,19 @@ def benchmark_cases(
             for tile_size in tile_sizes:
                 yield TILED_MAPPING, block_size, tile_size, None, None, None
         if WAVE_POSITION_MAPPING in mappings:
-            for order in position_orders:
-                for reduction in common.position_reductions_for_mapping(
-                    WAVE_POSITION_MAPPING, position_reductions
-                ):
-                    yield (
-                        WAVE_POSITION_MAPPING,
-                        block_size,
-                        None,
-                        None,
-                        order,
-                        reduction,
-                    )
+            for chunk_size in position_wave_chunk_sizes:
+                for order in position_orders:
+                    for reduction in common.position_reductions_for_mapping(
+                        WAVE_POSITION_MAPPING, position_reductions
+                    ):
+                        yield (
+                            WAVE_POSITION_MAPPING,
+                            block_size,
+                            None,
+                            chunk_size,
+                            order,
+                            reduction,
+                        )
         if COOPERATIVE_POSITION_MAPPING in mappings:
             for chunk_size in position_chunk_sizes:
                 yield (
@@ -390,6 +392,8 @@ def position_chunk_pipeline_option(mapping, chunk_size):
         return f"position-thread-chunk-size={chunk_size}"
     if mapping == COOPERATIVE_POSITION_MAPPING:
         return f"position-cooperative-chunk-size={chunk_size}"
+    if mapping == WAVE_POSITION_MAPPING:
+        return f"position-wave-chunk-size={chunk_size}"
     raise ValueError(f"mapping does not use position chunks: {mapping}")
 
 
@@ -478,6 +482,7 @@ def build_metadata(args, repository, commands):
             "rhs_columns": args.rhs_columns,
             "tile_sizes": args.tile_sizes,
             "position_chunk_sizes": args.position_chunk_sizes,
+            "position_wave_chunk_sizes": args.position_wave_chunk_sizes,
             "position_orders": args.position_orders,
             "position_reductions": args.position_reductions,
             "mappings": args.mappings,
@@ -725,6 +730,15 @@ def parse_arguments(argv):
         ),
     )
     parser.add_argument(
+        "--position-wave-chunk-sizes",
+        type=common.parse_positive_int_list,
+        default=common.parse_positive_int_list("1"),
+        help=(
+            "Comma-separated counts of consecutive lane-width position "
+            "tiles processed by each wave-per-position worker."
+        ),
+    )
+    parser.add_argument(
         "--position-orders",
         type=parse_position_orders,
         default=parse_position_orders("position-major,rhs-major"),
@@ -815,6 +829,7 @@ def main(argv=None):
                         args.block_sizes,
                         args.tile_sizes,
                         args.position_chunk_sizes,
+                        args.position_wave_chunk_sizes,
                         args.position_orders,
                         args.position_reductions,
                         args.mappings,
