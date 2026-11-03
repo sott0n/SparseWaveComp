@@ -211,12 +211,15 @@ def ScheduleSparseWavePosition
     chunk of the remaining position domain. Each lane combines adjacent
     contributions with equal output keys locally and performs atomic updates
     only at key boundaries and the end of the chunk. Block mapping assigns a
-    contiguous collapsed-space partition to each block. Threads traverse that
-    partition with block-size stride. Its segmented strategy first combines
-    adjacent equal-key contributions within each wave using shuffles. Interior
-    wave segments are emitted directly, while the first and last partials are
-    staged in workgroup memory and merged across wave boundaries. The atomic
-    strategy remains available as a reproducible baseline.
+    contiguous collapsed-space partition to each block. Each participant can
+    scan a configurable consecutive chunk, emit segments completed inside the
+    chunk, and pass its trailing partial to the block hierarchy. The segmented
+    strategy combines adjacent equal-key trailing partials within each wave
+    using shuffles. Interior wave segments are emitted directly, while the
+    first and last partials are staged in workgroup memory and merged across
+    wave boundaries. The atomic strategy remains available as a reproducible
+    baseline and traverses the same participant chunks without local or block
+    aggregation.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",
@@ -250,7 +253,11 @@ def ScheduleSparseWavePosition
            "Thread chunk reduction strategy: atomic or segmented">,
     Option<"blockReduction", "block-reduction", "std::string",
            /*default=*/"\"segmented\"",
-           "Block reduction strategy: atomic or segmented">
+           "Block reduction strategy: atomic or segmented">,
+    Option<"blockChunkSize", "block-chunk-size", "int64_t",
+           /*default=*/"1",
+           "Number of consecutive positions processed by each block "
+           "participant">
   ];
   let dependentDialects = [
     "arith::ArithDialect",

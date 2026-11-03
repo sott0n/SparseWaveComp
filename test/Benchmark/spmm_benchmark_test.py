@@ -291,7 +291,7 @@ amdhsa.kernels:
                     "block-per-position",
                     64,
                     None,
-                    None,
+                    4,
                     "position-major",
                     "atomic",
                 ),
@@ -299,7 +299,7 @@ amdhsa.kernels:
                     "block-per-position",
                     64,
                     None,
-                    None,
+                    4,
                     "position-major",
                     "segmented",
                 ),
@@ -307,7 +307,7 @@ amdhsa.kernels:
                     "block-per-position",
                     64,
                     None,
-                    None,
+                    4,
                     "rhs-major",
                     "atomic",
                 ),
@@ -315,7 +315,7 @@ amdhsa.kernels:
                     "block-per-position",
                     64,
                     None,
-                    None,
+                    4,
                     "rhs-major",
                     "segmented",
                 ),
@@ -542,6 +542,12 @@ amdhsa.kernels:
                 "wave-per-position-tile", 8
             ),
             "position-cooperative-chunk-size=8",
+        )
+        self.assertEqual(
+            BENCHMARK.position_chunk_pipeline_option(
+                "block-per-position", 4
+            ),
+            "position-block-chunk-size=4",
         )
         self.assertEqual(
             BENCHMARK.position_order_pipeline_option("rhs-major"),

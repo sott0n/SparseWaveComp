@@ -275,6 +275,7 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
   } else if (options.spmvMapping == "block-per-position") {
     spmvScheduleOptions.blockReduction =
         options.positionBlockReduction.getValue();
+    spmvScheduleOptions.blockChunkSize = options.positionBlockChunkSize;
   }
   pm.addPass(createScheduleSparseWavePosition(spmvScheduleOptions));
 
@@ -313,6 +314,7 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
     } else if (usesBlockPosition) {
       scheduleOptions.blockReduction =
           options.positionBlockReduction.getValue();
+      scheduleOptions.blockChunkSize = options.positionBlockChunkSize;
     } else {
       if (usesThreadPosition) {
         scheduleOptions.threadChunkSize = options.positionThreadChunkSize;

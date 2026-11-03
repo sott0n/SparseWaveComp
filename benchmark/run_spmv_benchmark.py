@@ -220,6 +220,8 @@ def position_chunk_pipeline_option(mapping, chunk_size):
         return f"position-thread-chunk-size={chunk_size}"
     if mapping == "wave-per-position":
         return f"position-wave-chunk-size={chunk_size}"
+    if mapping == "block-per-position":
+        return f"position-block-chunk-size={chunk_size}"
     raise ValueError(f"mapping does not use position chunks: {mapping}")
 
 
@@ -619,7 +621,7 @@ def parse_arguments(argv):
         default=parse_positive_int_list("1"),
         help=(
             "Comma-separated TACO-style split factors for the "
-            "thread-per-position mapping."
+            "thread- and block-per-position mappings."
         ),
     )
     parser.add_argument(
@@ -720,7 +722,10 @@ def main(argv=None):
                     for mapping in args.mappings:
                         if mapping not in FORMAT_MAPPINGS[sparse_format]:
                             continue
-                        if mapping == "thread-per-position":
+                        if mapping in (
+                            "thread-per-position",
+                            "block-per-position",
+                        ):
                             chunk_sizes = args.position_chunk_sizes
                         elif mapping == "wave-per-position":
                             chunk_sizes = args.position_wave_chunk_sizes

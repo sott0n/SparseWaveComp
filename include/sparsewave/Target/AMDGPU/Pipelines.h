@@ -164,6 +164,12 @@ struct SparseWaveToAMDGPUPipelineOptions
       llvm::cl::desc("Reduction strategy for block-mapped position work."),
       llvm::cl::init("segmented")};
 
+  PassOptions::Option<int64_t> positionBlockChunkSize{
+      *this, "position-block-chunk-size",
+      llvm::cl::desc("Number of consecutive positions processed by each block "
+                     "participant."),
+      llvm::cl::init(1)};
+
   PassOptions::Option<std::string> spmmMapping{
       *this, "spmm-mapping", llvm::cl::desc("SpMM work mapping strategy."),
       llvm::cl::init("thread-per-output")};

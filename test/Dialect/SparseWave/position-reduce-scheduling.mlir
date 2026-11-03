@@ -11,6 +11,9 @@
 // RUN:   --schedule-sparsewave-position='mapping=block block-size=64 block-reduction=atomic' \
 // RUN:   | FileCheck %s --check-prefix=BLOCK-ATOMIC
 // RUN: sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=block block-size=64 block-chunk-size=4' \
+// RUN:   | FileCheck %s --check-prefix=BLOCK-CHUNK
+// RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(schedule-sparsewave-position{mapping=block block-size=64},convert-sparsewave-to-gpu{position-block-size=64},lower-sparsewave-position-space)' \
 // RUN:   | FileCheck %s --check-prefix=BLOCK-GPU
 // RUN: sparsewave-opt %s \
@@ -95,6 +98,22 @@
 
 // BLOCK-ATOMIC-LABEL: func.func @keyed_sum(
 // BLOCK-ATOMIC-NOT: memref.alloca
+
+// BLOCK-CHUNK-LABEL: func.func @keyed_sum(
+// BLOCK-CHUNK-DAG: %[[COUNT:.*]] = memref.dim
+// BLOCK-CHUNK-DAG: %[[CHUNK:.*]] = arith.constant 4 : index
+// BLOCK-CHUNK-DAG: %[[BLOCK_SIZE:.*]] = arith.constant 64 : index
+// BLOCK-CHUNK: %[[WORKERS:.*]] = arith.ceildivui %[[COUNT]], %[[CHUNK]]
+// BLOCK-CHUNK: %[[BLOCKS:.*]] = arith.ceildivui %[[WORKERS]], %[[BLOCK_SIZE]]
+// BLOCK-CHUNK: sparsewave.position_parallel %[[BLOCKS]] mapping = "block" block_size = 64 {
+// BLOCK-CHUNK: %[[WORKER:.*]] = arith.addi
+// BLOCK-CHUNK: %[[BEGIN:.*]] = arith.muli %[[WORKER]], %[[CHUNK]]
+// BLOCK-CHUNK: scf.if
+// BLOCK-CHUNK: sparsewave.position_for
+// BLOCK-CHUNK-SAME: by 4
+// BLOCK-CHUNK: memref.atomic_rmw addf
+// BLOCK-CHUNK: gpu.shuffle up
+// BLOCK-CHUNK: gpu.barrier
 // BLOCK-ATOMIC: sparsewave.position_parallel %{{.*}} mapping = "block" block_size = 64 {
 // BLOCK-ATOMIC: scf.for
 // BLOCK-ATOMIC: memref.atomic_rmw addf

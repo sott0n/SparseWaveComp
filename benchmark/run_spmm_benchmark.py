@@ -353,18 +353,19 @@ def benchmark_cases(
                             reduction,
                         )
         if BLOCK_POSITION_MAPPING in mappings:
-            for order in position_orders:
-                for reduction in common.position_reductions_for_mapping(
-                    BLOCK_POSITION_MAPPING, position_reductions
-                ):
-                    yield (
-                        BLOCK_POSITION_MAPPING,
-                        block_size,
-                        None,
-                        None,
-                        order,
-                        reduction,
-                    )
+            for chunk_size in position_chunk_sizes:
+                for order in position_orders:
+                    for reduction in common.position_reductions_for_mapping(
+                        BLOCK_POSITION_MAPPING, position_reductions
+                    ):
+                        yield (
+                            BLOCK_POSITION_MAPPING,
+                            block_size,
+                            None,
+                            chunk_size,
+                            order,
+                            reduction,
+                        )
         if COOPERATIVE_POSITION_MAPPING in mappings:
             for chunk_size in position_chunk_sizes:
                 yield (
@@ -409,6 +410,8 @@ def position_chunk_pipeline_option(mapping, chunk_size):
         return f"position-cooperative-chunk-size={chunk_size}"
     if mapping == WAVE_POSITION_MAPPING:
         return f"position-wave-chunk-size={chunk_size}"
+    if mapping == BLOCK_POSITION_MAPPING:
+        return f"position-block-chunk-size={chunk_size}"
     raise ValueError(f"mapping does not use position chunks: {mapping}")
 
 
@@ -741,7 +744,8 @@ def parse_arguments(argv):
         default=common.parse_positive_int_list("1,4,8"),
         help=(
             "Comma-separated consecutive position-space points processed by "
-            "each thread-per-position or cooperative wave worker."
+            "each thread-per-position, block participant, or cooperative "
+            "wave worker."
         ),
     )
     parser.add_argument(

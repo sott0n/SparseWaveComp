@@ -11,9 +11,9 @@ be included as CSR baselines.
 
 | Runner | Format | Format selection and parameters | GPU mappings |
 | --- | --- | --- | --- |
-| SpMV | CSR | `--formats=csr`; `--mappings` selects the mappings to measure; `--position-chunk-sizes` selects consecutive positions per thread; `--position-wave-chunk-sizes` selects consecutive lane-width tiles per wave; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-row`, `thread-per-position`, `wave-per-position`, `block-per-position`, `wave-per-row`, `block-per-row` |
+| SpMV | CSR | `--formats=csr`; `--mappings` selects the mappings to measure; `--position-chunk-sizes` selects consecutive positions per thread or block participant; `--position-wave-chunk-sizes` selects consecutive lane-width tiles per wave; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-row`, `thread-per-position`, `wave-per-position`, `block-per-position`, `wave-per-row`, `block-per-row` |
 | SpMV | COO | `--formats=coo`; position options are shared with CSR | `thread-per-position`, `wave-per-position`, `block-per-position` |
-| SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths; `--position-chunk-sizes` selects consecutive points per thread or cooperative wave; `--position-wave-chunk-sizes` selects consecutive lane-width tiles per non-cooperative wave; `--position-orders=position-major,rhs-major` reorders the position and RHS-column axes; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-output`, `wave-per-row-tile`, `thread-per-position`, `wave-per-position`, `block-per-position`, `wave-per-position-tile` |
+| SpMM | CSR | `--formats=csr`; `--tile-sizes` selects output-column tile widths; `--position-chunk-sizes` selects consecutive points per thread, block participant, or cooperative wave; `--position-wave-chunk-sizes` selects consecutive lane-width tiles per non-cooperative wave; `--position-orders=position-major,rhs-major` reorders the position and RHS-column axes; `--position-reductions=atomic,segmented,workspace` selects the strategies supported by each position mapping | `thread-per-output`, `wave-per-row-tile`, `thread-per-position`, `wave-per-position`, `block-per-position`, `wave-per-position-tile` |
 | SpMM | BSR | `--formats=bsr`; `--bsr-block-sizes` selects square storage block sizes | `thread-per-output` |
 | Elementwise add/multiply | CSR | `--nnz-per-row` controls both input row lengths; `--overlaps` controls their structural overlap and therefore the assembled output size | `thread-per-row` symbolic and numeric phases with a hierarchical GPU prefix scan |
 
@@ -59,7 +59,8 @@ python3 benchmark/run_spmm_benchmark.py \
   --tile-size=4
 ```
 
-A TACO-style position split ablation can compare multiple thread chunk factors
+A TACO-style position split ablation can compare multiple thread and block
+participant chunk factors
 against the row, wave-position, and rocSPARSE baselines in one run:
 
 ```sh
@@ -74,9 +75,10 @@ python3 benchmark/run_spmv_benchmark.py \
   --rocsparse
 ```
 
-The `chunk` result column is the mapping-specific split factor. For thread
-mapping it is the number of consecutive positions per worker. For wave mapping
-it is the number of consecutive lane-width position tiles per wave. A chunked
+The `chunk` result column is the mapping-specific split factor. For thread and
+block mappings it is the number of consecutive positions per participant. For
+wave mapping it is the number of consecutive lane-width position tiles per
+wave. A chunked
 wave recovers the first compressed segment cooperatively, then carries segment
 and boundary state across later tiles. `atomic` independently updates each
 completed segment; `segmented` combines equal keys inside a thread chunk; and
@@ -171,6 +173,7 @@ environment, reproduction commands, performance data, and interpretation:
   evaluates consecutive position tiles per wave across SpMV and SpMM, including
   its interaction with iteration order, GPU resources, and rocSPARSE.
 - [gfx1101 block-local segmented position reduction](block-position-segmented-gfx1101.md)
+- [gfx1101 block position chunking](block-position-chunk-gfx1101.md)
   measures the generic block reduction across SpMV and SpMM, and identifies
   when output-key locality repays its LDS scan and synchronization costs.
 - [gfx1101 CSR elementwise block-size sweep](elementwise-block-size-sweep-gfx1101.md)

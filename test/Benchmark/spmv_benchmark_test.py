@@ -366,6 +366,12 @@ class SpMVBenchmarkTest(unittest.TestCase):
             ),
             "position-wave-chunk-size=4",
         )
+        self.assertEqual(
+            BENCHMARK.position_chunk_pipeline_option(
+                "block-per-position", 4
+            ),
+            "position-block-chunk-size=4",
+        )
 
     def test_position_reduction_parser(self):
         self.assertEqual(
