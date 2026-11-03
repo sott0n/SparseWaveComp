@@ -852,13 +852,14 @@ void buildBlockReduction(OpBuilder &builder, Location loc, gpu::LaunchOp launch,
       });
 }
 
-WaveSegmentedReduction
-buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
-                                  Value value, Value active, int64_t waveSize,
-                                  ReductionCombinerBuilder combine,
-                                  bool computeSegmentOrdinal) {
+WaveSegmentedReduction buildWavePrefixSegmentedReduction(
+    OpBuilder &builder, Location loc, Value key, Value value, Value active,
+    Value lane, int64_t waveSize, ReductionCombinerBuilder combine,
+    bool computeSegmentOrdinal) {
   Value activeI32 =
       arith::ExtUIOp::create(builder, loc, builder.getI32Type(), active);
+  Value zeroIndex = arith::ConstantIndexOp::create(builder, loc, 0);
+  Value lastLane = arith::ConstantIndexOp::create(builder, loc, waveSize - 1);
   Value zeroI32 = arith::ConstantIntOp::create(builder, loc, 0, 32);
   Value trueValue = arith::ConstantIntOp::create(builder, loc, 1, 1);
 
@@ -869,8 +870,10 @@ buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
   Value previousLaneIsActive =
       arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne,
                             previousActive.getShuffleResult(), zeroI32);
+  Value hasPreviousLane = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::ne, lane, zeroIndex);
   Value continuesPreviousSegment = arith::AndIOp::create(
-      builder, loc, previousKey.getValid(),
+      builder, loc, hasPreviousLane,
       arith::AndIOp::create(
           builder, loc, previousLaneIsActive,
           arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq, key,
@@ -935,7 +938,9 @@ buildWavePrefixSegmentedReduction(OpBuilder &builder, Location loc, Value key,
       arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne,
                             nextActive.getShuffleResult(), zeroI32);
   Value nextIsSameSegment = arith::AndIOp::create(
-      builder, loc, nextKey.getValid(),
+      builder, loc,
+      arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne, lane,
+                            lastLane),
       arith::AndIOp::create(builder, loc, nextLaneIsActive,
                             arith::CmpIOp::create(builder, loc,
                                                   arith::CmpIPredicate::eq, key,

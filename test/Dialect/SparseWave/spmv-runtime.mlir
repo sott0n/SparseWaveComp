@@ -90,6 +90,8 @@ func.func @spmv(
 // [0 0 6 0]
 //
 // CHECK: [70, 0, 60, 240, 180]
+// CHECK-NEXT: Unranked Memref
+// CHECK-NEXT: [40]
 func.func @main() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -97,6 +99,7 @@ func.func @main() {
   %c3 = arith.constant 3 : index
   %c4 = arith.constant 4 : index
   %c5 = arith.constant 5 : index
+  %c40 = arith.constant 40 : index
 
   %i0 = arith.constant 0 : i32
   %i1 = arith.constant 1 : i32
@@ -104,6 +107,7 @@ func.func @main() {
   %i3 = arith.constant 3 : i32
   %i5 = arith.constant 5 : i32
   %i6 = arith.constant 6 : i32
+  %i40 = arith.constant 40 : i32
 
   %f1 = arith.constant 1.0 : f32
   %f2 = arith.constant 2.0 : f32
@@ -190,6 +194,70 @@ func.func @main() {
       : (memref<?xi32>, memref<?xi32>, memref<?xf32>, memref<?xf32>,
          memref<?xf32>) -> ()
   call @printMemrefF32(%outputUnranked) : (memref<*xf32>) -> ()
+
+  // One 40-entry row crosses a full Wave32 boundary. It verifies that the
+  // block segmented schedule merges the first wave's trailing partial with
+  // the next wave's leading partial without dropping a full-wave segment.
+  %longRowOffsets = memref.alloc() : memref<2xi32>
+  memref.store %i0, %longRowOffsets[%c0] : memref<2xi32>
+  memref.store %i40, %longRowOffsets[%c1] : memref<2xi32>
+  %longColumnIndices = memref.alloc() : memref<40xi32>
+  %longValues = memref.alloc() : memref<40xf32>
+  %longVector = memref.alloc() : memref<40xf32>
+  %longOutput = memref.alloc() : memref<1xf32>
+  scf.for %position = %c0 to %c40 step %c1 {
+    %column = arith.index_cast %position : index to i32
+    memref.store %column, %longColumnIndices[%position] : memref<40xi32>
+    memref.store %f1, %longValues[%position] : memref<40xf32>
+    memref.store %f1, %longVector[%position] : memref<40xf32>
+  }
+
+  %longRowOffsetsDynamic =
+      memref.cast %longRowOffsets : memref<2xi32> to memref<?xi32>
+  %longColumnIndicesDynamic =
+      memref.cast %longColumnIndices : memref<40xi32> to memref<?xi32>
+  %longValuesDynamic =
+      memref.cast %longValues : memref<40xf32> to memref<?xf32>
+  %longVectorDynamic =
+      memref.cast %longVector : memref<40xf32> to memref<?xf32>
+  %longOutputDynamic =
+      memref.cast %longOutput : memref<1xf32> to memref<?xf32>
+  %longRowOffsetsUnranked =
+      memref.cast %longRowOffsetsDynamic : memref<?xi32> to memref<*xi32>
+  %longColumnIndicesUnranked =
+      memref.cast %longColumnIndicesDynamic : memref<?xi32> to memref<*xi32>
+  %longValuesUnranked =
+      memref.cast %longValuesDynamic : memref<?xf32> to memref<*xf32>
+  %longVectorUnranked =
+      memref.cast %longVectorDynamic : memref<?xf32> to memref<*xf32>
+  %longOutputUnranked =
+      memref.cast %longOutputDynamic : memref<?xf32> to memref<*xf32>
+  gpu.host_register %longRowOffsetsUnranked : memref<*xi32>
+  gpu.host_register %longColumnIndicesUnranked : memref<*xi32>
+  gpu.host_register %longValuesUnranked : memref<*xf32>
+  gpu.host_register %longVectorUnranked : memref<*xf32>
+  gpu.host_register %longOutputUnranked : memref<*xf32>
+
+  %longRowOffsetsDevice =
+      call @mgpuMemGetDeviceMemRef1dInt32(%longRowOffsetsDynamic)
+      : (memref<?xi32>) -> memref<?xi32>
+  %longColumnIndicesDevice =
+      call @mgpuMemGetDeviceMemRef1dInt32(%longColumnIndicesDynamic)
+      : (memref<?xi32>) -> memref<?xi32>
+  %longValuesDevice =
+      call @mgpuMemGetDeviceMemRef1dFloat(%longValuesDynamic)
+      : (memref<?xf32>) -> memref<?xf32>
+  %longVectorDevice =
+      call @mgpuMemGetDeviceMemRef1dFloat(%longVectorDynamic)
+      : (memref<?xf32>) -> memref<?xf32>
+  %longOutputDevice =
+      call @mgpuMemGetDeviceMemRef1dFloat(%longOutputDynamic)
+      : (memref<?xf32>) -> memref<?xf32>
+  call @spmv(%longRowOffsetsDevice, %longColumnIndicesDevice,
+             %longValuesDevice, %longVectorDevice, %longOutputDevice)
+      : (memref<?xi32>, memref<?xi32>, memref<?xf32>, memref<?xf32>,
+         memref<?xf32>) -> ()
+  call @printMemrefF32(%longOutputUnranked) : (memref<*xf32>) -> ()
   return
 }
 

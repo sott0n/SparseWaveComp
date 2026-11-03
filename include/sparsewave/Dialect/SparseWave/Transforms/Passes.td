@@ -212,11 +212,11 @@ def ScheduleSparseWavePosition
     contributions with equal output keys locally and performs atomic updates
     only at key boundaries and the end of the chunk. Block mapping assigns a
     contiguous collapsed-space partition to each block. Threads traverse that
-    partition with block-size stride. Its segmented strategy stages one
-    contribution per participant in workgroup memory, combines adjacent
-    equal-key contributions within the block, and performs one atomic update
-    per local key segment. The atomic strategy remains available as a
-    reproducible baseline.
+    partition with block-size stride. Its segmented strategy first combines
+    adjacent equal-key contributions within each wave using shuffles. Interior
+    wave segments are emitted directly, while the first and last partials are
+    staged in workgroup memory and merged across wave boundaries. The atomic
+    strategy remains available as a reproducible baseline.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",

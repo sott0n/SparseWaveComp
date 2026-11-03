@@ -47,6 +47,9 @@
 // RUN:   --schedule-sparsewave-position='mapping=block block-reduction=tree' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-BLOCK-REDUCTION
 // RUN: not sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=block wave-size=16' \
+// RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-BLOCK-SEGMENTED-WAVE-SIZE
+// RUN: not sparsewave-opt %s \
 // RUN:   --schedule-sparsewave-position='mapping=thread block-reduction=atomic' \
 // RUN:   2>&1 | FileCheck %s --check-prefix=INVALID-ATOMIC-BLOCK-MAPPING
 // RUN: not sparsewave-opt %s \
@@ -123,6 +126,7 @@
 // INVALID-WAVE-POSITION-REDUCTION: thread position reduction applies only to thread mapping
 // INVALID-BLOCK-POSITION-REDUCTION: thread position reduction applies only to thread mapping
 // INVALID-BLOCK-REDUCTION: unsupported block position reduction 'tree'; expected 'atomic' or 'segmented'
+// INVALID-BLOCK-SEGMENTED-WAVE-SIZE: segmented block position mapping requires a wave size of 32 or 64, but got 16
 // INVALID-ATOMIC-BLOCK-MAPPING: block position reduction applies only to block mapping
 // INVALID-WAVE-REDUCTION: unsupported wave position reduction 'tree'; expected 'atomic' or 'workspace'
 // INVALID-WORKSPACE-MAPPING: wave position reduction applies only to non-cooperative wave mapping

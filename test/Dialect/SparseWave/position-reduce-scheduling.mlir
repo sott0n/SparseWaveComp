@@ -75,23 +75,22 @@
 // BLOCK: ^bb0(%[[BLOCK:.*]]: index, %[[PARTICIPANT:.*]]: index, %[[PARTICIPANT_COUNT:.*]]: index):
 // BLOCK: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space {{.*}} to %[[COUNT]] partition %[[BLOCK]] of %[[BLOCK_COUNT]]
 // BLOCK: %[[FIRST:.*]] = arith.addi %[[BEGIN]], %[[PARTICIPANT]]
-// BLOCK: %[[KEYS:.*]] = memref.alloca() : memref<64xindex, #gpu.address_space<workgroup>>
-// BLOCK: %[[VALUES:.*]] = memref.alloca() : memref<64xf32, #gpu.address_space<workgroup>>
-// BLOCK: %[[FLAGS:.*]] = memref.alloca() : memref<64xi32, #gpu.address_space<workgroup>>
+// BLOCK: %[[KEYS:.*]] = memref.alloca() : memref<4xindex, #gpu.address_space<workgroup>>
+// BLOCK: %[[VALUES:.*]] = memref.alloca() : memref<4xf32, #gpu.address_space<workgroup>>
+// BLOCK: %[[COUNTS:.*]] = memref.alloca() : memref<2xi32, #gpu.address_space<workgroup>>
 // BLOCK: arith.remui %[[FIRST]]
 // BLOCK: memref.load
-// BLOCK: memref.store {{.*}}, %[[KEYS]][%[[PARTICIPANT]]]
-// BLOCK: memref.store {{.*}}, %[[VALUES]][%[[PARTICIPANT]]]
-// BLOCK: gpu.barrier
-// BLOCK: memref.store {{.*}}, %[[FLAGS]][%[[PARTICIPANT]]]
-// BLOCK: gpu.barrier
-// BLOCK: memref.load %[[VALUES]][%[[PARTICIPANT]]]
-// BLOCK: memref.load %[[FLAGS]][%[[PARTICIPANT]]]
-// BLOCK: gpu.barrier
+// BLOCK: gpu.shuffle up
 // BLOCK: arith.addf
-// BLOCK: memref.store {{.*}}, %[[VALUES]][%[[PARTICIPANT]]]
-// BLOCK: memref.store {{.*}}, %[[FLAGS]][%[[PARTICIPANT]]]
+// BLOCK: memref.store {{.*}}, %[[KEYS]]
+// BLOCK: memref.store {{.*}}, %[[VALUES]]
+// BLOCK: gpu.shuffle idx
+// BLOCK: memref.store {{.*}}, %[[COUNTS]]
 // BLOCK: gpu.barrier
+// BLOCK: scf.for
+// BLOCK: memref.load %[[COUNTS]]
+// BLOCK: memref.load %[[KEYS]]
+// BLOCK: memref.load %[[VALUES]]
 // BLOCK: memref.atomic_rmw addf
 
 // BLOCK-ATOMIC-LABEL: func.func @keyed_sum(
@@ -106,7 +105,8 @@
 // BLOCK-GPU: gpu.launch
 // BLOCK-GPU: memref.store
 // BLOCK-GPU: gpu.launch
-// BLOCK-GPU-SAME: workgroup(%{{.*}} : memref<64xindex, #gpu.address_space<workgroup>>, %{{.*}} : memref<64xf32, #gpu.address_space<workgroup>>, %{{.*}} : memref<64xi32, #gpu.address_space<workgroup>>)
+// BLOCK-GPU-SAME: workgroup(%{{.*}} : memref<4xindex, #gpu.address_space<workgroup>>, %{{.*}} : memref<4xf32, #gpu.address_space<workgroup>>, %{{.*}} : memref<2xi32, #gpu.address_space<workgroup>>)
+// BLOCK-GPU: gpu.shuffle up
 // BLOCK-GPU: gpu.barrier
 // BLOCK-GPU: arith.addf
 // BLOCK-GPU: memref.atomic_rmw addf
