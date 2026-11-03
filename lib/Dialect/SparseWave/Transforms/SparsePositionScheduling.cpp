@@ -911,8 +911,10 @@ private:
 
 class BlockPositionReducePattern : public OpRewritePattern<PositionReduceOp> {
 public:
-  BlockPositionReducePattern(MLIRContext *context, int64_t blockSize)
-      : OpRewritePattern<PositionReduceOp>(context), blockSize(blockSize) {}
+  BlockPositionReducePattern(MLIRContext *context, int64_t blockSize,
+                             bool segmented)
+      : OpRewritePattern<PositionReduceOp>(context), blockSize(blockSize),
+        segmented(segmented) {}
 
   LogicalResult matchAndRewrite(PositionReduceOp op,
                                 PatternRewriter &rewriter) const override {
@@ -950,6 +952,185 @@ public:
         zeroIndex, iterationCount, block, blockCount);
     Value first =
         arith::AddIOp::create(rewriter, loc, partition.getBegin(), participant);
+
+    if (segmented) {
+      auto workgroupAddressSpace = gpu::AddressSpaceAttr::get(
+          rewriter.getContext(), gpu::AddressSpace::Workgroup);
+      auto keysType = MemRefType::get({blockSize}, rewriter.getIndexType(),
+                                      MemRefLayoutAttrInterface{},
+                                      Attribute(workgroupAddressSpace));
+      auto valuesType =
+          MemRefType::get({blockSize}, valueType, MemRefLayoutAttrInterface{},
+                          Attribute(workgroupAddressSpace));
+      auto flagsType = MemRefType::get({blockSize}, rewriter.getI32Type(),
+                                       MemRefLayoutAttrInterface{},
+                                       Attribute(workgroupAddressSpace));
+      Value keys = memref::AllocaOp::create(rewriter, loc, keysType);
+      Value values = memref::AllocaOp::create(rewriter, loc, valuesType);
+      Value flags = memref::AllocaOp::create(rewriter, loc, flagsType);
+      Value active = arith::CmpIOp::create(
+          rewriter, loc, arith::CmpIPredicate::ult, first, partition.getEnd());
+      scf::IfOp::create(
+          rewriter, loc, active, [&](OpBuilder &builder, Location bodyLoc) {
+            buildCollapsedLogicalPoint(
+                builder, bodyLoc, op, first, ValueRange{},
+                [&](OpBuilder &nestedBuilder, Location nestedLoc,
+                    ValueRange coordinates) {
+                  KeyedContribution contribution =
+                      cloneContributionBody(nestedBuilder, op, coordinates);
+                  memref::StoreOp::create(nestedBuilder, nestedLoc,
+                                          contribution.key, keys, participant);
+                  memref::StoreOp::create(nestedBuilder, nestedLoc,
+                                          contribution.value, values,
+                                          participant);
+                  return SmallVector<Value>{};
+                });
+            scf::YieldOp::create(builder, bodyLoc);
+          });
+      gpu::BarrierOp::create(rewriter, loc);
+
+      Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+      Value zeroI32 = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+      Value oneI32 = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+      scf::IfOp::create(
+          rewriter, loc, active, [&](OpBuilder &builder, Location bodyLoc) {
+            Value key =
+                memref::LoadOp::create(builder, bodyLoc, keys, participant);
+            Value isFirst = arith::CmpIOp::create(builder, bodyLoc,
+                                                  arith::CmpIPredicate::eq,
+                                                  participant, zeroIndex);
+            auto startsSegment = scf::IfOp::create(
+                builder, bodyLoc, TypeRange{builder.getI32Type()}, isFirst,
+                /*withElseRegion=*/true);
+            builder.setInsertionPointToStart(
+                &startsSegment.getThenRegion().front());
+            scf::YieldOp::create(builder, bodyLoc, oneI32);
+            builder.setInsertionPointToStart(
+                &startsSegment.getElseRegion().front());
+            Value predecessor =
+                arith::SubIOp::create(builder, bodyLoc, participant, oneIndex);
+            Value predecessorKey =
+                memref::LoadOp::create(builder, bodyLoc, keys, predecessor);
+            Value differs = arith::CmpIOp::create(builder, bodyLoc,
+                                                  arith::CmpIPredicate::ne,
+                                                  predecessorKey, key);
+            Value flag = arith::SelectOp::create(builder, bodyLoc, differs,
+                                                 oneI32, zeroI32);
+            scf::YieldOp::create(builder, bodyLoc, flag);
+            builder.setInsertionPointAfter(startsSegment);
+            memref::StoreOp::create(builder, bodyLoc,
+                                    startsSegment.getResult(0), flags,
+                                    participant);
+            scf::YieldOp::create(builder, bodyLoc);
+          });
+      gpu::BarrierOp::create(rewriter, loc);
+
+      // Inclusive segmented scan. The propagated flag records whether the
+      // offset-sized predecessor range crosses a key boundary, preventing
+      // equal keys in separate, non-adjacent segments from being combined.
+      for (int64_t offset = 1; offset < blockSize; offset <<= 1) {
+        Value offsetValue =
+            arith::ConstantIndexOp::create(rewriter, loc, offset);
+        auto current = scf::IfOp::create(
+            rewriter, loc, TypeRange{valueType, rewriter.getI32Type()}, active,
+            /*withElseRegion=*/true);
+        rewriter.setInsertionPointToStart(&current.getThenRegion().front());
+        Value currentValue =
+            memref::LoadOp::create(rewriter, loc, values, participant);
+        Value currentFlag =
+            memref::LoadOp::create(rewriter, loc, flags, participant);
+        scf::YieldOp::create(rewriter, loc,
+                             ValueRange{currentValue, currentFlag});
+        rewriter.setInsertionPointToStart(&current.getElseRegion().front());
+        scf::YieldOp::create(rewriter, loc, ValueRange{zero, zeroI32});
+        rewriter.setInsertionPointAfter(current);
+
+        Value hasPredecessor = arith::CmpIOp::create(
+            rewriter, loc, arith::CmpIPredicate::uge, participant, offsetValue);
+        Value readsPredecessor =
+            arith::AndIOp::create(rewriter, loc, active, hasPredecessor);
+        auto predecessor = scf::IfOp::create(
+            rewriter, loc, TypeRange{valueType, rewriter.getI32Type()},
+            readsPredecessor, /*withElseRegion=*/true);
+        rewriter.setInsertionPointToStart(&predecessor.getThenRegion().front());
+        Value predecessorIndex =
+            arith::SubIOp::create(rewriter, loc, participant, offsetValue);
+        Value predecessorValue =
+            memref::LoadOp::create(rewriter, loc, values, predecessorIndex);
+        Value predecessorFlag =
+            memref::LoadOp::create(rewriter, loc, flags, predecessorIndex);
+        scf::YieldOp::create(rewriter, loc,
+                             ValueRange{predecessorValue, predecessorFlag});
+        rewriter.setInsertionPointToStart(&predecessor.getElseRegion().front());
+        scf::YieldOp::create(rewriter, loc, ValueRange{zero, zeroI32});
+        rewriter.setInsertionPointAfter(predecessor);
+
+        gpu::BarrierOp::create(rewriter, loc);
+        Value currentSegmentContinues =
+            arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                                  current.getResult(1), zeroI32);
+        Value combinesPredecessor = arith::AndIOp::create(
+            rewriter, loc, readsPredecessor, currentSegmentContinues);
+        Value combined = semantics.combine(rewriter, loc, current.getResult(0),
+                                           predecessor.getResult(0));
+        Value nextValue = arith::SelectOp::create(
+            rewriter, loc, combinesPredecessor, combined, current.getResult(0));
+        Value nextFlag = arith::OrIOp::create(
+            rewriter, loc, current.getResult(1), predecessor.getResult(1));
+        scf::IfOp::create(rewriter, loc, active,
+                          [&](OpBuilder &builder, Location bodyLoc) {
+                            memref::StoreOp::create(builder, bodyLoc, nextValue,
+                                                    values, participant);
+                            memref::StoreOp::create(builder, bodyLoc, nextFlag,
+                                                    flags, participant);
+                            scf::YieldOp::create(builder, bodyLoc);
+                          });
+        gpu::BarrierOp::create(rewriter, loc);
+      }
+
+      scf::IfOp::create(
+          rewriter, loc, active, [&](OpBuilder &builder, Location bodyLoc) {
+            Value key =
+                memref::LoadOp::create(builder, bodyLoc, keys, participant);
+            Value next =
+                arith::AddIOp::create(builder, bodyLoc, first, oneIndex);
+            Value isLast = arith::CmpIOp::create(builder, bodyLoc,
+                                                 arith::CmpIPredicate::uge,
+                                                 next, partition.getEnd());
+            auto endsSegment = scf::IfOp::create(
+                builder, bodyLoc, TypeRange{builder.getI1Type()}, isLast,
+                /*withElseRegion=*/true);
+            builder.setInsertionPointToStart(
+                &endsSegment.getThenRegion().front());
+            Value trueValue =
+                arith::ConstantIntOp::create(builder, bodyLoc, 1, 1);
+            scf::YieldOp::create(builder, bodyLoc, trueValue);
+            builder.setInsertionPointToStart(
+                &endsSegment.getElseRegion().front());
+            Value successor =
+                arith::AddIOp::create(builder, bodyLoc, participant, oneIndex);
+            Value successorKey =
+                memref::LoadOp::create(builder, bodyLoc, keys, successor);
+            Value differs = arith::CmpIOp::create(
+                builder, bodyLoc, arith::CmpIPredicate::ne, successorKey, key);
+            scf::YieldOp::create(builder, bodyLoc, differs);
+            builder.setInsertionPointAfter(endsSegment);
+            scf::IfOp::create(
+                builder, bodyLoc, endsSegment.getResult(0),
+                [&](OpBuilder &atomicBuilder, Location atomicLoc) {
+                  Value value = memref::LoadOp::create(atomicBuilder, atomicLoc,
+                                                       values, participant);
+                  semantics.atomicAccumulate(atomicBuilder, atomicLoc, value,
+                                             op.getOutput(), key);
+                  scf::YieldOp::create(atomicBuilder, atomicLoc);
+                });
+            scf::YieldOp::create(builder, bodyLoc);
+          });
+      YieldOp::create(rewriter, loc);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
     auto loop = scf::ForOp::create(rewriter, loc, first, partition.getEnd(),
                                    participantCount);
     rewriter.setInsertionPointToStart(loop.getBody());
@@ -970,6 +1151,7 @@ public:
 
 private:
   int64_t blockSize;
+  bool segmented;
 };
 
 class ThreadSegmentedPositionReducePattern
@@ -1679,6 +1861,13 @@ public:
       signalPassFailure();
       return;
     }
+    if (blockReduction != "atomic" && blockReduction != "segmented") {
+      getOperation().emitError()
+          << "unsupported block position reduction '" << blockReduction
+          << "'; expected 'atomic' or 'segmented'";
+      signalPassFailure();
+      return;
+    }
     if (mapping != "thread" && threadChunkSize != 1) {
       getOperation().emitError()
           << "thread position chunk size applies only to thread mapping";
@@ -1703,6 +1892,12 @@ public:
     if (mapping != "thread" && threadReduction != "atomic") {
       getOperation().emitError()
           << "thread position reduction applies only to thread mapping";
+      signalPassFailure();
+      return;
+    }
+    if (mapping != "block" && blockReduction != "segmented") {
+      getOperation().emitError()
+          << "block position reduction applies only to block mapping";
       signalPassFailure();
       return;
     }
@@ -1744,7 +1939,8 @@ public:
         patterns.add<ThreadPositionReducePattern>(&getContext(), blockSize,
                                                   threadChunkSize);
     } else if (mapping == "block") {
-      patterns.add<BlockPositionReducePattern>(&getContext(), blockSize);
+      patterns.add<BlockPositionReducePattern>(&getContext(), blockSize,
+                                               blockReduction == "segmented");
     } else if (cooperativeAxis.empty()) {
       patterns.add<WavePositionReducePattern>(&getContext(), blockSize,
                                               waveSize, waveChunkSize,

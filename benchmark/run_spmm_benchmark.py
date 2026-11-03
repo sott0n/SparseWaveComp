@@ -354,14 +354,17 @@ def benchmark_cases(
                         )
         if BLOCK_POSITION_MAPPING in mappings:
             for order in position_orders:
-                yield (
-                    BLOCK_POSITION_MAPPING,
-                    block_size,
-                    None,
-                    None,
-                    order,
-                    None,
-                )
+                for reduction in common.position_reductions_for_mapping(
+                    BLOCK_POSITION_MAPPING, position_reductions
+                ):
+                    yield (
+                        BLOCK_POSITION_MAPPING,
+                        block_size,
+                        None,
+                        None,
+                        order,
+                        reduction,
+                    )
         if COOPERATIVE_POSITION_MAPPING in mappings:
             for chunk_size in position_chunk_sizes:
                 yield (
@@ -766,7 +769,7 @@ def parse_arguments(argv):
         help=(
             "Comma-separated position reduction strategies. "
             "Thread mapping supports atomic,segmented; wave mapping supports "
-            "atomic,workspace."
+            "atomic,workspace; block mapping supports atomic,segmented."
         ),
     )
     common.add_common_arguments(parser, repository)

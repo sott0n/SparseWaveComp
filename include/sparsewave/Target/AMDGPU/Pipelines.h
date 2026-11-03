@@ -159,6 +159,11 @@ struct SparseWaveToAMDGPUPipelineOptions
       llvm::cl::desc("Reduction strategy for wave-mapped position work."),
       llvm::cl::init("atomic")};
 
+  PassOptions::Option<std::string> positionBlockReduction{
+      *this, "position-block-reduction",
+      llvm::cl::desc("Reduction strategy for block-mapped position work."),
+      llvm::cl::init("segmented")};
+
   PassOptions::Option<std::string> spmmMapping{
       *this, "spmm-mapping", llvm::cl::desc("SpMM work mapping strategy."),
       llvm::cl::init("thread-per-output")};

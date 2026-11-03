@@ -212,8 +212,11 @@ def ScheduleSparseWavePosition
     contributions with equal output keys locally and performs atomic updates
     only at key boundaries and the end of the chunk. Block mapping assigns a
     contiguous collapsed-space partition to each block. Threads traverse that
-    partition with block-size stride and atomically accumulate their keyed
-    contributions.
+    partition with block-size stride. Its segmented strategy stages one
+    contribution per participant in workgroup memory, combines adjacent
+    equal-key contributions within the block, and performs one atomic update
+    per local key segment. The atomic strategy remains available as a
+    reproducible baseline.
   }];
   let options = [
     Option<"mapping", "mapping", "std::string",
@@ -244,7 +247,10 @@ def ScheduleSparseWavePosition
            "Number of consecutive positions processed by each thread worker">,
     Option<"threadReduction", "thread-reduction", "std::string",
            /*default=*/"\"atomic\"",
-           "Thread chunk reduction strategy: atomic or segmented">
+           "Thread chunk reduction strategy: atomic or segmented">,
+    Option<"blockReduction", "block-reduction", "std::string",
+           /*default=*/"\"segmented\"",
+           "Block reduction strategy: atomic or segmented">
   ];
   let dependentDialects = [
     "arith::ArithDialect",

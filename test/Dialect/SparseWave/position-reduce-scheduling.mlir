@@ -8,6 +8,9 @@
 // RUN:   --schedule-sparsewave-position='mapping=block block-size=64' \
 // RUN:   | FileCheck %s --check-prefix=BLOCK
 // RUN: sparsewave-opt %s \
+// RUN:   --schedule-sparsewave-position='mapping=block block-size=64 block-reduction=atomic' \
+// RUN:   | FileCheck %s --check-prefix=BLOCK-ATOMIC
+// RUN: sparsewave-opt %s \
 // RUN:   --pass-pipeline='builtin.module(schedule-sparsewave-position{mapping=block block-size=64},convert-sparsewave-to-gpu{position-block-size=64},lower-sparsewave-position-space)' \
 // RUN:   | FileCheck %s --check-prefix=BLOCK-GPU
 // RUN: sparsewave-opt %s \
@@ -72,17 +75,40 @@
 // BLOCK: ^bb0(%[[BLOCK:.*]]: index, %[[PARTICIPANT:.*]]: index, %[[PARTICIPANT_COUNT:.*]]: index):
 // BLOCK: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.position_space {{.*}} to %[[COUNT]] partition %[[BLOCK]] of %[[BLOCK_COUNT]]
 // BLOCK: %[[FIRST:.*]] = arith.addi %[[BEGIN]], %[[PARTICIPANT]]
-// BLOCK: scf.for %[[POSITION:.*]] = %[[FIRST]] to %[[END]] step %[[PARTICIPANT_COUNT]]
-// BLOCK: arith.remui %[[POSITION]]
+// BLOCK: %[[KEYS:.*]] = memref.alloca() : memref<64xindex, #gpu.address_space<workgroup>>
+// BLOCK: %[[VALUES:.*]] = memref.alloca() : memref<64xf32, #gpu.address_space<workgroup>>
+// BLOCK: %[[FLAGS:.*]] = memref.alloca() : memref<64xi32, #gpu.address_space<workgroup>>
+// BLOCK: arith.remui %[[FIRST]]
 // BLOCK: memref.load
+// BLOCK: memref.store {{.*}}, %[[KEYS]][%[[PARTICIPANT]]]
+// BLOCK: memref.store {{.*}}, %[[VALUES]][%[[PARTICIPANT]]]
+// BLOCK: gpu.barrier
+// BLOCK: memref.store {{.*}}, %[[FLAGS]][%[[PARTICIPANT]]]
+// BLOCK: gpu.barrier
+// BLOCK: memref.load %[[VALUES]][%[[PARTICIPANT]]]
+// BLOCK: memref.load %[[FLAGS]][%[[PARTICIPANT]]]
+// BLOCK: gpu.barrier
+// BLOCK: arith.addf
+// BLOCK: memref.store {{.*}}, %[[VALUES]][%[[PARTICIPANT]]]
+// BLOCK: memref.store {{.*}}, %[[FLAGS]][%[[PARTICIPANT]]]
+// BLOCK: gpu.barrier
 // BLOCK: memref.atomic_rmw addf
+
+// BLOCK-ATOMIC-LABEL: func.func @keyed_sum(
+// BLOCK-ATOMIC-NOT: memref.alloca
+// BLOCK-ATOMIC: sparsewave.position_parallel %{{.*}} mapping = "block" block_size = 64 {
+// BLOCK-ATOMIC: scf.for
+// BLOCK-ATOMIC: memref.atomic_rmw addf
+// BLOCK-ATOMIC-NOT: memref.alloca
 
 // BLOCK-GPU-LABEL: func.func @keyed_sum(
 // BLOCK-GPU-NOT: sparsewave.position_
 // BLOCK-GPU: gpu.launch
 // BLOCK-GPU: memref.store
 // BLOCK-GPU: gpu.launch
-// BLOCK-GPU: scf.for
+// BLOCK-GPU-SAME: workgroup(%{{.*}} : memref<64xindex, #gpu.address_space<workgroup>>, %{{.*}} : memref<64xf32, #gpu.address_space<workgroup>>, %{{.*}} : memref<64xi32, #gpu.address_space<workgroup>>)
+// BLOCK-GPU: gpu.barrier
+// BLOCK-GPU: arith.addf
 // BLOCK-GPU: memref.atomic_rmw addf
 // BLOCK-GPU-NOT: sparsewave.position_
 

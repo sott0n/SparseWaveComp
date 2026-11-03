@@ -93,6 +93,12 @@ class SpMVBenchmarkTest(unittest.TestCase):
             (2, 1),
         )
         self.assertEqual(
+            BENCHMARK.common.position_reduction_pipeline_option(
+                "block-per-position", "segmented"
+            ),
+            "position-block-reduction=segmented",
+        )
+        self.assertEqual(
             BENCHMARK.FORMAT_MAPPINGS["coo"],
             (
                 "thread-per-position",

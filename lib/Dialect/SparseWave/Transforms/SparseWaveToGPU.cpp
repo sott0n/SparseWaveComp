@@ -108,6 +108,23 @@ public:
     }
     }
 
+    // Scheduling may express per-block scratch storage as a workgroup-space
+    // alloca. Materialize it as a launch attribution before moving the
+    // schedule body into the GPU launch.
+    SmallVector<memref::AllocaOp> workgroupAllocas;
+    for (memref::AllocaOp alloca :
+         op.getBody().front().getOps<memref::AllocaOp>()) {
+      auto memorySpace = dyn_cast_or_null<gpu::AddressSpaceAttr>(
+          alloca.getType().getMemorySpace());
+      if (memorySpace && memorySpace.getValue() == gpu::AddressSpace::Workgroup)
+        workgroupAllocas.push_back(alloca);
+    }
+    for (memref::AllocaOp alloca : workgroupAllocas) {
+      Value attribution = launch.addWorkgroupAttribution(alloca.getType(), loc);
+      alloca.replaceAllUsesWith(attribution);
+      rewriter.eraseOp(alloca);
+    }
+
     auto guard = scf::IfOp::create(rewriter, loc, workerIsActive,
                                    /*withElseRegion=*/false);
     Block *thenBody = &guard.getThenRegion().front();

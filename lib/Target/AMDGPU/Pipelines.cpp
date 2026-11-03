@@ -272,6 +272,9 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
     spmvScheduleOptions.threadChunkSize = options.positionThreadChunkSize;
     spmvScheduleOptions.threadReduction =
         options.positionThreadReduction.getValue();
+  } else if (options.spmvMapping == "block-per-position") {
+    spmvScheduleOptions.blockReduction =
+        options.positionBlockReduction.getValue();
   }
   pm.addPass(createScheduleSparseWavePosition(spmvScheduleOptions));
 
@@ -307,7 +310,10 @@ void mlir::sparsewave::buildSparseWaveToAMDGPUPipeline(
       scheduleOptions.cooperativeAxis = "rhs";
       scheduleOptions.cooperativeChunkSize =
           options.positionCooperativeChunkSize;
-    } else if (!usesBlockPosition) {
+    } else if (usesBlockPosition) {
+      scheduleOptions.blockReduction =
+          options.positionBlockReduction.getValue();
+    } else {
       if (usesThreadPosition) {
         scheduleOptions.threadChunkSize = options.positionThreadChunkSize;
         scheduleOptions.threadReduction =

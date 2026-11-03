@@ -29,8 +29,13 @@ ROW_DISTRIBUTION_PERIODS = {
 }
 POSITION_THREAD_REDUCTIONS = ("atomic", "segmented")
 POSITION_WAVE_REDUCTIONS = ("atomic", "workspace")
+POSITION_BLOCK_REDUCTIONS = ("atomic", "segmented")
 POSITION_REDUCTIONS = tuple(
-    dict.fromkeys(POSITION_THREAD_REDUCTIONS + POSITION_WAVE_REDUCTIONS)
+    dict.fromkeys(
+        POSITION_THREAD_REDUCTIONS
+        + POSITION_WAVE_REDUCTIONS
+        + POSITION_BLOCK_REDUCTIONS
+    )
 )
 
 
@@ -88,6 +93,8 @@ def position_reductions_for_mapping(mapping, reductions):
         supported = POSITION_THREAD_REDUCTIONS
     elif mapping == "wave-per-position":
         supported = POSITION_WAVE_REDUCTIONS
+    elif mapping == "block-per-position":
+        supported = POSITION_BLOCK_REDUCTIONS
     else:
         return (None,)
     return tuple(
@@ -102,6 +109,8 @@ def position_reduction_pipeline_option(mapping, reduction):
         return f"position-thread-reduction={reduction}"
     if mapping == "wave-per-position":
         return f"position-wave-reduction={reduction}"
+    if mapping == "block-per-position":
+        return f"position-block-reduction={reduction}"
     raise ValueError(f"mapping does not use a position reduction: {mapping}")
 
 

@@ -638,7 +638,7 @@ def parse_arguments(argv):
         help=(
             "Comma-separated position reduction strategies. "
             "Thread mapping supports atomic,segmented; wave mapping supports "
-            "atomic,workspace."
+            "atomic,workspace; block mapping supports atomic,segmented."
         ),
     )
     common.add_common_arguments(parser, repository)
