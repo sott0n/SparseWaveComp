@@ -170,6 +170,9 @@ environment, reproduction commands, performance data, and interpretation:
 - [gfx1101 wave position chunking ablation](wave-position-chunk-gfx1101.md)
   evaluates consecutive position tiles per wave across SpMV and SpMM, including
   its interaction with iteration order, GPU resources, and rocSPARSE.
+- [gfx1101 block-local segmented position reduction](block-position-segmented-gfx1101.md)
+  measures the generic block reduction across SpMV and SpMM, and identifies
+  when output-key locality repays its LDS scan and synchronization costs.
 - [gfx1101 CSR elementwise block-size sweep](elementwise-block-size-sweep-gfx1101.md)
   measures symbolic, prefix-scan, and numeric phase behavior for sparse add
   and multiply and relates the timing tradeoff to generated GPU resources.
