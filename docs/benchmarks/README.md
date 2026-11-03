@@ -167,6 +167,9 @@ environment, reproduction commands, performance data, and interpretation:
 - [gfx1101 generated SpMM scheduling ablation](spmm-generated-ablation-gfx1101.md)
   isolates split, reorder, and segmented reduction, then compares representative
   schedules across controlled row-length distributions and rocSPARSE.
+- [gfx1101 wave position chunking ablation](wave-position-chunk-gfx1101.md)
+  evaluates consecutive position tiles per wave across SpMV and SpMM, including
+  its interaction with iteration order, GPU resources, and rocSPARSE.
 - [gfx1101 CSR elementwise block-size sweep](elementwise-block-size-sweep-gfx1101.md)
   measures symbolic, prefix-scan, and numeric phase behavior for sparse add
   and multiply and relates the timing tradeoff to generated GPU resources.
