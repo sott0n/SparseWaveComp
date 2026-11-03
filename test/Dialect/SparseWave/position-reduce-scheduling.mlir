@@ -101,6 +101,7 @@ func.func @keyed_sum(%values: memref<?xf32>, %output: memref<?xf32>) {
 // WAVE-COMPRESSED-NOT: sparsewave.compressed_segment_at_position
 // WAVE-COMPRESSED: gpu.shuffle idx
 // WAVE-COMPRESSED: scf.while
+// WAVE-COMPRESSED: arith.shrui
 // WAVE-COMPRESSED: gpu.shuffle xor
 // WAVE-COMPRESSED: memref.load %{{.*}}[%{{.*}}] : memref<?xf32>
 // WAVE-COMPRESSED: return

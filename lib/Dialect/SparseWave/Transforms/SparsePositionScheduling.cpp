@@ -13,6 +13,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/Support/MathExtras.h"
 
 namespace mlir::sparsewave {
 #define GEN_PASS_DEF_SCHEDULESPARSEWAVEPOSITION
@@ -582,6 +583,17 @@ Value buildWaveIndexMax(OpBuilder &builder, Location loc, Value value,
                                     maximum);
 }
 
+Value buildPositiveCeilDivByPowerOfTwo(OpBuilder &builder, Location loc,
+                                       Value value, int64_t divisor) {
+  assert(llvm::isPowerOf2_64(divisor) && "expected a power-of-two divisor");
+  Value one = arith::ConstantIndexOp::create(builder, loc, 1);
+  Value shift = arith::ConstantIndexOp::create(
+      builder, loc, llvm::Log2_64(static_cast<uint64_t>(divisor)));
+  Value decremented = arith::SubIOp::create(builder, loc, value, one);
+  Value quotient = arith::ShRUIOp::create(builder, loc, decremented, shift);
+  return arith::AddIOp::create(builder, loc, quotient, one);
+}
+
 Value buildWaveCompressedSegmentSearch(OpBuilder &builder, Location loc,
                                        Value offsets, Value position,
                                        Value lane, int64_t waveSize) {
@@ -615,7 +627,8 @@ Value buildWaveCompressedSegmentSearch(OpBuilder &builder, Location loc,
   lower = after->getArgument(0);
   upper = after->getArgument(1);
   distance = arith::SubIOp::create(builder, loc, upper, lower);
-  Value stride = arith::CeilDivUIOp::create(builder, loc, distance, waveWidth);
+  Value stride =
+      buildPositiveCeilDivByPowerOfTwo(builder, loc, distance, waveSize);
   Value laneOffset = arith::MulIOp::create(builder, loc, lane, stride);
   Value candidate = arith::AddIOp::create(builder, loc, lower, laneOffset);
   Value lastBoundary = arith::SubIOp::create(builder, loc, upper, one);
