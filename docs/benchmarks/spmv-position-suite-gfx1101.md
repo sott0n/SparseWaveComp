@@ -39,6 +39,19 @@ differences as stable.
 | email-Enron | 36,692 | 367,662 | 10.02 | 1,383 | Medium heavy-tail rows |
 | kron_g500-logn16 | 65,536 | 4,912,469 | 74.96 | 17,998 | Long heavy-tail rows |
 
+The row-profile follow-up used the same Matrix Market inputs and computed the
+following statistics over all logical rows. Standard deviation is the
+population value, and p90 and p99 use the nearest-rank definition.
+
+| Matrix | Stddev | CV | Median | p90 | p99 | Empty rows |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| minnesota | 0.75 | 0.30 | 2 | 4 | 4 | 0.00% |
+| ca-GrQc | 7.92 | 1.43 | 3 | 13 | 42 | 0.00% |
+| wiki-Vote | 39.48 | 3.16 | 1 | 31 | 189 | 26.36% |
+| ca-AstroPh | 30.57 | 1.45 | 9 | 53 | 142 | 0.00% |
+| email-Enron | 36.10 | 3.60 | 3 | 18 | 133 | 0.00% |
+| kron_g500-logn16 | 312.50 | 4.17 | 8 | 206 | 1,687 | 15.59% |
+
 The four SNAP edge lists were obtained from the original SNAP distribution and
 converted to Matrix Market without changing their entry count. ca-GrQc and
 ca-AstroPh node identifiers were densely reindexed; wiki-Vote retained its
@@ -97,6 +110,60 @@ ca-GrQc, ca-AstroPh, email-Enron, and kron_g500-logn16, while minnesota and
 wiki-Vote can change which close position variant wins. The repeated win/loss
 regions are therefore stronger evidence than any individual ratio.
 
+## Row-profile follow-up
+
+The suite was run again at SparseWave commit
+`5a194d6f14eb3b0d6d765450f6258a9a83077073` after adding the row-profile
+columns. It used the same GPU, LLVM revision, manifest, warmup, and iteration
+counts as the earlier runs. All 258 configurations passed CPU-reference
+validation.
+
+| Matrix | Best position schedule | Position | Best fixed schedule | Fixed | rocSPARSE |
+| --- | --- | ---: | --- | ---: | ---: |
+| minnesota | Wave atomic, chunk 1 | 8.82 us | Wave per row | 5.00 us | 29.50 us |
+| ca-GrQc | Wave atomic, chunk 1 | 9.48 us | Wave per row | 6.00 us | 14.84 us |
+| wiki-Vote | Block segmented, chunk 4 | 15.36 us | Block per row | 12.12 us | 43.78 us |
+| ca-AstroPh | Wave atomic, chunk 4 | 26.22 us | Wave per row | 17.50 us | 65.54 us |
+| email-Enron | Block segmented, chunk 8 | 27.64 us | Wave per row | 23.80 us | 53.96 us |
+| kron_g500-logn16 | Wave workspace, chunk 4 | 234.41 us | Block per row | 161.13 us | 200.01 us |
+
+The profile exposes three regions in this six-matrix sample:
+
+- The three matrices with CV at or below 1.45 select wave-position atomic
+  reduction. This is consistent with their relatively compact row
+  distributions providing less opportunity for the LDS segmented reduction
+  to combine repeated keys inside a block tile.
+- wiki-Vote and email-Enron have CV above 3.0 and p99 row lengths of 189 and
+  133. Both select block-position segmented reduction, which combines adjacent
+  contributions to the same row before updating the output.
+- kron_g500-logn16 is a separate extreme-tail case: CV is 4.17, p99 is 1,687,
+  and the maximum is 17,998. Wave workspace reduction wins among position
+  schedules, while block-per-row remains the fastest SparseWave mapping.
+
+Across these six points, Spearman rank correlation between CV and the position
+schedule's speed ratio against the best fixed mapping is +0.83. Higher
+irregularity therefore coincides with position scheduling closing the gap, but
+it does not make position scheduling the overall winner: the ratio remains
+below 1.0 for every matrix. Median row length has essentially no rank
+correlation (-0.03), so a mean or median threshold alone would discard the
+tail information that distinguishes these workloads.
+
+The empty-row fraction is not a sufficient selector either. wiki-Vote and
+kron_g500-logn16 both contain many empty rows but choose different position
+reductions because the nonempty-row tails differ by almost an order of
+magnitude at p99. A future inspectable rule should therefore consider at least
+CV and a tail statistic such as p99, then use problem scale to distinguish
+block-local segmentation from a wave workspace. Six matrices are enough to
+form this hypothesis, but not enough to encode stable thresholds in the
+compiler.
+
+The new run again leaves the best fixed SparseWave mapping ahead on all six
+matrices. Its rocSPARSE comparisons vary more than the SparseWave ordering:
+email-Enron changes from a rocSPARSE win in the earlier runs to a position win
+in this run. Because GPU clocks were not locked, this follow-up uses rocSPARSE
+as supporting context and does not derive a selection rule from that unstable
+ratio.
+
 ## GPU resources
 
 Resources below correspond to the run-1 position selections.
@@ -127,16 +194,16 @@ space.
   Direct row ownership avoids key recovery and cross-worker output merging
   when a row can already keep a wave or block occupied.
 - Long heavy-tail rows are the clearest losing region. kron_g500-logn16 favors
-  block-per-row, while email-Enron also favors row ownership despite its lower
-  mean row length because its maximum row is 1,383 entries.
+  block-per-row, while email-Enron also favors row ownership. The profile
+  follow-up shows that CV and p99 explain this region better than mean row
+  length alone.
 - The current result supports keeping coordinate/row and position schedules as
   alternatives. It does not support replacing fixed ownership with position
   traversal universally.
 
-The next useful analysis is to add row-length variance, percentiles, and empty
-row fraction to the suite summary and correlate them with the repeated
-strategy choices. That evidence can later drive an inspectable compiler
-selection rule rather than a matrix-name-specific policy.
+The next useful step is to expand the suite before deriving a deterministic
+selector. The current profiles identify useful features and candidate regions,
+but six matrices cannot establish robust CV or p99 thresholds.
 
 ## Reproduction
 
