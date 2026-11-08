@@ -32,6 +32,59 @@ FORMAT_MAPPINGS = {
 }
 DISTRIBUTIONS = common.ROW_DISTRIBUTIONS
 POSITION_REDUCTIONS = common.POSITION_REDUCTIONS
+POSITION_ABLATION_STAGES = (
+    common.PositionAblationStage(
+        "fixed mapping",
+        lambda row: row["implementation"] == "sparsewave"
+        and row["format"] == "csr"
+        and row["mapping"] in ("thread-per-row", "wave-per-row", "block-per-row"),
+    ),
+    common.PositionAblationStage(
+        "position baseline",
+        lambda row: row["implementation"] == "sparsewave"
+        and row["format"] == "csr"
+        and row["mapping"] == "thread-per-position"
+        and row["position_chunk_size"] == 1
+        and row["position_reduction"] == "atomic",
+    ),
+    common.PositionAblationStage(
+        "split",
+        lambda row: row["implementation"] == "sparsewave"
+        and row["format"] == "csr"
+        and row["mapping"] == "thread-per-position"
+        and row["position_chunk_size"] > 1
+        and row["position_reduction"] == "atomic",
+    ),
+    common.PositionAblationStage(
+        "local segmented",
+        lambda row: row["implementation"] == "sparsewave"
+        and row["format"] == "csr"
+        and row["mapping"] == "thread-per-position"
+        and row["position_chunk_size"] > 1
+        and row["position_reduction"] == "segmented",
+    ),
+    common.PositionAblationStage(
+        "wave position",
+        lambda row: row["implementation"] == "sparsewave"
+        and row["format"] == "csr"
+        and row["mapping"] == "wave-per-position",
+    ),
+    common.PositionAblationStage(
+        "block position",
+        lambda row: row["implementation"] == "sparsewave"
+        and row["format"] == "csr"
+        and row["mapping"] == "block-per-position",
+    ),
+    common.PositionAblationStage(
+        "manual best",
+        lambda row: row["implementation"] == "sparsewave"
+        and row["format"] == "csr",
+    ),
+    common.PositionAblationStage(
+        "rocSPARSE",
+        lambda row: row["implementation"] == "rocsparse",
+    ),
+)
 RESULT_COLUMNS = (
     "chip",
     "matrix",
@@ -246,7 +299,7 @@ def create_workloads(args):
                 "key": args.matrix_data["name"],
                 "matrix": str(args.matrix_data["path"]),
                 "distribution": "matrix-market",
-                "nnz_per_row": "",
+                "nnz_per_row": None,
                 "shape": args.matrix_data,
             }
         ]
@@ -495,6 +548,7 @@ def build_metadata(args, repository, commands):
             "position_chunk_sizes": args.position_chunk_sizes,
             "position_wave_chunk_sizes": args.position_wave_chunk_sizes,
             "position_reductions": args.position_reductions,
+            "position_ablation": args.position_ablation,
             "commands": commands,
         }
     )
@@ -526,6 +580,14 @@ def print_results(args, results):
             else SYNTHETIC_RESOURCE_REPORT
         ),
         results,
+    )
+
+
+def build_position_ablation(results):
+    return common.select_position_ablation(
+        results,
+        POSITION_ABLATION_STAGES,
+        ("matrix", "distribution", "nnz_per_row"),
     )
 
 
@@ -641,6 +703,14 @@ def parse_arguments(argv):
             "Comma-separated position reduction strategies. "
             "Thread mapping supports atomic,segmented; wave mapping supports "
             "atomic,workspace; block mapping supports atomic,segmented."
+        ),
+    )
+    parser.add_argument(
+        "--position-ablation",
+        action="store_true",
+        help=(
+            "Write and print the best measured configuration for each "
+            "position-space transformation stage."
         ),
     )
     common.add_common_arguments(parser, repository)
@@ -878,7 +948,28 @@ def main(argv=None):
             workspace.output_directory / "metadata.json",
             build_metadata(args, repository, commands),
         )
+        if args.position_ablation:
+            ablation = build_position_ablation(results)
+            common.write_position_ablation(
+                workspace.output_directory / "position-ablation.csv",
+                "spmv",
+                ablation,
+            )
         print_results(args, results)
+        if args.position_ablation:
+            print()
+            common.print_position_ablation(
+                args,
+                "SparseWave SpMV position ablation",
+                ablation,
+                ("distribution", "nnz_per_row"),
+                (
+                    "mapping",
+                    "block_size",
+                    "position_chunk_size",
+                    "position_reduction",
+                ),
+            )
         print()
         print(f"Results: {workspace.output_directory}")
     return 0

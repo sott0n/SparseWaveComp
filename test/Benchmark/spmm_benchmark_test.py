@@ -611,6 +611,49 @@ amdhsa.kernels:
             text=True,
         )
 
+    def test_position_ablation_separates_split_reorder_and_reduction(self):
+        def result(
+            mapping,
+            chunk,
+            order,
+            reduction,
+            median,
+            implementation="sparsewave",
+        ):
+            return {
+                "matrix": "generated",
+                "distribution": "skewed",
+                "nnz_per_row": 32,
+                "rhs_cols": 16,
+                "implementation": implementation,
+                "format": "csr",
+                "mapping": mapping,
+                "position_chunk_size": chunk,
+                "position_order": order,
+                "position_reduction": reduction,
+                "median_us": median,
+                "p95_us": median,
+            }
+
+        rows = [
+            result("wave-per-row-tile", None, None, None, 3.0),
+            result("thread-per-position", 1, "position-major", "atomic", 20.0),
+            result("thread-per-position", 4, "position-major", "atomic", 15.0),
+            result("thread-per-position", 4, "rhs-major", "atomic", 12.0),
+            result("thread-per-position", 4, "rhs-major", "segmented", 9.0),
+            result("wave-per-position", 2, "rhs-major", "workspace", 7.0),
+            result("block-per-position", 4, "rhs-major", "segmented", 5.0),
+            result("wave-per-position-tile", 4, None, None, 4.0),
+            result("default", None, None, None, 6.0, "rocsparse"),
+        ]
+        ablation = BENCHMARK.build_position_ablation(rows)
+        by_stage = {row["stage"]: row for row in ablation}
+        self.assertEqual(by_stage["split"]["median_us"], 15.0)
+        self.assertEqual(by_stage["reorder"]["median_us"], 12.0)
+        self.assertEqual(by_stage["local segmented"]["median_us"], 9.0)
+        self.assertEqual(by_stage["manual best"]["mapping"], "wave-per-row-tile")
+        self.assertEqual(by_stage["block position"]["vs_rocsparse"], 1.2)
+
 
 if __name__ == "__main__":
     unittest.main()

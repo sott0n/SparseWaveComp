@@ -617,6 +617,38 @@ timings_us=100.0,4.0,2.0,3.0
             )
         )
 
+    def test_position_ablation_selects_best_stage_configuration(self):
+        def result(mapping, chunk, reduction, median, implementation="sparsewave"):
+            return {
+                "matrix": "generated",
+                "distribution": "skewed",
+                "nnz_per_row": 32,
+                "implementation": implementation,
+                "format": "csr",
+                "mapping": mapping,
+                "position_chunk_size": chunk,
+                "position_reduction": reduction,
+                "median_us": median,
+                "p95_us": median,
+            }
+
+        rows = [
+            result("wave-per-row", None, None, 4.0),
+            result("thread-per-position", 1, "atomic", 20.0),
+            result("thread-per-position", 4, "atomic", 12.0),
+            result("thread-per-position", 8, "atomic", 10.0),
+            result("thread-per-position", 8, "segmented", 8.0),
+            result("wave-per-position", 2, "workspace", 6.0),
+            result("block-per-position", 4, "segmented", 5.0),
+            result("default", None, None, 7.0, "rocsparse"),
+        ]
+        ablation = BENCHMARK.build_position_ablation(rows)
+        by_stage = {row["stage"]: row for row in ablation}
+        self.assertEqual(by_stage["split"]["position_chunk_size"], 8)
+        self.assertEqual(by_stage["manual best"]["mapping"], "wave-per-row")
+        self.assertEqual(by_stage["local segmented"]["vs_position_baseline"], 2.5)
+        self.assertEqual(by_stage["manual best"]["vs_rocsparse"], 1.75)
+
 
 if __name__ == "__main__":
     unittest.main()

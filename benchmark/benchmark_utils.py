@@ -1351,9 +1351,16 @@ class BenchmarkReport:
     baseline_group: object = None
 
 
+@dataclass(frozen=True)
+class PositionAblationStage:
+    name: str
+    predicate: object
+
+
 REPORT_COLUMNS = {
     "operation": TableColumn("operation", "operation", 9, alignment="<"),
     "phase": TableColumn("phase", "phase", 8, alignment="<"),
+    "stage": TableColumn("stage", "stage", 20, alignment="<"),
     "kernel": TableColumn("kernel", "kernel", 27, alignment="<"),
     "implementation": TableColumn(
         "implementation", "implementation", 14, alignment="<"
@@ -1430,7 +1437,130 @@ REPORT_COLUMNS = {
         "SGPR spill", "sgpr_spill_count", 10, "d"
     ),
     "speedup": TableColumn("vs baseline", "speedup", 11, ".2f", "x"),
+    "vs_position_baseline": TableColumn(
+        "vs position", "vs_position_baseline", 11, ".2f", "x"
+    ),
+    "vs_rocsparse": TableColumn(
+        "vs rocSPARSE", "vs_rocsparse", 12, ".2f", "x"
+    ),
 }
+
+
+POSITION_ABLATION_COLUMNS = (
+    "operation",
+    "matrix",
+    "distribution",
+    "nnz_per_row",
+    "rhs_cols",
+    "stage",
+    "implementation",
+    "format",
+    "mapping",
+    "block_size",
+    "tile_size",
+    "position_chunk_size",
+    "position_order",
+    "position_reduction",
+    "median_us",
+    "p95_us",
+    "vs_position_baseline",
+    "vs_rocsparse",
+)
+
+
+def select_position_ablation(
+    rows, stages, group_keys, position_baseline="position baseline"
+):
+    groups = {}
+    for row in rows:
+        group = tuple(row.get(key) for key in group_keys)
+        groups.setdefault(group, []).append(row)
+
+    selected = []
+    for group_rows in groups.values():
+        stage_rows = []
+        for stage in stages:
+            candidates = [row for row in group_rows if stage.predicate(row)]
+            if candidates:
+                stage_rows.append(
+                    {
+                        **min(candidates, key=lambda row: row["median_us"]),
+                        "stage": stage.name,
+                    }
+                )
+        baseline = next(
+            (
+                row
+                for row in stage_rows
+                if row["stage"] == position_baseline
+            ),
+            None,
+        )
+        rocsparse = next(
+            (
+                row
+                for row in stage_rows
+                if row["implementation"] == "rocsparse"
+            ),
+            None,
+        )
+        for row in stage_rows:
+            selected.append(
+                {
+                    **row,
+                    "vs_position_baseline": (
+                        baseline["median_us"] / row["median_us"]
+                        if baseline is not None
+                        else None
+                    ),
+                    "vs_rocsparse": (
+                        rocsparse["median_us"] / row["median_us"]
+                        if rocsparse is not None
+                        else None
+                    ),
+                }
+            )
+    return selected
+
+
+def write_position_ablation(path, operation, rows):
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=POSITION_ABLATION_COLUMNS)
+        writer.writeheader()
+        for row in rows:
+            formatted = {
+                key: "" if row.get(key) is None else row[key]
+                for key in POSITION_ABLATION_COLUMNS
+                if key != "operation"
+            }
+            formatted["operation"] = operation
+            for key in (
+                "median_us",
+                "p95_us",
+                "vs_position_baseline",
+                "vs_rocsparse",
+            ):
+                if row.get(key) is not None:
+                    formatted[key] = f"{row[key]:.6f}"
+            writer.writerow(formatted)
+
+
+def print_position_ablation(args, title, rows, dimensions, configuration):
+    print_common_configuration(args, title)
+    print()
+    columns = tuple(
+        REPORT_COLUMNS[key]
+        for key in dimensions
+        + (
+            "stage",
+            *configuration,
+            "median_us",
+            "p95_us",
+            "vs_position_baseline",
+            "vs_rocsparse",
+        )
+    )
+    print_table(columns, rows)
 
 
 def report_detail(args, name):

@@ -86,6 +86,14 @@ completed segment; `segmented` combines equal keys inside a thread chunk; and
 collapse are not included in this one-dimensional SpMV ablation because they
 do not change its iteration order or shape.
 
+Add `--position-ablation` to either runner to extract the best measured
+configuration for each transformation stage. The runner prints the compact
+stage table and writes `position-ablation.csv` beside the complete
+`results.csv`. The summary reports speedup against both the untransformed
+thread-position baseline and rocSPARSE when those cases were selected. See the
+[integrated gfx1101 position-transformation ablation](position-transformation-ablation-gfx1101.md)
+for the stage definitions and representative real-matrix results.
+
 SpMM accepts the same generated row-length distributions. The following sweep
 compares fixed row/output mappings, position split and reorder variants,
 cooperative wave scheduling, and rocSPARSE from one deterministic input set:
@@ -176,6 +184,9 @@ environment, reproduction commands, performance data, and interpretation:
 - [gfx1101 block position chunking](block-position-chunk-gfx1101.md)
   measures the generic block reduction across SpMV and SpMM, and identifies
   when output-key locality repays its LDS scan and synchronization costs.
+- [gfx1101 position-transformation ablation](position-transformation-ablation-gfx1101.md)
+  integrates fixed mappings, split, reorder, reduction, wave/block scheduling,
+  manual-best selection, and rocSPARSE on representative real matrices.
 - [gfx1101 CSR elementwise block-size sweep](elementwise-block-size-sweep-gfx1101.md)
   measures symbolic, prefix-scan, and numeric phase behavior for sparse add
   and multiply and relates the timing tradeoff to generated GPU resources.
