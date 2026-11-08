@@ -239,6 +239,10 @@ environment, reproduction commands, performance data, and interpretation:
   repeats the integrated SpMV study across six row-length profiles, reports
   two independent runs, and identifies stable winning and losing regions
   against fixed mappings and rocSPARSE.
+- [gfx1101 controlled SpMV row profiles](spmv-controlled-row-profiles-gfx1101.md)
+  holds dimensions, NNZ, values, and dense-vector accesses constant while
+  varying only row boundaries, then compares position, fixed, and rocSPARSE
+  behavior across two independent runs.
 - [gfx1101 CSR elementwise block-size sweep](elementwise-block-size-sweep-gfx1101.md)
   measures symbolic, prefix-scan, and numeric phase behavior for sparse add
   and multiply and relates the timing tradeoff to generated GPU resources.

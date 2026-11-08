@@ -201,9 +201,10 @@ space.
   alternatives. It does not support replacing fixed ownership with position
   traversal universally.
 
-The next useful step is to expand the suite before deriving a deterministic
-selector. The current profiles identify useful features and candidate regions,
-but six matrices cannot establish robust CV or p99 thresholds.
+The [controlled row-profile follow-up](spmv-controlled-row-profiles-gfx1101.md)
+holds problem size and dense-vector accesses constant while varying row
+boundaries. It tests these candidate features without conflating them with
+matrix scale, NNZ, or dense-side locality.
 
 ## Reproduction
 
