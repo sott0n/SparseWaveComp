@@ -64,6 +64,54 @@ class SpMVAblationSuiteTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reserved option '--matrix'"):
             SUITE.load_manifest(path, TEMPORARY_ROOT)
 
+    def test_manifest_accepts_generated_row_profile(self):
+        path = self.write_manifest(
+            name="profile.json",
+            matrices=[
+                {
+                    "name": "controlled",
+                    "category": "controlled profile",
+                    "profile": {
+                        "rows": 8,
+                        "columns": 16,
+                        "histogram": "0:1,4:3",
+                        "seed": 7,
+                    },
+                }
+            ],
+        )
+        manifest = SUITE.load_manifest(path, matrix_root=None)
+        profile = manifest.matrices[0]
+        self.assertIsNone(profile.path)
+        self.assertEqual(profile.source, "generated row-length histogram")
+        self.assertEqual(
+            profile.input_arguments,
+            (
+                "--rows=8",
+                "--columns=16",
+                "--row-length-histogram=0:1,4:3",
+                "--row-order-seed=7",
+            ),
+        )
+
+    def test_generated_profile_validation(self):
+        path = self.write_manifest(
+            name="invalid-profile.json",
+            matrices=[
+                {
+                    "name": "invalid",
+                    "category": "invalid",
+                    "profile": {
+                        "rows": 7,
+                        "columns": 16,
+                        "histogram": "0:1,4:3",
+                    },
+                }
+            ],
+        )
+        with self.assertRaisesRegex(ValueError, "divisible"):
+            SUITE.load_manifest(path, matrix_root=None)
+
     def test_matrix_selection_preserves_requested_order(self):
         matrices = (
             SUITE.MatrixSpec("first", Path("first.mtx"), "a", "first"),
@@ -76,19 +124,27 @@ class SpMVAblationSuiteTest(unittest.TestCase):
 
     def test_suite_runs_each_matrix_and_aggregates_results(self):
         matrix_root = TEMPORARY_ROOT / "suite-inputs"
-        entries = []
-        for name, category in (("first", "short"), ("second", "long")):
-            matrix_path = matrix_root / name / f"{name}.mtx"
-            matrix_path.parent.mkdir(parents=True, exist_ok=True)
-            matrix_path.write_text("matrix placeholder\n", encoding="utf-8")
-            entries.append(
-                {
-                    "name": name,
-                    "path": f"{name}/{name}.mtx",
-                    "category": category,
-                    "source": f"https://example.com/{name}",
-                }
-            )
+        matrix_path = matrix_root / "first" / "first.mtx"
+        matrix_path.parent.mkdir(parents=True, exist_ok=True)
+        matrix_path.write_text("matrix placeholder\n", encoding="utf-8")
+        entries = [
+            {
+                "name": "first",
+                "path": "first/first.mtx",
+                "category": "short",
+                "source": "https://example.com/first",
+            },
+            {
+                "name": "second",
+                "category": "controlled",
+                "profile": {
+                    "rows": 8,
+                    "columns": 16,
+                    "histogram": "0:1,4:3",
+                    "seed": 7,
+                },
+            },
+        ]
         manifest = self.write_manifest(
             name="aggregate.json",
             matrices=entries,
@@ -173,9 +229,12 @@ class SpMVAblationSuiteTest(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(run.call_count, 2)
         first_command = run.call_args_list[0].args[0]
+        second_command = run.call_args_list[1].args[0]
         self.assertIn("--position-ablation", first_command)
         self.assertIn("--block-sizes=64", first_command)
         self.assertIn("--iterations=3", first_command)
+        self.assertIn("--row-length-histogram=0:1,4:3", second_command)
+        self.assertNotIn("--matrix=None", second_command)
 
         with (output / "summary.csv").open(newline="", encoding="utf-8") as stream:
             summary = list(csv.DictReader(stream))

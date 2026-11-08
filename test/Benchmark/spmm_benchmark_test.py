@@ -580,6 +580,21 @@ amdhsa.kernels:
         self.assertEqual(workloads[2]["shape"]["max_row_nnz"], 57)
         self.assertEqual(workloads[2]["shape"]["median_row_nnz"], 1)
 
+    def test_generated_row_profile_uses_common_histogram(self):
+        args = BENCHMARK.parse_arguments(
+            [
+                "--rows=8",
+                "--columns=8",
+                "--row-length-histogram=0:1,4:3",
+                "--row-order-seed=7",
+                "--chip=gfx1101",
+            ]
+        )
+        workload = next(BENCHMARK.create_workloads(args))
+        self.assertEqual(workload["distribution"], "row-profile")
+        self.assertEqual(workload["shape"]["nnz"], 24)
+        self.assertEqual(workload["shape"]["empty_row_fraction"], 0.25)
+
     def test_generated_spmm_input_lowers_position_mapping(self):
         matrix = BENCHMARK.common.synthetic_csr_matrix(
             rows=8,

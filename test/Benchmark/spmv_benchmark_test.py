@@ -430,6 +430,55 @@ class SpMVBenchmarkTest(unittest.TestCase):
         ):
             BENCHMARK.parse_distributions("uniform,uniform")
 
+    def test_row_length_histogram_materializes_reproducible_profile(self):
+        histogram = BENCHMARK.common.parse_row_length_histogram("0:1,4:3")
+        first = BENCHMARK.common.materialize_row_length_histogram(
+            8, histogram, seed=7
+        )
+        second = BENCHMARK.common.materialize_row_length_histogram(
+            8, histogram, seed=7
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(first.count(0), 2)
+        self.assertEqual(first.count(4), 6)
+
+        matrix = BENCHMARK.common.synthetic_sparse_matrix_from_row_lengths(
+            columns=8, row_lengths=first, name="controlled"
+        )
+        self.assertEqual(matrix["rows"], 8)
+        self.assertEqual(matrix["nnz"], 24)
+        self.assertEqual(matrix["empty_row_fraction"], 0.25)
+        self.assertEqual(matrix["mean_row_nnz"], 3)
+        self.assertEqual(matrix["p99_row_nnz"], 4)
+
+        args = BENCHMARK.parse_arguments(
+            [
+                "--rows=8",
+                "--columns=8",
+                "--row-length-histogram=0:1,4:3",
+                "--row-order-seed=7",
+                "--chip=gfx1101",
+            ]
+        )
+        workload = BENCHMARK.create_workloads(args)[0]
+        self.assertEqual(workload["distribution"], "row-profile")
+        self.assertEqual(workload["shape"]["nnz"], 24)
+
+    def test_row_length_histogram_validation(self):
+        with self.assertRaisesRegex(
+            BENCHMARK.argparse.ArgumentTypeError, "duplicate row length"
+        ):
+            BENCHMARK.common.parse_row_length_histogram("4:1,4:2")
+        histogram = BENCHMARK.common.parse_row_length_histogram("0:1,4:3")
+        with self.assertRaisesRegex(ValueError, "divisible"):
+            BENCHMARK.common.materialize_row_length_histogram(
+                6, histogram, seed=0
+            )
+        with self.assertRaisesRegex(ValueError, "column count"):
+            BENCHMARK.common.synthetic_sparse_matrix_from_row_lengths(
+                columns=3, row_lengths=[4], name="invalid"
+            )
+
     def test_format_parser_rejects_unknown_and_duplicate_formats(self):
         self.assertEqual(BENCHMARK.parse_formats("csr,coo"), ["csr", "coo"])
         with self.assertRaisesRegex(

@@ -15,9 +15,13 @@ import benchmark_utils as common
 
 SCHEMA_VERSION = 1
 RESERVED_BENCHMARK_OPTIONS = {
+    "--columns",
     "--matrix",
     "--output-dir",
     "--position-ablation",
+    "--row-length-histogram",
+    "--row-order-seed",
+    "--rows",
 }
 POSITION_STAGES = {
     "position baseline",
@@ -70,9 +74,10 @@ SUMMARY_COLUMNS = (
 @dataclass(frozen=True)
 class MatrixSpec:
     name: str
-    path: Path
+    path: Path | None
     category: str
     source: str
+    input_arguments: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -85,6 +90,54 @@ def _require_string(value, context):
     if not isinstance(value, str) or not value:
         raise ValueError(f"{context} must be a nonempty string")
     return value
+
+
+def _require_positive_integer(value, context):
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{context} must be a positive integer")
+    return value
+
+
+def load_generated_profile(profile, context):
+    if not isinstance(profile, dict):
+        raise ValueError(f"{context} must be an object")
+    expected = {"rows", "columns", "histogram", "seed"}
+    unknown = set(profile) - expected
+    if unknown:
+        raise ValueError(
+            f"{context} has unknown fields: {', '.join(sorted(unknown))}"
+        )
+    rows = _require_positive_integer(profile.get("rows"), f"{context}.rows")
+    columns = _require_positive_integer(
+        profile.get("columns"), f"{context}.columns"
+    )
+    histogram_value = _require_string(
+        profile.get("histogram"), f"{context}.histogram"
+    )
+    try:
+        histogram = common.parse_row_length_histogram(histogram_value)
+    except argparse.ArgumentTypeError as error:
+        raise ValueError(f"{context}.histogram: {error}") from error
+    if max(length for length, _ in histogram) > columns:
+        raise ValueError(
+            f"{context}.histogram row lengths must not exceed columns"
+        )
+    total_weight = sum(weight for _, weight in histogram)
+    if rows % total_weight != 0:
+        raise ValueError(
+            f"{context}.rows must be divisible by histogram weight "
+            f"{total_weight}"
+        )
+    seed = profile.get("seed", 0)
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError(f"{context}.seed must be a nonnegative integer")
+    return (
+        f"--rows={rows}",
+        f"--columns={columns}",
+        "--row-length-histogram="
+        f"{common.format_row_length_histogram(histogram)}",
+        f"--row-order-seed={seed}",
+    )
 
 
 def load_manifest(path, matrix_root):
@@ -121,21 +174,43 @@ def load_manifest(path, matrix_root):
         if name in names:
             raise ValueError(f"{path}: duplicate matrix name '{name}'")
         names.add(name)
-        relative_path = Path(
-            _require_string(entry.get("path"), f"{context}.path")
-        )
-        if relative_path.is_absolute() or ".." in relative_path.parts:
-            raise ValueError(f"{context}.path must stay below matrix root")
+        has_path = "path" in entry
+        has_profile = "profile" in entry
+        if has_path == has_profile:
+            raise ValueError(
+                f"{context} must define exactly one of path or profile"
+            )
+        if has_path:
+            if matrix_root is None:
+                raise ValueError(
+                    f"{context}.path requires the --matrix-root option"
+                )
+            relative_path = Path(
+                _require_string(entry.get("path"), f"{context}.path")
+            )
+            if relative_path.is_absolute() or ".." in relative_path.parts:
+                raise ValueError(f"{context}.path must stay below matrix root")
+            matrix_path = matrix_root / relative_path
+            input_arguments = (f"--matrix={matrix_path}",)
+            source = _require_string(entry.get("source"), f"{context}.source")
+        else:
+            matrix_path = None
+            input_arguments = load_generated_profile(
+                entry.get("profile"), f"{context}.profile"
+            )
+            source = _require_string(
+                entry.get("source", "generated row-length histogram"),
+                f"{context}.source",
+            )
         matrices.append(
             MatrixSpec(
                 name=name,
-                path=matrix_root / relative_path,
+                path=matrix_path,
                 category=_require_string(
                     entry.get("category"), f"{context}.category"
                 ),
-                source=_require_string(
-                    entry.get("source"), f"{context}.source"
-                ),
+                source=source,
+                input_arguments=input_arguments,
             )
         )
     return SuiteManifest(tuple(arguments), tuple(matrices))
@@ -241,7 +316,7 @@ def parse_arguments(argv):
     parser = argparse.ArgumentParser(
         description=(
             "Run the SpMV position-transformation ablation over a manifest "
-            "of Matrix Market inputs."
+            "of Matrix Market or generated row-profile inputs."
         )
     )
     parser.add_argument(
@@ -249,7 +324,7 @@ def parse_arguments(argv):
         type=Path,
         default=repository / "benchmark" / "suites" / "spmv-position.json",
     )
-    parser.add_argument("--matrix-root", type=Path, required=True)
+    parser.add_argument("--matrix-root", type=Path)
     parser.add_argument(
         "--matrices",
         help="Comma-separated manifest matrix names; defaults to the full suite.",
@@ -275,10 +350,14 @@ def parse_arguments(argv):
 def main(argv=None):
     args = parse_arguments(argv)
     manifest_path = args.manifest.resolve()
-    matrix_root = args.matrix_root.resolve()
+    matrix_root = args.matrix_root.resolve() if args.matrix_root else None
     manifest = load_manifest(manifest_path, matrix_root)
     matrices = select_matrices(manifest.matrices, args.matrices)
-    missing = [matrix.path for matrix in matrices if not matrix.path.is_file()]
+    missing = [
+        matrix.path
+        for matrix in matrices
+        if matrix.path is not None and not matrix.path.is_file()
+    ]
     if missing:
         formatted = "\n".join(f"  {path}" for path in missing)
         raise ValueError(f"missing Matrix Market inputs:\n{formatted}")
@@ -300,7 +379,7 @@ def main(argv=None):
         command = [
             sys.executable,
             str(args.spmv_runner.resolve()),
-            f"--matrix={matrix.path}",
+            *matrix.input_arguments,
             f"--output-dir={case_directory}",
             "--position-ablation",
             *forwarded,
@@ -314,7 +393,7 @@ def main(argv=None):
                 "suite_matrix": matrix.name,
                 "category": matrix.category,
                 "source": matrix.source,
-                "matrix_path": str(matrix.path),
+                "matrix_path": str(matrix.path) if matrix.path else "",
                 **row,
             }
             for row in rows
@@ -327,7 +406,7 @@ def main(argv=None):
         json.dumps(
             {
                 "manifest": str(manifest_path),
-                "matrix_root": str(matrix_root),
+                "matrix_root": str(matrix_root) if matrix_root else None,
                 "matrices": [matrix.name for matrix in matrices],
                 "commands": commands,
             },

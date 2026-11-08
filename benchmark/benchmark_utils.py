@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import random
 import re
 import statistics
 import struct
@@ -160,6 +161,43 @@ def parse_row_distributions(value):
     return values
 
 
+def parse_row_length_histogram(value):
+    entries = []
+    lengths = set()
+    for item in value.split(","):
+        fields = item.strip().split(":")
+        if len(fields) != 2:
+            raise argparse.ArgumentTypeError(
+                "row-length histogram entries must use NNZ:WEIGHT"
+            )
+        try:
+            length, weight = map(int, fields)
+        except ValueError as error:
+            raise argparse.ArgumentTypeError(
+                f"invalid row-length histogram entry: {item}"
+            ) from error
+        if length < 0 or weight <= 0:
+            raise argparse.ArgumentTypeError(
+                "row-length histogram NNZ must be nonnegative and weight "
+                "must be positive"
+            )
+        if length in lengths:
+            raise argparse.ArgumentTypeError(
+                f"duplicate row length in histogram: {length}"
+            )
+        lengths.add(length)
+        entries.append((length, weight))
+    if not entries:
+        raise argparse.ArgumentTypeError(
+            "expected at least one row-length histogram entry"
+        )
+    return tuple(entries)
+
+
+def format_row_length_histogram(histogram):
+    return ",".join(f"{length}:{weight}" for length, weight in histogram)
+
+
 def synthetic_row_length(nnz_per_row, distribution, row):
     if distribution == "uniform":
         return nnz_per_row
@@ -191,6 +229,62 @@ def row_length_profile(lengths):
         "p90_row_nnz": row_length_percentile(sorted_lengths, 0.90),
         "p99_row_nnz": row_length_percentile(sorted_lengths, 0.99),
         "empty_row_fraction": sorted_lengths.count(0) / len(sorted_lengths),
+    }
+
+
+def materialize_row_length_histogram(rows, histogram, seed):
+    if rows <= 0:
+        raise ValueError("row count must be positive")
+    if not histogram:
+        raise ValueError("expected at least one row-length histogram entry")
+    if seed < 0:
+        raise ValueError("row order seed must be nonnegative")
+    total_weight = sum(weight for _, weight in histogram)
+    if rows % total_weight != 0:
+        raise ValueError(
+            "row count must be divisible by the row-length histogram's "
+            f"total weight ({total_weight})"
+        )
+    scale = rows // total_weight
+    lengths = [
+        length
+        for length, weight in histogram
+        for _ in range(weight * scale)
+    ]
+    random.Random(seed).shuffle(lengths)
+    return lengths
+
+
+def synthetic_sparse_matrix_from_row_lengths(columns, row_lengths, name):
+    if columns <= 0:
+        raise ValueError("column count must be positive")
+    if not row_lengths:
+        raise ValueError("expected at least one row length")
+    if min(row_lengths) < 0:
+        raise ValueError("row lengths must be nonnegative")
+    if max(row_lengths) > columns:
+        raise ValueError("row lengths must not exceed the column count")
+
+    profile = row_length_profile(row_lengths)
+    row_offsets = [0]
+    row_indices = []
+    for row, length in enumerate(row_lengths):
+        row_offsets.append(row_offsets[-1] + length)
+        row_indices.extend([row] * length)
+    nnz = row_offsets[-1]
+    return {
+        "path": f"generated:{name}",
+        "name": name,
+        "field": "generated",
+        "symmetry": "general",
+        "rows": len(row_lengths),
+        "columns": columns,
+        "nnz": nnz,
+        **profile,
+        "row_offsets": row_offsets,
+        "row_indices": row_indices,
+        "column_indices": [position % columns for position in range(nnz)],
+        "values": [1.0] * nnz,
     }
 
 
@@ -1604,7 +1698,10 @@ def print_position_ablation(args, title, rows, dimensions, configuration):
 def report_detail(args, name):
     matrix = getattr(args, "matrix_data", None)
     if name == "matrix":
-        return "matrix", args.matrix
+        value = args.matrix
+        if value is None and matrix is not None:
+            value = matrix["path"]
+        return "matrix", value
     if name == "rows":
         return "rows", matrix["rows"] if matrix is not None else args.rows
     if name == "columns":

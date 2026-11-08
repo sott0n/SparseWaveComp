@@ -296,7 +296,9 @@ def create_workloads(args):
             {
                 "key": args.matrix_data["name"],
                 "matrix": str(args.matrix_data["path"]),
-                "distribution": "matrix-market",
+                "distribution": args.matrix_data.get(
+                    "distribution", "matrix-market"
+                ),
                 "nnz_per_row": None,
                 "shape": args.matrix_data,
             }
@@ -529,6 +531,18 @@ def build_metadata(args, repository, commands):
                 args.distributions if args.matrix_data is None else None
             ),
             "matrix": str(args.matrix) if args.matrix else None,
+            "row_length_histogram": (
+                common.format_row_length_histogram(
+                    args.row_length_histogram
+                )
+                if args.row_length_histogram is not None
+                else None
+            ),
+            "row_order_seed": (
+                args.row_order_seed
+                if args.row_length_histogram is not None
+                else None
+            ),
             "matrix_field": (
                 args.matrix_data["field"]
                 if args.matrix_data is not None
@@ -641,10 +655,25 @@ def parse_arguments(argv):
     parser = argparse.ArgumentParser(
         description="Benchmark SparseWave SpMV mappings on an AMD GPU."
     )
-    parser.add_argument(
+    input_group = parser.add_mutually_exclusive_group()
+    input_group.add_argument(
         "--matrix",
         type=Path,
         help="Matrix Market coordinate file to benchmark instead of synthetic inputs.",
+    )
+    input_group.add_argument(
+        "--row-length-histogram",
+        type=common.parse_row_length_histogram,
+        help=(
+            "Generated row-length histogram as NNZ:WEIGHT entries. The row "
+            "count must be divisible by the total weight."
+        ),
+    )
+    parser.add_argument(
+        "--row-order-seed",
+        type=nonnegative_int,
+        default=0,
+        help="Seed used to deterministically shuffle generated profile rows.",
     )
     parser.add_argument(
         "--formats",
@@ -718,6 +747,14 @@ def parse_arguments(argv):
         args.matrix_data = read_matrix_market(args.matrix)
         args.rows = args.matrix_data["rows"]
         args.columns = args.matrix_data["columns"]
+    elif args.row_length_histogram is not None:
+        row_lengths = common.materialize_row_length_histogram(
+            args.rows, args.row_length_histogram, args.row_order_seed
+        )
+        args.matrix_data = common.synthetic_sparse_matrix_from_row_lengths(
+            args.columns, row_lengths, "row-profile"
+        )
+        args.matrix_data["distribution"] = "row-profile"
     else:
         args.matrix_data = None
     return args

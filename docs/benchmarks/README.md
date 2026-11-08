@@ -121,6 +121,27 @@ fastest position stage plus its speedup against fixed mapping and rocSPARSE.
 Use `--matrices=ca-GrQc,ca-AstroPh` to run a subset. Arguments after `--` are
 forwarded to every benchmark and can override ordinary manifest options.
 
+The checked-in `benchmark/suites/spmv-row-profiles.json` manifest holds rows,
+columns, and mean NNZ constant while independently varying row-length spread,
+tail frequency, and empty-row fraction. Generated profiles use
+`NNZ:WEIGHT` histograms; weights are scaled to the requested row count and the
+rows are deterministically shuffled with the recorded seed. They enter the
+same binary-loader, correctness, ablation, and rocSPARSE paths as Matrix Market
+inputs. The `--row-length-histogram` input is shared by the SpMV and SpMM
+runners, while this manifest defines the controlled SpMV study:
+
+```sh
+python3 benchmark/run_spmv_ablation_suite.py \
+  --manifest=benchmark/suites/spmv-row-profiles.json \
+  --output-dir=/path/to/profile-results \
+  -- --chip=gfx1101
+```
+
+The profile suite requires no `--matrix-root`. Its eight workloads each have
+64,000 rows, mean row length 16, and 1,024,000 nonzeros, making differences in
+mapping behavior attributable to the controlled row distribution rather than
+problem size.
+
 SpMM accepts the same generated row-length distributions. The following sweep
 compares fixed row/output mappings, position split and reorder variants,
 cooperative wave scheduling, and rocSPARSE from one deterministic input set:

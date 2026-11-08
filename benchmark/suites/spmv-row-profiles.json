@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "benchmark_arguments": [
+    "--formats=csr",
+    "--mappings=thread-per-row,thread-per-position,wave-per-position,block-per-position,wave-per-row,block-per-row",
+    "--position-chunk-sizes=1,4,8",
+    "--position-wave-chunk-sizes=1,2,4",
+    "--position-reductions=atomic,segmented,workspace",
+    "--block-sizes=64,128",
+    "--warmup=5",
+    "--iterations=20",
+    "--rocsparse"
+  ],
+  "matrices": [
+    {
+      "name": "uniform-16",
+      "category": "uniform rows",
+      "profile": {
+        "rows": 64000,
+        "columns": 65536,
+        "histogram": "16:1",
+        "seed": 17
+      }
+    },
+    {
+      "name": "compact-8-24",
+      "category": "compact two-length rows",
+      "profile": {
+        "rows": 64000,
+        "columns": 65536,
+        "histogram": "8:1,24:1",
+        "seed": 17
+      }
+    },
+    {
+      "name": "broad-1-31",
+      "category": "broad two-length rows",
+      "profile": {
+        "rows": 64000,
+        "columns": 65536,
+        "histogram": "1:1,31:1",
+        "seed": 17
+      }
+    },
+    {
+      "name": "empty-quarter",
+      "category": "25 percent empty rows",
+      "profile": {
+        "rows": 64000,
+        "columns": 65536,
+        "histogram": "0:1,16:2,32:1",
+        "seed": 17
+      }
+    },
+    {
+      "name": "empty-half",
+      "category": "50 percent empty rows",
+      "profile": {
+        "rows": 64000,
+        "columns": 65536,
+        "histogram": "0:1,32:1",
+        "seed": 17
+      }
+    },
+    {
+      "name": "tail-10-percent",
+      "category": "moderate frequent tail",
+      "profile": {
+        "rows": 64000,
+        "columns": 65536,
+        "histogram": "8:9,88:1",
+        "seed": 17
+      }
+    },
+    {
+      "name": "tail-2-percent",
+      "category": "long infrequent tail",
+      "profile": {
+        "rows": 64000,
+        "columns": 65536,
+        "histogram": "8:98,408:2",
+        "seed": 17
+      }
+    },
+    {
+      "name": "tail-1-percent",
+      "category": "extreme rare tail",
+      "profile": {
+        "rows": 64000,
+        "columns": 65536,
+        "histogram": "8:99,808:1",
+        "seed": 17
+      }
+    }
+  ]
+}
