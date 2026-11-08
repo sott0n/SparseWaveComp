@@ -94,6 +94,26 @@ thread-position baseline and rocSPARSE when those cases were selected. See the
 [integrated gfx1101 position-transformation ablation](position-transformation-ablation-gfx1101.md)
 for the stage definitions and representative real-matrix results.
 
+The checked-in `benchmark/suites/spmv-position.json` manifest extends this
+workflow across a representative set of short, medium, long, irregular, and
+heavy-tail matrices. After downloading the listed SuiteSparse matrices below a
+common directory, run the full suite with:
+
+```sh
+python3 benchmark/run_spmv_ablation_suite.py \
+  --matrix-root=/path/to/suitesparse \
+  --output-dir=/path/to/results \
+  -- --chip=gfx1101
+```
+
+The runner delegates every measurement to `run_spmv_benchmark.py`; the
+manifest only defines the inputs and common sweep options. Each matrix keeps
+its complete benchmark output in a separate subdirectory. The suite root adds
+`position-ablation.csv` with every selected stage and `summary.csv` with the
+fastest position stage plus its speedup against fixed mapping and rocSPARSE.
+Use `--matrices=ca-GrQc,ca-AstroPh` to run a subset. Arguments after `--` are
+forwarded to every benchmark and can override ordinary manifest options.
+
 SpMM accepts the same generated row-length distributions. The following sweep
 compares fixed row/output mappings, position split and reorder variants,
 cooperative wave scheduling, and rocSPARSE from one deterministic input set:

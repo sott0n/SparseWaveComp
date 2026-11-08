@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "benchmark_arguments": [
+    "--formats=csr",
+    "--mappings=thread-per-row,thread-per-position,wave-per-position,block-per-position,wave-per-row,block-per-row",
+    "--position-chunk-sizes=1,4,8",
+    "--position-wave-chunk-sizes=1,2,4",
+    "--position-reductions=atomic,segmented,workspace",
+    "--block-sizes=64,128",
+    "--warmup=5",
+    "--iterations=20",
+    "--rocsparse"
+  ],
+  "matrices": [
+    {
+      "name": "minnesota",
+      "path": "Gleich/minnesota/minnesota.mtx",
+      "category": "short road-network rows",
+      "source": "https://sparse.tamu.edu/Gleich/minnesota"
+    },
+    {
+      "name": "ca-GrQc",
+      "path": "SNAP/ca-GrQc/ca-GrQc.mtx",
+      "category": "short irregular rows",
+      "source": "https://sparse.tamu.edu/SNAP/ca-GrQc"
+    },
+    {
+      "name": "wiki-Vote",
+      "path": "SNAP/wiki-Vote/wiki-Vote.mtx",
+      "category": "short heavy-tail rows",
+      "source": "https://sparse.tamu.edu/SNAP/wiki-Vote"
+    },
+    {
+      "name": "ca-AstroPh",
+      "path": "SNAP/ca-AstroPh/ca-AstroPh.mtx",
+      "category": "medium irregular rows",
+      "source": "https://sparse.tamu.edu/SNAP/ca-AstroPh"
+    },
+    {
+      "name": "email-Enron",
+      "path": "SNAP/email-Enron/email-Enron.mtx",
+      "category": "medium heavy-tail rows",
+      "source": "https://sparse.tamu.edu/SNAP/email-Enron"
+    },
+    {
+      "name": "kron_g500-logn16",
+      "path": "DIMACS10/kron_g500-logn16/kron_g500-logn16.mtx",
+      "category": "long heavy-tail rows",
+      "source": "https://sparse.tamu.edu/DIMACS10/kron_g500-logn16"
+    }
+  ]
+}
