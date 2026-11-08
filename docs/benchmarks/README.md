@@ -207,6 +207,10 @@ environment, reproduction commands, performance data, and interpretation:
 - [gfx1101 position-transformation ablation](position-transformation-ablation-gfx1101.md)
   integrates fixed mappings, split, reorder, reduction, wave/block scheduling,
   manual-best selection, and rocSPARSE on representative real matrices.
+- [gfx1101 SpMV position-ablation suite](spmv-position-suite-gfx1101.md)
+  repeats the integrated SpMV study across six row-length profiles, reports
+  two independent runs, and identifies stable winning and losing regions
+  against fixed mappings and rocSPARSE.
 - [gfx1101 CSR elementwise block-size sweep](elementwise-block-size-sweep-gfx1101.md)
   measures symbolic, prefix-scan, and numeric phase behavior for sparse add
   and multiply and relates the timing tradeoff to generated GPU resources.
