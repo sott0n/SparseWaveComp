@@ -37,6 +37,24 @@ POSITION_REDUCTIONS = tuple(
         + POSITION_BLOCK_REDUCTIONS
     )
 )
+ROW_PROFILE_FIELDS = (
+    "min_row_nnz",
+    "max_row_nnz",
+    "mean_row_nnz",
+    "stddev_row_nnz",
+    "cv_row_nnz",
+    "median_row_nnz",
+    "p90_row_nnz",
+    "p99_row_nnz",
+    "empty_row_fraction",
+)
+ROW_PROFILE_FLOAT_FIELDS = (
+    "mean_row_nnz",
+    "stddev_row_nnz",
+    "cv_row_nnz",
+    "median_row_nnz",
+    "empty_row_fraction",
+)
 
 
 def positive_int(value):
@@ -152,6 +170,30 @@ def synthetic_row_length(nnz_per_row, distribution, row):
     raise ValueError(f"unknown distribution: {distribution}")
 
 
+def row_length_percentile(sorted_lengths, percentile):
+    index = math.ceil(percentile * len(sorted_lengths)) - 1
+    return sorted_lengths[max(index, 0)]
+
+
+def row_length_profile(lengths):
+    if not lengths:
+        raise ValueError("expected at least one row length")
+    sorted_lengths = sorted(lengths)
+    mean = statistics.mean(sorted_lengths)
+    stddev = statistics.pstdev(sorted_lengths)
+    return {
+        "min_row_nnz": sorted_lengths[0],
+        "max_row_nnz": sorted_lengths[-1],
+        "mean_row_nnz": mean,
+        "stddev_row_nnz": stddev,
+        "cv_row_nnz": stddev / mean if mean else 0.0,
+        "median_row_nnz": statistics.median(sorted_lengths),
+        "p90_row_nnz": row_length_percentile(sorted_lengths, 0.90),
+        "p99_row_nnz": row_length_percentile(sorted_lengths, 0.99),
+        "empty_row_fraction": sorted_lengths.count(0) / len(sorted_lengths),
+    }
+
+
 def synthetic_workload_shape(rows, nnz_per_row, distribution):
     lengths = [
         synthetic_row_length(nnz_per_row, distribution, row)
@@ -159,9 +201,7 @@ def synthetic_workload_shape(rows, nnz_per_row, distribution):
     ]
     return {
         "nnz": sum(lengths),
-        "min_row_nnz": min(lengths),
-        "max_row_nnz": max(lengths),
-        "mean_row_nnz": statistics.mean(lengths),
+        **row_length_profile(lengths),
     }
 
 
@@ -317,9 +357,7 @@ def read_matrix_market(path):
         "rows": rows,
         "columns": columns,
         "nnz": len(entries),
-        "min_row_nnz": min(row_lengths),
-        "max_row_nnz": max(row_lengths),
-        "mean_row_nnz": statistics.mean(row_lengths),
+        **row_length_profile(row_lengths),
         "row_offsets": row_offsets,
         "row_indices": row_indices,
         "column_indices": column_indices,

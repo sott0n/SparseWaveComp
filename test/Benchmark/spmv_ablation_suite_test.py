@@ -4,6 +4,7 @@ import csv
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import sys
 import unittest
 from unittest import mock
@@ -12,6 +13,7 @@ from unittest import mock
 SCRIPT = Path(sys.argv[1]).resolve()
 TEMPORARY_ROOT = Path(sys.argv[2]).resolve()
 sys.argv = [sys.argv[0]]
+sys.path.insert(0, str(SCRIPT.parent))
 
 SPEC = importlib.util.spec_from_file_location("spmv_ablation_suite", SCRIPT)
 SUITE = importlib.util.module_from_spec(SPEC)
@@ -93,6 +95,7 @@ class SpMVAblationSuiteTest(unittest.TestCase):
             arguments=["--block-sizes=64", "--rocsparse"],
         )
         output = TEMPORARY_ROOT / "aggregate-output"
+        shutil.rmtree(output, ignore_errors=True)
 
         def fake_run(command, check):
             self.assertTrue(check)
@@ -136,6 +139,25 @@ class SpMVAblationSuiteTest(unittest.TestCase):
                 writer = csv.DictWriter(stream, fieldnames=columns)
                 writer.writeheader()
                 writer.writerows(rows)
+            profile = {
+                "rows": "8",
+                "nnz": "32",
+                "min_row_nnz": "0",
+                "max_row_nnz": "12",
+                "mean_row_nnz": "4.000000",
+                "stddev_row_nnz": "3.000000",
+                "cv_row_nnz": "0.750000",
+                "median_row_nnz": "3.000000",
+                "p90_row_nnz": "8",
+                "p99_row_nnz": "12",
+                "empty_row_fraction": "0.125000",
+            }
+            with (case_output / "results.csv").open(
+                "w", newline="", encoding="utf-8"
+            ) as stream:
+                writer = csv.DictWriter(stream, fieldnames=profile)
+                writer.writeheader()
+                writer.writerow(profile)
 
         with mock.patch.object(SUITE.subprocess, "run", side_effect=fake_run) as run:
             result = SUITE.main(
@@ -161,6 +183,8 @@ class SpMVAblationSuiteTest(unittest.TestCase):
         self.assertEqual(summary[0]["best_position_stage"], "wave position")
         self.assertEqual(summary[0]["vs_fixed_mapping"], "1.500000")
         self.assertEqual(summary[0]["vs_rocsparse"], "1.250000")
+        self.assertEqual(summary[0]["cv_row_nnz"], "0.750000")
+        self.assertEqual(summary[0]["p99_row_nnz"], "12")
 
         with (output / "position-ablation.csv").open(
             newline="", encoding="utf-8"

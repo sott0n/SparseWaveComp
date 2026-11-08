@@ -164,6 +164,13 @@ class SpMVBenchmarkTest(unittest.TestCase):
         self.assertEqual(matrix["values"], [-1.0, 2.5, 4.0])
         self.assertEqual(matrix["min_row_nnz"], 0)
         self.assertEqual(matrix["max_row_nnz"], 2)
+        self.assertEqual(matrix["mean_row_nnz"], 1)
+        self.assertAlmostEqual(matrix["stddev_row_nnz"], (2 / 3) ** 0.5)
+        self.assertAlmostEqual(matrix["cv_row_nnz"], (2 / 3) ** 0.5)
+        self.assertEqual(matrix["median_row_nnz"], 1)
+        self.assertEqual(matrix["p90_row_nnz"], 2)
+        self.assertEqual(matrix["p99_row_nnz"], 2)
+        self.assertAlmostEqual(matrix["empty_row_fraction"], 1 / 3)
 
     def test_matrix_market_symmetric_pattern_expands_off_diagonal(self):
         matrix_path = TEMPORARY_ROOT / "symmetric.mtx"
@@ -318,9 +325,28 @@ class SpMVBenchmarkTest(unittest.TestCase):
         alternating = BENCHMARK.workload_shape(16, 8, "alternating")
         self.assertEqual(alternating["min_row_nnz"], 1)
         self.assertEqual(alternating["max_row_nnz"], 15)
+        self.assertEqual(alternating["stddev_row_nnz"], 7)
+        self.assertEqual(alternating["cv_row_nnz"], 0.875)
+        self.assertEqual(alternating["median_row_nnz"], 8)
+        self.assertEqual(alternating["p90_row_nnz"], 15)
+        self.assertEqual(alternating["p99_row_nnz"], 15)
+        self.assertEqual(alternating["empty_row_fraction"], 0)
         skewed = BENCHMARK.workload_shape(16, 8, "skewed")
         self.assertEqual(skewed["min_row_nnz"], 1)
         self.assertEqual(skewed["max_row_nnz"], 57)
+        self.assertAlmostEqual(skewed["stddev_row_nnz"], 343**0.5)
+        self.assertAlmostEqual(skewed["cv_row_nnz"], 343**0.5 / 8)
+        self.assertEqual(skewed["median_row_nnz"], 1)
+        self.assertEqual(skewed["p90_row_nnz"], 57)
+        self.assertEqual(skewed["p99_row_nnz"], 57)
+        self.assertEqual(skewed["empty_row_fraction"], 0)
+
+    def test_zero_row_profile_has_finite_coefficient_of_variation(self):
+        profile = BENCHMARK.common.row_length_profile([0, 0])
+        self.assertEqual(profile["mean_row_nnz"], 0)
+        self.assertEqual(profile["stddev_row_nnz"], 0)
+        self.assertEqual(profile["cv_row_nnz"], 0)
+        self.assertEqual(profile["empty_row_fraction"], 1)
 
     def test_synthetic_matrix_matches_generated_workload(self):
         matrix = BENCHMARK.synthetic_matrix(
@@ -498,6 +524,12 @@ gpu.binary @compute [#gpu.object<bin = "\7FELF\02">]
                 "min_row_nnz": 4,
                 "max_row_nnz": 4,
                 "mean_row_nnz": 4,
+                "stddev_row_nnz": 0,
+                "cv_row_nnz": 0,
+                "median_row_nnz": 4,
+                "p90_row_nnz": 4,
+                "p99_row_nnz": 4,
+                "empty_row_fraction": 0,
             },
         }
         resources = {
@@ -526,6 +558,8 @@ gpu.binary @compute [#gpu.object<bin = "\7FELF\02">]
         )
         self.assertEqual(result["gnnz_per_sec"], 0.016)
         self.assertEqual(result["gflops"], 0.032)
+        self.assertEqual(result["median_row_nnz"], 4)
+        self.assertEqual(result["empty_row_fraction"], 0)
         self.assertEqual(result["vgpr_count"], 24)
         self.assertEqual(result["lds_bytes"], 128)
         self.assertEqual(result["max_workgroup_size"], 64)

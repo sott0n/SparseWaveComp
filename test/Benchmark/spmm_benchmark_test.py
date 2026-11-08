@@ -574,8 +574,11 @@ amdhsa.kernels:
         for workload in workloads:
             self.assertEqual(workload["shape"]["nnz"], 128)
             self.assertEqual(workload["shape"]["mean_row_nnz"], 8)
+            self.assertEqual(workload["shape"]["empty_row_fraction"], 0)
         self.assertEqual(workloads[1]["shape"]["max_row_nnz"], 15)
+        self.assertEqual(workloads[1]["shape"]["p90_row_nnz"], 15)
         self.assertEqual(workloads[2]["shape"]["max_row_nnz"], 57)
+        self.assertEqual(workloads[2]["shape"]["median_row_nnz"], 1)
 
     def test_generated_spmm_input_lowers_position_mapping(self):
         matrix = BENCHMARK.common.synthetic_csr_matrix(

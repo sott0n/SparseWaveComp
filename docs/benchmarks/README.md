@@ -31,6 +31,13 @@ format and its host conversion/serialization time separately from GPU kernel
 time. Position-space timing sums every GPU stage in a dispatch, including
 output initialization and any workspace stages.
 
+Every SpMV and SpMM result also records a common row-length profile: minimum,
+maximum, mean, population standard deviation, coefficient of variation,
+median, nearest-rank p90 and p99, and the fraction of empty rows. Synthetic and
+Matrix Market inputs use the same calculation. The SpMV suite copies this
+profile into `summary.csv`, so performance and mapping choices can be compared
+directly with workload irregularity.
+
 BSR conversion groups entries into row-major dense blocks and coalesces
 duplicate coordinates by addition. Matrix dimensions that are not divisible
 by the selected block size are extended with zero rows and columns. The BSR

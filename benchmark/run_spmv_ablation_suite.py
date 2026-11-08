@@ -10,6 +10,8 @@ import re
 import subprocess
 import sys
 
+import benchmark_utils as common
+
 
 SCHEMA_VERSION = 1
 RESERVED_BENCHMARK_OPTIONS = {
@@ -51,6 +53,9 @@ SUITE_COLUMNS = (
 SUMMARY_COLUMNS = (
     "matrix",
     "category",
+    "rows",
+    "nnz",
+    *common.ROW_PROFILE_FIELDS,
     "best_position_stage",
     "mapping",
     "block_size",
@@ -168,7 +173,19 @@ def read_ablation(path):
     return rows
 
 
-def summarize_matrix(matrix, rows):
+def read_matrix_profile(path):
+    with path.open(newline="", encoding="utf-8") as stream:
+        row = next(csv.DictReader(stream), None)
+    if row is None:
+        raise ValueError(f"{path}: benchmark results are empty")
+    fields = ("rows", "nnz", *common.ROW_PROFILE_FIELDS)
+    missing = [field for field in fields if field not in row]
+    if missing:
+        raise ValueError(f"{path}: missing matrix profile fields {missing}")
+    return {field: row[field] for field in fields}
+
+
+def summarize_matrix(matrix, rows, profile):
     position_rows = [row for row in rows if row["stage"] in POSITION_STAGES]
     if not position_rows:
         raise ValueError(f"{matrix.name}: missing position stages")
@@ -179,6 +196,7 @@ def summarize_matrix(matrix, rows):
     return {
         "matrix": matrix.name,
         "category": matrix.category,
+        **profile,
         "best_position_stage": best["stage"],
         "mapping": best["mapping"],
         "block_size": best["block_size"],
@@ -290,6 +308,7 @@ def main(argv=None):
         subprocess.run(command, check=True)
         commands.append(command)
         rows = read_ablation(case_directory / "position-ablation.csv")
+        profile = read_matrix_profile(case_directory / "results.csv")
         suite_rows.extend(
             {
                 "suite_matrix": matrix.name,
@@ -300,7 +319,7 @@ def main(argv=None):
             }
             for row in rows
         )
-        summaries.append(summarize_matrix(matrix, rows))
+        summaries.append(summarize_matrix(matrix, rows, profile))
 
     write_csv(output_directory / "position-ablation.csv", SUITE_COLUMNS, suite_rows)
     write_csv(output_directory / "summary.csv", SUMMARY_COLUMNS, summaries)
