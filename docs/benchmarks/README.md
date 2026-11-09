@@ -243,6 +243,9 @@ environment, reproduction commands, performance data, and interpretation:
   holds dimensions, NNZ, values, and dense-vector accesses constant while
   varying only row boundaries, then compares position, fixed, and rocSPARSE
   behavior across two independent runs.
+- [Position-space scheduling research summary](position-space-research-summary.md)
+  closes the first research cycle by connecting the reusable MLIR mechanism,
+  transformation ablations, AMD GPU analysis, and remaining limitations.
 - [gfx1101 CSR elementwise block-size sweep](elementwise-block-size-sweep-gfx1101.md)
   measures symbolic, prefix-scan, and numeric phase behavior for sparse add
   and multiply and relates the timing tradeoff to generated GPU resources.

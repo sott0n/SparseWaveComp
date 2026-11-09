@@ -117,6 +117,49 @@ tail-2-percent. The other profiles change direction. These results identify
 cases for a frequency-controlled follow-up, but they do not establish a
 general rocSPARSE advantage.
 
+## Targeted repeatability and ISA follow-up
+
+Four representative profiles were measured four more times with 20 warmup
+and 100 measured dispatches. Runs 1 and 3 executed fixed mappings before
+position mappings; runs 2 and 4 reversed that order. The table shows median
+microseconds for each run. All 128 targeted configurations passed CPU-reference
+validation.
+
+| Profile | Wave row | Wave position atomic | Block position segmented | rocSPARSE |
+| --- | --- | --- | --- | --- |
+| broad-1-31 | 163.32 / 36.70 / 36.50 / 36.50 | 210.00 / 49.02 / 49.00 / 54.96 | 227.48 / 54.38 / 53.96 / 54.54 | 75.68 / 26.64 / 27.54 / 27.28 |
+| empty-half | 102.10 / 33.64 / 33.64 / 33.64 | 116.64 / 46.12 / 132.04 / 45.66 | 91.12 / 47.06 / 47.56 / 47.24 | 67.82 / 31.26 / 35.08 / 62.82 |
+| tail-10-percent | 41.40 / 41.40 / 117.80 / 41.32 | 47.86 / 47.84 / 47.60 / 47.60 | 46.40 / 47.06 / 142.38 / 46.52 | 37.26 / 29.26 / 38.26 / 30.06 |
+| tail-2-percent | 45.72 / 45.62 / 45.44 / 45.56 | 48.84 / 48.74 / 48.84 / 140.88 | 139.24 / 45.96 / 45.78 / 45.80 | 87.38 / 43.68 / 37.06 / 34.80 |
+
+Most kernels have a repeatable fast state and occasional discrete slow runs
+of roughly two to four times that latency. Reversing mapping order does not
+remove the slow states: each order contains both stable and slow cases. The
+GPU reported automatic performance level, and changing it required privileged
+system access, so all measurements retained the automatic setting. This
+follow-up confirms that unlocked short-kernel ratios must not be interpreted
+as stable compiler thresholds.
+
+The static binaries do not depend on the selected profile. The following
+resource and disassembly counts therefore use one retained binary per mapping.
+Instruction counts exclude `s_code_end` padding; atomic and shuffle counts are
+static instruction sites, not dynamic executions.
+
+| Mapping | VGPR / SGPR | LDS | Spill / scratch | Code | Instructions | `ds_bpermute_b32` | Atomic sites | Branches |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Wave per row | 14 / 20 | 0 B | 0 / 0 B | 940 B | 181 | 5 | 0 | 5 |
+| Wave position atomic, chunk 4 | 42 / 50 | 0 B | 0 / 0 B | 4,800 B | 917 | 37 | 1 | 23 |
+| Wave position workspace, chunk 4 | 46 / 57 | 0 B | 0 / 0 B | 5,260 B | 990 | 41 | 1 | 26 |
+| Block position segmented, chunk 8 | 24 / 44 | 56 B | 0 / 0 B | 6,372 B | 1,290 | 20 | 4 | 41 |
+
+The position kernels pay for balanced traversal with compressed-segment
+recovery, carried boundary state, partial-result merging, and more control
+flow. Wave position uses more than five times the static instructions and over
+three times the VGPRs of direct wave-row ownership. Block segmentation avoids
+high VGPR pressure but adds an LDS scan, synchronization, and several output
+paths. No selected kernel spills, so the remaining cost is algorithmic rather
+than spill or scratch traffic.
+
 ## Conclusion
 
 The controlled study confirms that the position-space transformation is a
@@ -128,9 +171,9 @@ regions that are hidden by mean row length alone.
 
 The data does not justify an automatic selector yet. A future inspectable
 decision needs multiple profile features and stable target measurements, not
-a single CV threshold. The next step is targeted ISA, resource, and clock-
-controlled analysis of the stable winning and losing regions and of the
-variable fixed mappings.
+a single CV threshold. The targeted follow-up explains the static cost of the
+alternatives and also confirms that stable target timing is a prerequisite
+for deriving a profitability rule.
 
 ## Reproduction
 
