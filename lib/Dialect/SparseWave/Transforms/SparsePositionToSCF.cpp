@@ -247,6 +247,50 @@ public:
   }
 };
 
+class LowerCompressedSegmentBoundsPattern
+    : public OpRewritePattern<CompressedSegmentBoundsOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(CompressedSegmentBoundsOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value nextSegment =
+        arith::AddIOp::create(rewriter, loc, op.getSegment(), one);
+    Value beginValue = memref::LoadOp::create(rewriter, loc, op.getOffsets(),
+                                              ValueRange{op.getSegment()});
+    Value endValue = memref::LoadOp::create(rewriter, loc, op.getOffsets(),
+                                            ValueRange{nextSegment});
+    Value begin = castToIndex(rewriter, loc, beginValue);
+    Value end = castToIndex(rewriter, loc, endValue);
+    rewriter.replaceOp(op, ValueRange{begin, end});
+    return success();
+  }
+};
+
+class LowerSegmentClassifyPattern : public OpRewritePattern<SegmentClassifyOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(SegmentClassifyOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value classId = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    for (auto [index, upperBound] : llvm::enumerate(op.getUpperBounds())) {
+      Value bound = arith::ConstantIndexOp::create(rewriter, loc, upperBound);
+      Value exceeds = arith::CmpIOp::create(
+          rewriter, loc, arith::CmpIPredicate::ugt, op.getLength(), bound);
+      Value nextClass =
+          arith::ConstantIndexOp::create(rewriter, loc, index + 1);
+      classId =
+          arith::SelectOp::create(rewriter, loc, exceeds, nextClass, classId);
+    }
+    rewriter.replaceOp(op, classId);
+    return success();
+  }
+};
+
 Value buildCompressedSegmentSearch(OpBuilder &builder, Location loc,
                                    Value offsets, Value position) {
   Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
@@ -335,11 +379,12 @@ public:
 
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    patterns
-        .add<LowerPositionSplitPattern, LowerPositionForPattern,
-             LowerPositionReorderPattern, LowerPositionCollapsePattern,
-             LowerPositionSpacePattern, LowerCompressedSegmentAtPositionPattern,
-             LowerCSRCoordinatesPattern>(&getContext());
+    patterns.add<LowerPositionSplitPattern, LowerPositionForPattern,
+                 LowerPositionReorderPattern, LowerPositionCollapsePattern,
+                 LowerPositionSpacePattern, LowerCompressedSegmentBoundsPattern,
+                 LowerSegmentClassifyPattern,
+                 LowerCompressedSegmentAtPositionPattern,
+                 LowerCSRCoordinatesPattern>(&getContext());
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
       signalPassFailure();
   }

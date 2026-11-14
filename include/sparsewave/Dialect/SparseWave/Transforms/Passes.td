@@ -100,10 +100,12 @@ def LowerSparseWavePositionSpace
     sparsewave.position_reorder to an SCF loop nest in the requested order,
     sparsewave.position_collapse to coordinate recovery and a guarded region,
     and sparsewave.position_space to integer arithmetic implementing a balanced
-    contiguous partition. Compressed segment lookup is lowered to an
-    upper-bound search over its offsets; CSR coordinate recovery additionally
-    loads the column index. The resulting IR is target-independent and uses
-    only Arith, MemRef, and SCF operations.
+    contiguous partition. Compressed segment bounds are lowered to offset
+    loads, and explicit segment-length classes are lowered to ordered integer
+    comparisons. Compressed segment lookup is lowered to an upper-bound search
+    over its offsets; CSR coordinate recovery additionally loads the column
+    index. The resulting IR is target-independent and uses only Arith, MemRef,
+    and SCF operations.
   }];
   let dependentDialects = [
     "arith::ArithDialect",

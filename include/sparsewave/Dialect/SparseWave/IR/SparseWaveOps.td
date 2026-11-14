@@ -691,6 +691,71 @@ def SparseWave_PositionSpaceOp : SparseWave_Op<"position_space", [Pure]> {
   let hasVerifier = 1;
 }
 
+def SparseWave_CompressedSegmentBoundsOp
+    : SparseWave_Op<"compressed_segment_bounds"> {
+  let summary = "Load the stored-position bounds of a compressed segment";
+  let description = [{
+    `sparsewave.compressed_segment_bounds` loads the half-open stored-position
+    range `[begin, end)` for one segment of a compressed level. The offsets
+    array contains one boundary per segment plus a final sentinel. Segments
+    may represent rows, columns, blocks, or another compressed-level grouping.
+
+    This operation exposes compressed storage independently from a scheduling
+    policy. A later transformation can derive the segment length and classify
+    or map it without naming an operator or sparse format.
+
+    Example:
+
+    ```mlir
+    %begin, %end = sparsewave.compressed_segment_bounds
+        %offsets at %segment : memref<?xi32>
+    ```
+  }];
+
+  let arguments = (ins
+      Arg<AnyMemRef, "compressed segment offsets", [MemRead]>:$offsets,
+      Index:$segment);
+  let results = (outs Index:$begin, Index:$end);
+
+  let assemblyFormat = [{
+    $offsets `at` $segment attr-dict `:` type($offsets)
+  }];
+
+  let hasVerifier = 1;
+}
+
+def SparseWave_SegmentClassifyOp
+    : SparseWave_Op<"segment_classify", [Pure]> {
+  let summary = "Classify a segment length by explicit upper bounds";
+  let description = [{
+    `sparsewave.segment_classify` assigns a nonnegative segment length to one
+    of `N + 1` ordered classes using `N` strictly increasing, nonnegative upper
+    bounds. Class zero contains lengths at or below the first bound. Class `i`
+    contains lengths greater than bound `i - 1` and at or below bound `i`.
+    The final class contains lengths greater than the final bound.
+
+    The operation records classification without selecting a GPU mapping.
+    Explicit bounds keep experiments reproducible; automatic threshold
+    selection belongs to a later decision stage.
+
+    Example:
+
+    ```mlir
+    %class = sparsewave.segment_classify %length upper_bounds = [4, 32]
+        : index
+    ```
+  }];
+
+  let arguments = (ins Index:$length, DenseI64ArrayAttr:$upperBounds);
+  let results = (outs Index:$classId);
+
+  let assemblyFormat = [{
+    $length `upper_bounds` `=` $upperBounds attr-dict `:` type($length)
+  }];
+
+  let hasVerifier = 1;
+}
+
 def SparseWave_CompressedSegmentAtPositionOp
     : SparseWave_Op<"compressed_segment_at_position"> {
   let summary = "Recover a compressed segment from a stored position";

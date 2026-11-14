@@ -19,6 +19,19 @@ func.func @position_space(
   return
 }
 
+// CHECK-LABEL: func.func @segment_classification(
+func.func @segment_classification(%offsets: memref<?xi32>, %segment: index)
+    -> index {
+  // CHECK: %[[BEGIN:.*]], %[[END:.*]] = sparsewave.compressed_segment_bounds
+  // CHECK-SAME: %[[OFFSETS:.*]] at %[[SEGMENT:.*]] : memref<?xi32>
+  %begin, %end = sparsewave.compressed_segment_bounds
+      %offsets at %segment : memref<?xi32>
+  %length = arith.subi %end, %begin : index
+  // CHECK: sparsewave.segment_classify %{{.*}} upper_bounds = [4, 32] : index
+  %class = sparsewave.segment_classify %length upper_bounds = [4, 32] : index
+  return %class : index
+}
+
 // CHECK-LABEL: func.func @position_split(
 func.func @position_split(%position: index) -> (index, index) {
   // CHECK: %[[OUTER:.*]], %[[INNER:.*]] = sparsewave.position_split

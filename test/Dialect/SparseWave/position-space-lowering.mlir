@@ -243,6 +243,53 @@ func.func @row_at_position(%rowOffsets: memref<?xi32>, %position: index)
   return %row : index
 }
 
+// CHECK-LABEL: func.func @classify_segment(
+// CHECK-SAME: %[[OFFSETS:[^,]+]]: memref<?xi32>, %[[SEGMENT:[^)]+]]: index)
+func.func @classify_segment(%offsets: memref<?xi32>, %segment: index)
+    -> index {
+  // CHECK-DAG: %[[CLASS2:.*]] = arith.constant 2 : index
+  // CHECK-DAG: %[[BOUND1:.*]] = arith.constant 32 : index
+  // CHECK-DAG: %[[BOUND0:.*]] = arith.constant 4 : index
+  // CHECK-DAG: %[[CLASS0:.*]] = arith.constant 0 : index
+  // CHECK-DAG: %[[CLASS1:.*]] = arith.constant 1 : index
+  // CHECK: %[[NEXT:.*]] = arith.addi %[[SEGMENT]], %[[CLASS1]] : index
+  // CHECK: %[[BEGIN_I32:.*]] = memref.load %[[OFFSETS]][%[[SEGMENT]]] : memref<?xi32>
+  // CHECK: %[[END_I32:.*]] = memref.load %[[OFFSETS]][%[[NEXT]]] : memref<?xi32>
+  // CHECK: %[[BEGIN:.*]] = arith.index_cast %[[BEGIN_I32]] : i32 to index
+  // CHECK: %[[END:.*]] = arith.index_cast %[[END_I32]] : i32 to index
+  // CHECK: %[[LENGTH:.*]] = arith.subi %[[END]], %[[BEGIN]] : index
+  // CHECK: %[[EXCEEDS0:.*]] = arith.cmpi ugt, %[[LENGTH]], %[[BOUND0]] : index
+  // CHECK: %[[SELECT1:.*]] = arith.select %[[EXCEEDS0]], %[[CLASS1]], %[[CLASS0]] : index
+  // CHECK: %[[EXCEEDS1:.*]] = arith.cmpi ugt, %[[LENGTH]], %[[BOUND1]] : index
+  // CHECK: %[[SELECT2:.*]] = arith.select %[[EXCEEDS1]], %[[CLASS2]], %[[SELECT1]] : index
+  // CHECK-NOT: sparsewave.compressed_segment_bounds
+  // CHECK-NOT: sparsewave.segment_classify
+  // CHECK: return %[[SELECT2]] : index
+  %begin, %end = sparsewave.compressed_segment_bounds
+      %offsets at %segment : memref<?xi32>
+  %length = arith.subi %end, %begin : index
+  %class = sparsewave.segment_classify %length upper_bounds = [4, 32] : index
+  return %class : index
+}
+
+// FOLD-LABEL: func.func @classify_constant_lengths(
+// FOLD: %[[SHORT:.*]] = arith.constant 0 : index
+// FOLD: %[[MEDIUM:.*]] = arith.constant 1 : index
+// FOLD: %[[LONG:.*]] = arith.constant 2 : index
+// FOLD: return %[[SHORT]], %[[MEDIUM]], %[[LONG]] : index, index, index
+func.func @classify_constant_lengths() -> (index, index, index) {
+  %length4 = arith.constant 4 : index
+  %length5 = arith.constant 5 : index
+  %length33 = arith.constant 33 : index
+  %short = sparsewave.segment_classify %length4 upper_bounds = [4, 32]
+      : index
+  %medium = sparsewave.segment_classify %length5 upper_bounds = [4, 32]
+      : index
+  %long = sparsewave.segment_classify %length33 upper_bounds = [4, 32]
+      : index
+  return %short, %medium, %long : index, index, index
+}
+
 // FOLD-LABEL: func.func @partition_remainder(
 // FOLD: %[[BEGIN:.*]] = arith.constant 13 : index
 // FOLD: %[[END:.*]] = arith.constant 15 : index

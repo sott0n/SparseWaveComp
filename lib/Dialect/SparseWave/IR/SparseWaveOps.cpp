@@ -56,6 +56,23 @@ LogicalResult verifyRank(Operation *op, MemRefType type, int64_t rank,
   return success();
 }
 
+LogicalResult verifyCompressedOffsets(Operation *op, MemRefType offsetsType) {
+  if (failed(verifyRank(op, offsetsType, 1, "segment offsets")))
+    return failure();
+  Type indexType = offsetsType.getElementType();
+  if (!indexType.isIntOrIndex())
+    return op->emitOpError()
+           << "segment offsets must have integer or index elements, but got "
+           << indexType;
+
+  int64_t offsetsSize = offsetsType.getDimSize(0);
+  if (!ShapedType::isDynamic(offsetsSize) && offsetsSize < 2)
+    return op->emitOpError()
+           << "segment offsets must contain at least two elements, but got "
+           << offsetsSize;
+  return success();
+}
+
 bool areCompatibleStaticDimensions(int64_t lhs, int64_t rhs) {
   return ShapedType::isDynamic(lhs) || ShapedType::isDynamic(rhs) || lhs == rhs;
 }
@@ -839,21 +856,48 @@ LogicalResult PositionParallelOp::verify() {
   return success();
 }
 
-LogicalResult CompressedSegmentAtPositionOp::verify() {
+LogicalResult CompressedSegmentBoundsOp::verify() {
   MemRefType offsetsType = getOffsets().getType();
-  if (failed(verifyRank(*this, offsetsType, 1, "segment offsets")))
+  if (failed(verifyCompressedOffsets(*this, offsetsType)))
     return failure();
-  Type indexType = offsetsType.getElementType();
-  if (!indexType.isIntOrIndex())
-    return emitOpError()
-           << "segment offsets must have integer or index elements, but got "
-           << indexType;
+
+  std::optional<int64_t> segment = matchConstantIndex(getSegment());
+  if (segment && *segment < 0)
+    return emitOpError() << "segment must be nonnegative, but got " << *segment;
 
   int64_t offsetsSize = offsetsType.getDimSize(0);
-  if (!ShapedType::isDynamic(offsetsSize) && offsetsSize < 2)
+  if (segment && !ShapedType::isDynamic(offsetsSize) &&
+      *segment >= offsetsSize - 1)
     return emitOpError()
-           << "segment offsets must contain at least two elements, but got "
-           << offsetsSize;
+           << "segment must be smaller than the segment count, but got "
+           << *segment << " and " << offsetsSize - 1;
+  return success();
+}
+
+LogicalResult SegmentClassifyOp::verify() {
+  std::optional<int64_t> length = matchConstantIndex(getLength());
+  if (length && *length < 0)
+    return emitOpError() << "length must be nonnegative, but got " << *length;
+
+  ArrayRef<int64_t> bounds = getUpperBounds();
+  if (bounds.empty())
+    return emitOpError("requires at least one upper bound");
+  for (auto [index, bound] : llvm::enumerate(bounds)) {
+    if (bound < 0)
+      return emitOpError() << "upper bounds must be nonnegative, but bound "
+                           << index << " is " << bound;
+    if (index > 0 && bound <= bounds[index - 1])
+      return emitOpError()
+             << "upper bounds must be strictly increasing, but got "
+             << bounds[index - 1] << " followed by " << bound;
+  }
+  return success();
+}
+
+LogicalResult CompressedSegmentAtPositionOp::verify() {
+  MemRefType offsetsType = getOffsets().getType();
+  if (failed(verifyCompressedOffsets(*this, offsetsType)))
+    return failure();
 
   std::optional<int64_t> position = matchConstantIndex(getPosition());
   if (position && *position < 0)

@@ -19,6 +19,61 @@ func.func @compressed_segment_at_position_requires_boundaries(
 
 // -----
 
+func.func @compressed_segment_bounds_negative_segment() {
+  %offsets = memref.alloc() : memref<4xi32>
+  %segment = arith.constant -1 : index
+  // expected-error @+1 {{segment must be nonnegative, but got -1}}
+  %begin, %end = sparsewave.compressed_segment_bounds
+      %offsets at %segment : memref<4xi32>
+  return
+}
+
+// -----
+
+func.func @compressed_segment_bounds_segment_out_of_range() {
+  %offsets = memref.alloc() : memref<4xi32>
+  %segment = arith.constant 3 : index
+  // expected-error @+1 {{segment must be smaller than the segment count, but got 3 and 3}}
+  %begin, %end = sparsewave.compressed_segment_bounds
+      %offsets at %segment : memref<4xi32>
+  return
+}
+
+// -----
+
+func.func @segment_classify_requires_bounds(%length: index) {
+  // expected-error @+1 {{requires at least one upper bound}}
+  %class = sparsewave.segment_classify %length upper_bounds = [] : index
+  return
+}
+
+// -----
+
+func.func @segment_classify_negative_bound(%length: index) {
+  // expected-error @+1 {{upper bounds must be nonnegative, but bound 0 is -1}}
+  %class = sparsewave.segment_classify %length upper_bounds = [-1, 4] : index
+  return
+}
+
+// -----
+
+func.func @segment_classify_unordered_bounds(%length: index) {
+  // expected-error @+1 {{upper bounds must be strictly increasing, but got 4 followed by 4}}
+  %class = sparsewave.segment_classify %length upper_bounds = [4, 4] : index
+  return
+}
+
+// -----
+
+func.func @segment_classify_negative_length() {
+  %length = arith.constant -1 : index
+  // expected-error @+1 {{length must be nonnegative, but got -1}}
+  %class = sparsewave.segment_classify %length upper_bounds = [4, 32] : index
+  return
+}
+
+// -----
+
 func.func @negative_split_position() {
   %position = arith.constant -1 : index
   // expected-error @+1 {{position must be nonnegative, but got -1}}
